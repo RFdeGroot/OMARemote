@@ -28,7 +28,8 @@ function address(c) {
     if (!c)
         return ""
     var host = c.host || ""
-    return (c.port && Number(c.port) !== 3389) ? host + ":" + c.port : host
+    var standard = c.protocol === "vnc" ? 5900 : 3389
+    return (c.port && Number(c.port) !== standard) ? host + ":" + c.port : host
 }
 
 function account(c) {
@@ -38,6 +39,11 @@ function account(c) {
 }
 
 function displayLabel(c, monitorScale) {
+    if (c.protocol === "vnc") {
+        var how = c.vncScaling === "native" ? "Native pixels" : c.vncScaling === "resize" ? "Remote follows tab size" : "Scaled to fit"
+        var quality = c.vncQuality === "high" ? "high quality" : c.vncQuality === "low" ? "low bandwidth" : "auto quality"
+        return "Tab · " + how + " · " + quality + (c.viewOnly ? " · view only" : "")
+    }
     var mode = c.display === "fixed" ? c.width + "×" + c.height + " scaled to fit"
              : c.display === "fullscreen" ? "Fullscreen" : "Follows size"
     var scale = c.scale === "auto" ? "auto (" + (monitorScale || 100) + "%)" : c.scale + "%"
@@ -45,6 +51,8 @@ function displayLabel(c, monitorScale) {
 }
 
 function devicesLabel(c) {
+    if (c.protocol === "vnc")
+        return c.clipboard ? "clipboard" : "none"
     var out = []
     if (c.clipboard)
         out.push("clipboard")

@@ -15,6 +15,7 @@ fi
 for dep in qs sdl-freerdp3 secret-tool; do
   command -v "$dep" >/dev/null || { echo "missing: $dep (install quickshell, freerdp, libsecret)" >&2; exit 1; }
 done
+pkg-config --exists libvncclient || { echo "missing: libvncclient (install libvncserver)" >&2; exit 1; }
 
 # Sessions in tabs need the native renderer (C++, libfreerdp + Qt Quick).
 if command -v cmake >/dev/null && command -v ninja >/dev/null; then

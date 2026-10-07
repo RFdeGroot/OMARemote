@@ -112,7 +112,7 @@ FocusScope {
             say("Switched to " + (c.name || c.host))
             return
         }
-        if (c.openIn === "window") {
+        if (c.openIn === "window" && c.protocol !== "vnc") {
             say("Connecting to " + (c.name || c.host) + "…")
             Sessions.launch(c.id)
             return

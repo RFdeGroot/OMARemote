@@ -32,11 +32,12 @@ CLIENT = os.environ.get("OMAREMOTE_FREERDP", "sdl-freerdp3")
 HERE = os.path.dirname(os.path.realpath(__file__))
 
 
-def tab_client():
-    """The session process for tabs: a checkout's build, else the installed one."""
-    for path in (os.environ.get("OMAREMOTE_RDP"),
-                 os.path.join(HERE, "..", "native", "build", "omaremote-rdp"),
-                 "/usr/lib/omaremote/omaremote-rdp"):
+def tab_client(protocol="rdp"):
+    """The session process for tabs (omaremote-rdp, omaremote-vnc): a checkout's build, else the installed one."""
+    name = f"omaremote-{protocol}"
+    for path in (os.environ.get("OMAREMOTE_" + protocol.upper()),
+                 os.path.join(HERE, "..", "native", "build", name),
+                 f"/usr/lib/omaremote/{name}"):
         if path and os.access(path, os.X_OK):
             return os.path.realpath(path)
     return None
@@ -76,7 +77,10 @@ DEFAULTS = {
     "gatewayDomain": "",
     "kdc": "",               # Kerberos KDCs, comma separated; empty discovers them
     "extraArgs": "",
-    "openIn": "tab",         # tab | window
+    "openIn": "tab",         # tab | window (RDP; VNC always opens in a tab)
+    "vncScaling": "fit",     # fit | native | resize
+    "vncQuality": "auto",    # auto | high | low
+    "viewOnly": False,
     "favourite": False,
     "lastConnected": 0,
 }
@@ -144,7 +148,10 @@ def migrate_legacy():
 # it inherits, so changing the group changes every connection that did not override it.
 SETTING_KEYS = ("display", "width", "height", "scale", "multimon", "clipboard", "audio", "microphone",
                 "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
-                "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn")
+                "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn",
+                "vncScaling", "vncQuality", "viewOnly")
+
+DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900}
 
 
 def load_data(path=CONNECTIONS):
@@ -180,6 +187,8 @@ def resolve(conn, data):
     out = dict(DEFAULTS)
     out.update({k: v for k, v in (group.get("settings") or {}).items() if k in SETTING_KEYS})
     out.update(conn)
+    if not conn.get("port"):
+        out["port"] = DEFAULT_PORTS.get(out.get("protocol") or "rdp", 3389)
 
     mode = conn.get("credential") or "custom"
     cred_id = group.get("credential") if mode == "inherit" else (None if mode == "custom" else mode)
@@ -385,17 +394,36 @@ def build_args(conn, password=None, auto_scale=100, tab=None):
     return args
 
 
+def build_vnc_config(conn, password=None):
+    """Settings for omaremote-vnc, as key=value lines (fed on stdin)."""
+    c = dict(DEFAULTS, **conn)
+    host = c["host"].strip()
+    if not host:
+        raise ValueError("connection has no host")
+    port = int(conn.get("port") or DEFAULT_PORTS["vnc"])
+    lines = [f"host={host}", f"port={port}",
+             f"scaling={c['vncScaling'] if c['vncScaling'] in ('fit', 'native', 'resize') else 'fit'}",
+             f"quality={c['vncQuality'] if c['vncQuality'] in ('auto', 'high', 'low') else 'auto'}",
+             f"viewOnly={1 if c['viewOnly'] else 0}"]
+    if c["username"]:
+        lines.append(f"username={c['username']}")
+    if password:
+        lines.append(f"password={password}")
+    return lines
+
+
 def redact(args):
     out = []
     for a in args:
         if a.startswith("/p:"):
             out.append("/p:********")
+        elif a.startswith("password="):
+            out.append("password=********")
         elif a.startswith("/gateway:"):
             out.append("/gateway:" + re.sub(r"(^|,)p:[^,]*", r"\1p:********", a[len("/gateway:"):]))
         else:
             out.append(a)
     return out
-
 
 STAGES = (
     ("verify_cb", "Checking certificate"),
@@ -661,7 +689,10 @@ def session_socket(sid):
 
 
 def supervise(conn, sid, tab=None):
-    """Runs detached: starts FreeRDP, follows its log, records state until it exits."""
+    """Runs detached: starts the session's client, follows its log, records state until it exits."""
+    protocol = conn.get("protocol") or "rdp"
+    if protocol == "vnc" and not tab:
+        tab = {"width": 1280, "height": 800, "scale": 100}  # VNC sessions always live in a tab
     log_path = os.path.join(SESSIONS_DIR, sid + ".log")
     socket_path = session_socket(sid) if tab else None
     state = {
@@ -672,26 +703,34 @@ def supervise(conn, sid, tab=None):
         "exitCode": None, "error": None, "log": log_path,
         "tab": bool(tab), "socket": socket_path,
     }
+    if protocol == "vnc":
+        state["stage"] = "Connecting"
     write_session(state)
-    try:
-        krb_env = kerberos_env(conn)
-    except Exception:  # discovery is an optimisation; FreeRDP still works without it
-        krb_env = {}
-    conn = dict(conn, domain=kerberos_domain(conn))
+    krb_env = {}
+    if protocol == "rdp":
+        try:
+            krb_env = kerberos_env(conn)
+        except Exception:  # discovery is an optimisation; FreeRDP still works without it
+            pass
+        conn = dict(conn, domain=kerberos_domain(conn))
     password = None
     if conn.get("savePassword") and conn.get("secretId"):
         password = secret_get(conn["secretId"], conn.get("secretKind", "connection"))
-    args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
+    if protocol == "vnc":
+        args = build_vnc_config(conn, password=password)
+    else:
+        args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
     env = dict(os.environ, SDL_APP_ID=SESSION_APP_ID, WLOG_LEVEL=os.environ.get("WLOG_LEVEL", "INFO"),
                **krb_env)
     # The stage markers below are DEBUG lines; raise only their tags, not the whole log.
     env.setdefault("WLOG_FILTER", "com.freerdp.core.nego:DEBUG,com.freerdp.core.auth:DEBUG,com.winpr.negotiate:DEBUG")
     state["stage"] = "Connecting"
     if tab:
-        client = tab_client()
+        client = tab_client(protocol)
         if not client:
             state.update(state="failed", ended=int(time.time()),
-                         error="The tab renderer is not built: run ./install.sh (or open in a window)")
+                         error=f"The {protocol.upper()} renderer is not built: run ./install.sh"
+                               + (" (or open in a window)" if protocol == "rdp" else ""))
             write_session(state)
             return 1
         command = [client]  # reads its arguments from stdin
@@ -732,7 +771,8 @@ def supervise(conn, sid, tab=None):
             if state["state"] != "connecting":
                 continue
             # gdi_init_ex runs in post-connect: the session is up and drawing.
-            if "gdi_init_ex" in line:
+            # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc says so itself.
+            if "gdi_init_ex" in line or line.startswith("[omaremote] connected to"):
                 state.update(state="connected", stage=None)
                 write_session(state)
                 mark_connected(conn["id"])
@@ -847,6 +887,9 @@ def main(argv):
         conn = find_connection(rest[0], load_connections())
         if conn is None:
             return 2
+        if conn.get("protocol") == "vnc":
+            print("\n".join(redact(build_vnc_config(conn, "x" if conn["savePassword"] else None))))
+            return 0
         print(" ".join(shlex.quote(a) for a in redact(build_args(conn, "x" if conn["savePassword"] else None,
                                                                     monitor_scale()))))
         return 0

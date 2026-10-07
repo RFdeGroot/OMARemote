@@ -124,7 +124,7 @@ Rectangle {
                     Text {
                         width: parent.width
                         elide: Text.ElideRight
-                        text: root.connection ? "RDP · " + Format.address(root.connection) : ""
+                        text: root.connection ? String(root.connection.protocol || "rdp").toUpperCase() + " · " + Format.address(root.connection) : ""
                         color: Theme.muted
                         font.family: Theme.font
                         font.pixelSize: Theme.small

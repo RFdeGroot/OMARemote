@@ -10,6 +10,8 @@
 //
 // Protocol: newline-terminated text lines, binary fields base64. See native/PROTOCOL.md.
 
+#include "../common/link.hpp"
+
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
 #include <freerdp/client/cmdline.h>
@@ -56,19 +58,15 @@ static constexpr UINT32 kFormat = PIXEL_FORMAT_BGRX32;
 
 struct State
 {
-	std::string socketPath;
-	int listenFd = -1;
-	int clientFd = -1;
+	oma::Link link;
 	HANDLE listenEvent = nullptr;
 	HANDLE clientEvent = nullptr;
-	std::string inbuf;
 
-	// Current framebuffer. Old ones are unmapped by gdi through fb_free.
+	// Current framebuffer. Old ones are unmapped by gdi through oma::fb_release.
+	oma::Framebuffer frame;
 	BYTE* fb = nullptr;
-	int fbFd = -1;
 	UINT32 width = 0;
 	UINT32 height = 0;
-	UINT32 stride = 0;
 	bool connected = false;
 
 	DispClientContext* disp = nullptr;
@@ -87,8 +85,6 @@ struct State
 	UINT32 nextCursor = 1;
 	std::string cursorState = "cursor-default";
 
-	// A question the session is blocked on (certificate, credentials), replayed on attach.
-	std::string pendingPrompt;
 	bool quit = false;
 };
 
@@ -109,116 +105,26 @@ static State* state_of(rdpContext* ctx)
 	return reinterpret_cast<OmaContext*>(ctx)->st;
 }
 
-// ---------------------------------------------------------------- helpers
+using oma::b64;
+using oma::now_ms;
+using oma::split;
+using oma::unb64;
 
-static std::string b64(const std::string& s)
-{
-	if (s.empty())
-		return "-";
-	char* enc = crypto_base64_encode(reinterpret_cast<const BYTE*>(s.data()), s.size());
-	std::string out = enc ? enc : "-";
-	free(enc);
-	return out;
-}
+// ---------------------------------------------------------------- link to the UI
 
-static std::string unb64(const std::string& s)
-{
-	if (s.empty() || s == "-")
-		return {};
-	BYTE* data = nullptr;
-	size_t len = 0;
-	crypto_base64_decode(s.c_str(), s.size(), &data, &len);
-	std::string out(reinterpret_cast<char*>(data), len);
-	free(data);
-	return out;
-}
-
-static std::vector<std::string> split(const std::string& line)
-{
-	std::vector<std::string> out;
-	std::istringstream in(line);
-	std::string word;
-	while (in >> word)
-		out.push_back(word);
-	return out;
-}
-
-static UINT64 now_ms()
-{
-	return GetTickCount64();
-}
-
-// ---------------------------------------------------------------- socket
-
-static void drop_client(State* st)
-{
-	if (st->clientEvent)
-		CloseHandle(st->clientEvent);
-	if (st->clientFd >= 0)
-		close(st->clientFd);
-	st->clientEvent = nullptr;
-	st->clientFd = -1;
-	st->inbuf.clear();
-}
-
-// Sends one line, with a file descriptor attached when fd >= 0. A UI that stops reading for two
-// seconds is dropped rather than allowed to stall the session; it can reattach.
 static void send_line(State* st, const std::string& text, int fd = -1)
 {
-	if (st->clientFd < 0)
-		return;
-	std::string line = text + "\n";
-	size_t off = 0;
-	while (off < line.size())
-	{
-		iovec iov = { line.data() + off, line.size() - off };
-		msghdr msg = {};
-		msg.msg_iov = &iov;
-		msg.msg_iovlen = 1;
-		char cbuf[CMSG_SPACE(sizeof(int))] = {};
-		if (fd >= 0 && off == 0)
-		{
-			msg.msg_control = cbuf;
-			msg.msg_controllen = sizeof(cbuf);
-			cmsghdr* c = CMSG_FIRSTHDR(&msg);
-			c->cmsg_level = SOL_SOCKET;
-			c->cmsg_type = SCM_RIGHTS;
-			c->cmsg_len = CMSG_LEN(sizeof(int));
-			memcpy(CMSG_DATA(c), &fd, sizeof(int));
-		}
-		const ssize_t n = sendmsg(st->clientFd, &msg, MSG_NOSIGNAL);
-		if (n < 0)
-		{
-			if (errno == EINTR)
-				continue;
-			WLog_WARN(TAG, "UI stopped reading (%s); detaching it", strerror(errno));
-			drop_client(st);
-			return;
-		}
-		off += static_cast<size_t>(n);
-	}
+	st->link.send(text, fd);
 }
 
 static void send_frame(State* st)
 {
-	if (st->fb && st->fbFd >= 0)
-		send_line(st, "frame " + std::to_string(st->width) + " " + std::to_string(st->height) + " " +
-		                  std::to_string(st->stride),
-		          st->fbFd);
+	st->link.sendFrame(st->frame);
 }
 
-static void attach_client(State* st, int fd)
+// What a UI that attaches mid-session needs to catch up.
+static void replay(State* st)
 {
-	if (st->clientFd >= 0)
-	{
-		WLog_INFO(TAG, "a new UI attached; detaching the previous one");
-		drop_client(st);
-	}
-	timeval tv = { 2, 0 };
-	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-	st->clientFd = fd;
-	st->clientEvent = CreateFileDescriptorEventW(nullptr, FALSE, FALSE, fd, WINPR_FD_READ);
-	send_line(st, "hello 1");
 	send_line(st, st->connected ? "state connected" : "state connecting");
 	if (st->connected)
 	{
@@ -227,83 +133,41 @@ static void attach_client(State* st, int fd)
 			send_line(st, def);
 		send_line(st, st->cursorState);
 	}
-	if (!st->pendingPrompt.empty())
-		send_line(st, st->pendingPrompt);
 }
 
 static bool open_socket(State* st)
 {
-	const char* path = getenv("OMAREMOTE_SOCKET");
-	if (!path || !*path)
-	{
-		WLog_ERR(TAG, "OMAREMOTE_SOCKET is not set");
+	if (!st->link.listen(getenv("OMAREMOTE_SOCKET")))
 		return false;
-	}
-	st->socketPath = path;
-	sockaddr_un addr = {};
-	addr.sun_family = AF_UNIX;
-	if (st->socketPath.size() >= sizeof(addr.sun_path))
-	{
-		WLog_ERR(TAG, "socket path too long: %s", path);
-		return false;
-	}
-	strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-	unlink(path);
-	st->listenFd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-	const mode_t old = umask(0077);
-	const int rc = bind(st->listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-	umask(old);
-	if (st->listenFd < 0 || rc != 0 || listen(st->listenFd, 4) != 0)
-	{
-		WLog_ERR(TAG, "cannot listen on %s: %s", path, strerror(errno));
-		return false;
-	}
-	st->listenEvent = CreateFileDescriptorEventW(nullptr, FALSE, FALSE, st->listenFd, WINPR_FD_READ);
+	st->listenEvent = CreateFileDescriptorEventW(nullptr, FALSE, FALSE, st->link.listenFd(), WINPR_FD_READ);
+	st->link.onAttach = [st] { replay(st); };
+	// The main loop waits on the client's descriptor through a winpr event; keep it current.
+	st->link.onClientChanged = [st] {
+		if (st->clientEvent)
+			CloseHandle(st->clientEvent);
+		st->clientEvent = st->link.attached()
+		                      ? CreateFileDescriptorEventW(nullptr, FALSE, FALSE, st->link.clientFd(), WINPR_FD_READ)
+		                      : nullptr;
+	};
 	return true;
 }
 
 // ---------------------------------------------------------------- framebuffer
 
-struct Mapping
-{
-	size_t size;
-	int fd;
-};
-static std::map<void*, Mapping> g_mappings;
-
 static void fb_free(void* p)
 {
-	auto it = g_mappings.find(p);
-	if (it == g_mappings.end())
-		return;
-	munmap(p, it->second.size);
-	close(it->second.fd);
-	g_mappings.erase(it);
+	oma::fb_release(p);
 }
 
 static BYTE* fb_alloc(State* st, UINT32 w, UINT32 h)
 {
-	const UINT32 stride = w * 4;
-	const size_t size = static_cast<size_t>(stride) * h;
-	const int fd = memfd_create("omaremote-fb", MFD_CLOEXEC);
-	if (fd < 0 || ftruncate(fd, static_cast<off_t>(size)) != 0)
-	{
-		if (fd >= 0)
-			close(fd);
+	oma::Framebuffer fb = oma::fb_alloc(w, h);
+	if (!fb.data)
 		return nullptr;
-	}
-	void* p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (p == MAP_FAILED)
-	{
-		close(fd);
-		return nullptr;
-	}
-	g_mappings[p] = { size, fd };
-	st->fb = static_cast<BYTE*>(p);
-	st->fbFd = fd;
+	st->frame = fb;
+	st->fb = fb.data;
 	st->width = w;
 	st->height = h;
-	st->stride = stride;
 	return st->fb;
 }
 
@@ -623,45 +487,9 @@ static void handle_line(rdpContext* ctx, const std::string& line)
 	}
 }
 
-// Reads whatever the UI has sent. Returns the complete lines.
 static std::vector<std::string> read_lines(State* st)
 {
-	std::vector<std::string> lines;
-	if (st->listenFd >= 0)
-	{
-		for (;;)
-		{
-			const int fd = accept4(st->listenFd, nullptr, nullptr, SOCK_CLOEXEC);
-			if (fd < 0)
-				break;
-			attach_client(st, fd);
-		}
-	}
-	if (st->clientFd < 0)
-		return lines;
-	char buf[65536];
-	for (;;)
-	{
-		const ssize_t n = recv(st->clientFd, buf, sizeof(buf), MSG_DONTWAIT);
-		if (n > 0)
-		{
-			st->inbuf.append(buf, static_cast<size_t>(n));
-			continue;
-		}
-		if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
-		{
-			WLog_INFO(TAG, "UI detached");
-			drop_client(st);
-		}
-		break;
-	}
-	size_t pos;
-	while ((pos = st->inbuf.find('\n')) != std::string::npos)
-	{
-		lines.push_back(st->inbuf.substr(0, pos));
-		st->inbuf.erase(0, pos + 1);
-	}
-	return lines;
+	return st->link.poll();
 }
 
 // Blocks the session until the UI answers a question, still serving everything else it sends.
@@ -669,25 +497,8 @@ static std::vector<std::string> read_lines(State* st)
 static std::string ask(rdpContext* ctx, const std::string& question, const std::string& answerPrefix)
 {
 	State* st = state_of(ctx);
-	st->pendingPrompt = question;
-	send_line(st, question);
-	const UINT64 deadline = now_ms() + 5 * 60 * 1000;
-	std::string answer;
-	while (answer.empty() && !st->quit && now_ms() < deadline)
-	{
-		pollfd fds[2] = { { st->listenFd, POLLIN, 0 }, { st->clientFd, POLLIN, 0 } };
-		poll(fds, st->clientFd >= 0 ? 2 : 1, 250);
-		for (const auto& line : read_lines(st))
-		{
-			if (line.rfind(answerPrefix, 0) == 0 || line == "cancel")
-				answer = line;
-			else
-				handle_line(ctx, line);
-		}
-	}
-	st->pendingPrompt.clear();
-	send_line(st, "prompt-done");
-	return answer == "cancel" ? "" : answer;
+	return st->link.ask(question, answerPrefix, [ctx](const std::string& line) { handle_line(ctx, line); },
+	                    [st] { return st->quit; });
 }
 
 // ---------------------------------------------------------------- callbacks
@@ -1037,9 +848,7 @@ int main(int argc, char** argv)
 	}
 
 	freerdp_client_stop(ctx);
-	if (!st->socketPath.empty())
-		unlink(st->socketPath.c_str());
-	drop_client(st);
+	st->link.close();
 	freerdp_client_context_free(ctx);
 	return rc;
 }

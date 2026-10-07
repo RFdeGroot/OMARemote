@@ -16,6 +16,17 @@ Rectangle {
     color: Theme.surface
 
     readonly property bool isNew: !d.id
+    readonly property bool isVnc: d.protocol === "vnc"
+
+    // Switching protocol moves the port along when it is still the old protocol's default.
+    function pickProtocol(value) {
+        var next = Object.assign({}, d)
+        var defaults = { rdp: 3389, vnc: 5900 }
+        if (!next.port || Number(next.port) === defaults[next.protocol || "rdp"])
+            next.port = defaults[value]
+        next.protocol = value
+        d = next
+    }
     // Fields for user, domain and password show for these two; the rest name a credential set.
     readonly property bool ownCredentials: d.credential === "custom" || d.credential === "new"
     readonly property bool hasStoredPassword: d.credential === "custom" && !!d.id && Sessions.secrets["connection:" + d.id] === true
@@ -162,6 +173,14 @@ Rectangle {
 
                 Section { text: "GENERAL"; Layout.topMargin: 0 }
                 FormRow {
+                    label: "Protocol"
+                    Segment {
+                        value: root.d.protocol || "rdp"
+                        options: [{ value: "rdp", label: "RDP" }, { value: "vnc", label: "VNC" }]
+                        onPicked: function (v) { root.pickProtocol(v) }
+                    }
+                }
+                FormRow {
                     label: "Name"
                     Input {
                         id: nameField
@@ -186,8 +205,8 @@ Rectangle {
                             id: portField
                             Layout.preferredWidth: 72
                             width: 72
-                            placeholderText: "3389"
-                            text: String(root.d.port || 3389)
+                            placeholderText: root.isVnc ? "5900" : "3389"
+                            text: String(root.d.port || (root.isVnc ? 5900 : 3389))
                             validator: IntValidator { bottom: 1; top: 65535 }
                             onTextEdited: root.set("port", text)
                         }
@@ -228,7 +247,7 @@ Rectangle {
                 }
                 FormRow {
                     label: "Domain"
-                    visible: root.ownCredentials
+                    visible: !root.isVnc && (root.ownCredentials)
                     Input {
                         id: domainField
                         placeholderText: "optional, e.g. corp.lan"
@@ -287,8 +306,41 @@ Rectangle {
 
                 Section { text: "DISPLAY" }
                 FormRow {
+                    inherited: root.fromGroup("vncScaling")
+                    label: "Scaling"
+                    help: "Resize needs server support"
+                    visible: root.isVnc
+                    Segment {
+                        value: root.d.vncScaling || "fit"
+                        options: [{ value: "fit", label: "Fit window" }, { value: "native", label: "Native pixels" }, { value: "resize", label: "Resize remote" }]
+                        onPicked: function (v) { root.set("vncScaling", v) }
+                    }
+                }
+                FormRow {
+                    inherited: root.fromGroup("vncQuality")
+                    label: "Quality"
+                    help: "Low saves bandwidth"
+                    visible: root.isVnc
+                    Segment {
+                        value: root.d.vncQuality || "auto"
+                        options: [{ value: "auto", label: "Auto" }, { value: "high", label: "High" }, { value: "low", label: "Low" }]
+                        onPicked: function (v) { root.set("vncQuality", v) }
+                    }
+                }
+                FormRow {
+                    inherited: root.fromGroup("viewOnly")
+                    label: "View only"
+                    help: "Watch without sending input"
+                    visible: root.isVnc
+                    Check {
+                        checked: !!root.d.viewOnly
+                        onToggled: root.set("viewOnly", !checked)
+                    }
+                }
+                FormRow {
                     inherited: root.fromGroup("openIn")
                     label: "Open in"
+                    visible: !root.isVnc
                     help: "Window for multi-monitor"
                     Segment {
                         value: root.d.openIn || "tab"
@@ -299,6 +351,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("display")
                     label: "Resolution"
+                    visible: !root.isVnc
                     Segment {
                         value: root.d.display || "fit"
                         options: [{ value: "fit", label: "Fit window" }, { value: "fullscreen", label: "Fullscreen" }, { value: "fixed", label: "Fixed" }]
@@ -309,7 +362,7 @@ Rectangle {
                     inherited: root.fromGroup("width") && root.fromGroup("height")
                     label: "Size"
                     help: "Scaled to the window"
-                    visible: root.d.display === "fixed"
+                    visible: !root.isVnc && (root.d.display === "fixed")
                     RowLayout {
                         width: parent.width
                         spacing: Theme.gap
@@ -334,6 +387,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("scale")
                     label: "Scale"
+                    visible: !root.isVnc
                     help: "Auto follows Hyprland, now " + Sessions.monitorScale + "%"
                     Segment {
                         value: String(root.d.scale || "auto")
@@ -345,6 +399,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("multimon")
                     label: "All monitors"
+                    visible: !root.isVnc
                     Check {
                         checked: !!root.d.multimon
                         onToggled: root.set("multimon", !checked)
@@ -363,6 +418,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("audio")
                     label: "Sound"
+                    visible: !root.isVnc
                     Segment {
                         value: root.d.audio || "local"
                         options: [{ value: "local", label: "Here" }, { value: "remote", label: "On remote" }, { value: "off", label: "Off" }]
@@ -372,6 +428,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("microphone")
                     label: "Microphone"
+                    visible: !root.isVnc
                     Check {
                         checked: !!root.d.microphone
                         onToggled: root.set("microphone", !checked)
@@ -380,6 +437,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("homeDrive")
                     label: "Home folder"
+                    visible: !root.isVnc
                     help: "Shared as a drive"
                     Check {
                         checked: !!root.d.homeDrive
@@ -389,6 +447,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("grabKeyboard")
                     label: "Super key"
+                    visible: !root.isVnc
                     help: "Send to remote instead of Hyprland"
                     Check {
                         checked: !!root.d.grabKeyboard
@@ -396,10 +455,11 @@ Rectangle {
                     }
                 }
 
-                Section { text: "CONNECTION" }
+                Section { text: "CONNECTION"; visible: !root.isVnc }
                 FormRow {
                     inherited: root.fromGroup("security")
                     label: "Security"
+                    visible: !root.isVnc
                     Segment {
                         value: root.d.security || "auto"
                         options: [{ value: "auto", label: "Auto" }, { value: "nla", label: "NLA" }, { value: "tls", label: "TLS" }, { value: "rdp", label: "RDP" }]
@@ -409,6 +469,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("network")
                     label: "Network"
+                    visible: !root.isVnc
                     Segment {
                         value: root.d.network || "auto"
                         options: [{ value: "auto", label: "Auto" }, { value: "lan", label: "LAN" }, { value: "broadband", label: "Broadband" }, { value: "modem", label: "Slow" }]
@@ -418,6 +479,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("ignoreCert")
                     label: "Ignore certificate"
+                    visible: !root.isVnc
                     help: "Skip the server identity check"
                     Check {
                         checked: !!root.d.ignoreCert
@@ -427,6 +489,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("gateway")
                     label: "Gateway"
+                    visible: !root.isVnc
                     help: "RD Gateway, optional"
                     Input {
                         placeholderText: "gateway.example.com"
@@ -437,7 +500,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("gatewayUser")
                     label: "Gateway user"
-                    visible: !!(root.d.gateway || "").trim()
+                    visible: !root.isVnc && (!!(root.d.gateway || "").trim())
                     Input {
                         placeholderText: "same as above"
                         text: root.d.gatewayUser || ""
@@ -447,6 +510,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("kdc")
                     label: "Kerberos KDC"
+                    visible: !root.isVnc
                     help: "Found automatically; list DCs to pin them"
                     Input {
                         placeholderText: "auto  (dc1.corp.lan, dc2.corp.lan)"
@@ -457,6 +521,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("extraArgs")
                     label: "Extra arguments"
+                    visible: !root.isVnc
                     help: "Passed to FreeRDP as-is"
                     Input {
                         placeholderText: "/kbd:layout:0x409"

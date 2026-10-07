@@ -191,7 +191,7 @@ Rectangle {
                     Check { checked: root.newSave; onToggled: root.newSave = !checked }
                 }
 
-                Section { text: "DISPLAY" }
+                Section { text: "DISPLAY (RDP)" }
                 FormRow {
                     label: "Open in"
                     Segment {
@@ -269,7 +269,29 @@ Rectangle {
                     Segment { value: root.boolValue("grabKeyboard"); options: root.onOff; onPicked: function (v) { root.setBool("grabKeyboard", v) } }
                 }
 
-                Section { text: "CONNECTION" }
+                Section { text: "VNC" }
+                FormRow {
+                    label: "Scaling"
+                    Segment {
+                        value: root.value("vncScaling")
+                        options: root.notSet.concat([{ value: "fit", label: "Fit window" }, { value: "native", label: "Native" }, { value: "resize", label: "Resize remote" }])
+                        onPicked: function (v) { root.set("vncScaling", v) }
+                    }
+                }
+                FormRow {
+                    label: "Quality"
+                    Segment {
+                        value: root.value("vncQuality")
+                        options: root.notSet.concat([{ value: "auto", label: "Auto" }, { value: "high", label: "High" }, { value: "low", label: "Low" }])
+                        onPicked: function (v) { root.set("vncQuality", v) }
+                    }
+                }
+                FormRow {
+                    label: "View only"
+                    Segment { value: root.boolValue("viewOnly"); options: root.onOff; onPicked: function (v) { root.setBool("viewOnly", v) } }
+                }
+
+                Section { text: "CONNECTION (RDP)" }
                 FormRow {
                     label: "Security"
                     Segment {

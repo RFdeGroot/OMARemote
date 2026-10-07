@@ -28,12 +28,14 @@ Singleton {
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", kdc: "",
-        extraArgs: "", openIn: "tab", favourite: false, lastConnected: 0
+        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false,
+        favourite: false, lastConnected: 0
     })
     // Settings a group can set (SETTING_KEYS in bin/omaremote-session).
     readonly property var settingKeys: ["display", "width", "height", "scale", "multimon", "clipboard", "audio",
         "microphone", "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
-        "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn"]
+        "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn", "vncScaling", "vncQuality", "viewOnly"]
+    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900 })
     readonly property var resolvedOnly: ["credentialSource", "secretKind", "secretId"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
@@ -85,6 +87,8 @@ Singleton {
                 out[k] = g.settings[k]
         for (k in c)
             out[k] = c[k]
+        if (!c.port)
+            out.port = defaultPorts[out.protocol || "rdp"] || 3389
         var mode = c.credential || "custom"
         if (mode === "custom") {
             out.credentialSource = "custom"

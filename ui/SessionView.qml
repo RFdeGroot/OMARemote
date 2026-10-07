@@ -42,8 +42,13 @@ Item {
         anchors.fill: parent
         visible: root.current
         socketPath: root.live && root.session.socket ? root.session.socket : ""
-        followSize: !root.connection || root.connection.display !== "fixed"
-        desktopScale: root.connection && root.connection.scale !== "auto" ? parseInt(root.connection.scale) : 0
+        // RDP: the desktop follows the tab unless fixed. VNC: fit scales the picture to the tab,
+        // native shows it pixel for pixel, resize asks the server to follow the tab.
+        followSize: !root.connection ? true
+                  : root.connection.protocol === "vnc" ? root.connection.vncScaling !== "fit"
+                  : root.connection.display !== "fixed"
+        desktopScale: root.connection && root.connection.protocol !== "vnc" && root.connection.scale !== "auto"
+                      ? parseInt(root.connection.scale) : 0
         focus: root.current
 
         // App chords, all on Ctrl+Alt so nothing a Windows user types is taken.
@@ -188,6 +193,7 @@ Item {
                         : root.prompt.kind === "cert" ? (root.prompt.changed ? "The certificate of " + root.prompt.host + " has changed"
                                                                             : "Trust " + root.prompt.host + "?")
                         : root.prompt.reason === "gateway" ? "Sign in to the gateway"
+                        : root.prompt.reason === "vnc-password" ? "Password for " + (root.session ? root.session.name : "")
                         : "Sign in to " + (root.session ? root.session.name : "")
                     color: Theme.foreground
                     font.family: Theme.font
@@ -216,8 +222,13 @@ Item {
                     columns: 2
                     columnSpacing: Theme.gap
                     rowSpacing: Theme.gap
-                    Text { text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Text { text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
+                    // A VNC password has no user; neither VNC form has a domain.
+                    readonly property bool needsUser: root.hasPrompt && root.prompt.reason !== "vnc-password"
+                    readonly property bool needsDomain: root.hasPrompt && String(root.prompt.reason).indexOf("vnc") !== 0
+                    Text { visible: parent.needsUser; text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
+                    Input { id: authUser; visible: parent.needsUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : "" }
+                    Text { visible: parent.needsDomain; text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
+                    Input { id: authDomain; visible: parent.needsDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : "" }
                     Text { text: "Password"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input {
                         id: authPassword

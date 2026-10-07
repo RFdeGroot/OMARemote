@@ -12,7 +12,8 @@
 
 class QSGTexture;
 
-// Shows one omaremote-rdp session inside the window and forwards input to it.
+// Shows one remote session (omaremote-rdp or omaremote-vnc, same protocol) inside the window and
+// forwards input to it.
 //
 // The session process owns the connection; this item attaches to its Unix socket, maps the
 // framebuffer it is handed, and redraws the damage it reports. Detaching (closing the tab view,

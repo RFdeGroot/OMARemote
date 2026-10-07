@@ -231,3 +231,29 @@ class ShortDomain(unittest.TestCase):
         self.assertEqual(session.kerberos_domain({"domain": "acme.lan", "host": "pc.acme.lan"}), "acme.lan")
         self.assertEqual(session.kerberos_domain({"domain": "acme", "host": "10.0.0.5"}), "acme")
         self.assertEqual(session.kerberos_domain({"domain": "", "host": "pc.acme.lan"}), "")
+
+
+class Vnc(unittest.TestCase):
+    def test_config_lines(self):
+        lines = session.build_vnc_config(conn(protocol="vnc", host="nas.lan", username="me", viewOnly=True,
+                                              vncScaling="resize", vncQuality="low"), password="pw")
+        self.assertEqual(lines[:5], ["host=nas.lan", "port=5900", "scaling=resize", "quality=low", "viewOnly=1"])
+        self.assertIn("username=me", lines)
+        self.assertIn("password=pw", lines)
+        self.assertIn("password=********", session.redact(lines))
+
+    def test_explicit_port_and_safe_defaults(self):
+        lines = session.build_vnc_config(conn(protocol="vnc", port=5901, vncScaling="weird"))
+        self.assertIn("port=5901", lines)
+        self.assertIn("scaling=fit", lines)
+        self.assertFalse(any(l.startswith("password=") for l in lines))
+
+    def test_vnc_client_is_found_by_protocol(self):
+        self.assertTrue(session.tab_client("vnc").endswith("omaremote-vnc"))
+        self.assertTrue(session.tab_client("rdp").endswith("omaremote-rdp"))
+
+    def test_port_defaults_follow_the_protocol(self):
+        data = {"credentials": [], "groups": {}, "connections": []}
+        self.assertEqual(session.resolve({"id": "v", "host": "h", "protocol": "vnc"}, data)["port"], 5900)
+        self.assertEqual(session.resolve({"id": "r", "host": "h"}, data)["port"], 3389)
+        self.assertEqual(session.resolve({"id": "v", "host": "h", "protocol": "vnc", "port": 5901}, data)["port"], 5901)

@@ -10,10 +10,20 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FREERDP REQUIRED IMPORTED_TARGET freerdp3 freerdp-client3 winpr3)
 
-# The session process: one RDP connection, drawn into shared memory for a tab.
+# RDP sessions: one connection per process, drawn into shared memory for a tab.
+# The link to the UI every session process shares: socket, prompts, shared-memory framebuffer.
+add_library(omaremote-link STATIC common/link.cpp)
+target_compile_options(omaremote-link PRIVATE -Wall -Wextra)
+
 add_executable(omaremote-rdp rdp/main.cpp)
-target_link_libraries(omaremote-rdp PRIVATE PkgConfig::FREERDP)
+target_link_libraries(omaremote-rdp PRIVATE omaremote-link PkgConfig::FREERDP)
 target_compile_options(omaremote-rdp PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+# VNC sessions, on libvncclient.
+pkg_check_modules(VNC REQUIRED IMPORTED_TARGET libvncclient)
+add_executable(omaremote-vnc vnc/main.cpp)
+target_link_libraries(omaremote-vnc PRIVATE omaremote-link PkgConfig::VNC)
+target_compile_options(omaremote-vnc PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # The QML side: RdpView shows a session in the app and forwards input.
 find_package(Qt6 6.5 REQUIRED COMPONENTS Quick)

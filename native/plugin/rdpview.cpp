@@ -490,7 +490,8 @@ void RdpView::keyPressEvent(QKeyEvent* e)
 	}
 	const quint32 evdev = code - 8;
 	m_pressed.insert(evdev);
-	send("key 1 " + QByteArray::number(evdev));
+	// RDP sends the scancode; VNC needs the keysym, which on Wayland and X11 is the native virtual key.
+	send("key 1 " + QByteArray::number(evdev) + ' ' + QByteArray::number(e->nativeVirtualKey()));
 	e->accept();
 }
 

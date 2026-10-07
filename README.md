@@ -4,9 +4,9 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 [Flea](https://github.com/thisisgm/flea): a Quickshell UI that reuses Omarchy's own shell theme
 (`/usr/share/omarchy/shell/Commons` and `Ui`), so it follows theme switches live.
 
-RDP first, built on FreeRDP. Sessions open in **tabs** inside the app (a small native renderer,
-`omaremote-rdp`, on libfreerdp), or per connection in their own `sdl-freerdp3` window, which is
-the choice for multi-monitor.
+**RDP** (FreeRDP) and **VNC** (libvncclient). Sessions open in **tabs** inside the app, each drawn
+by its own small native process (`omaremote-rdp`, `omaremote-vnc`); RDP connections can instead open
+in their own `sdl-freerdp3` window, which is the choice for multi-monitor.
 
 ## Install
 
@@ -15,7 +15,8 @@ the choice for multi-monitor.
 omaremote            # or "OMARemote" from the launcher
 ```
 
-Needs `quickshell`, `freerdp` (3.x), `libsecret` and `python` — all already present on Omarchy.
+Needs `quickshell`, `freerdp` (3.x), `libvncserver` (for libvncclient), `libsecret` and `python`,
+plus cmake, ninja and a C++ compiler to build the tab renderers.
 
 ## Use
 
@@ -51,6 +52,20 @@ Closing a tab disconnects (the Windows session stays logged in). Closing the app
 sessions keep running and reattach as tabs when it opens again.
 
 From a keybinding or script: `omaremote connect "Work PC"`.
+
+## VNC
+
+Pick **VNC** as a connection's protocol (port 5900 by default). It signs in with a VNC password,
+or a user name and password for servers that ask for one (VeNCrypt, Apple Remote Desktop); either
+can come from a credential set or be asked inside the tab.
+
+- **Scaling**: *Fit window* scales the remote screen to the tab, *Native pixels* shows it pixel for
+  pixel, *Resize remote* asks the server to match the tab's size (servers with ExtendedDesktopSize,
+  such as TigerVNC, wayvnc and libvncserver-based ones).
+- **Quality**: *Auto* (Tight with JPEG), *High* (lossless ZRLE), *Low* (strong compression).
+- **View only** watches without sending keyboard or mouse input.
+- Clipboard text goes both ways (UTF-8 where the server supports it), and the server's cursor is
+  drawn locally. Keys are sent as X keysyms, so the server's own keyboard layout applies.
 
 ## Credentials and groups
 
@@ -96,10 +111,11 @@ just those, TCP only, through `KRB5_CONFIG`. `/etc/krb5.conf` is never touched.
 ## Tabs
 
 Wayland has no way to embed another program's window, so tab sessions are drawn by the app
-itself. Each session is its own process, `omaremote-rdp` (`native/rdp/`), so one crashing never
-takes the window or other tabs with it:
+itself. Each session is its own process, `omaremote-rdp` (`native/rdp/`) or `omaremote-vnc`
+(`native/vnc/`), sharing one link to the UI (`native/common/`), so one crashing never takes the
+window or other tabs with it:
 
-- libfreerdp renders into a shared-memory framebuffer (memfd);
+- libfreerdp or libvncclient renders into a shared-memory framebuffer (memfd);
 - the UI attaches over a Unix socket in `$XDG_RUNTIME_DIR/omaremote/sessions/`, receives that
   framebuffer as a file descriptor plus damage rectangles, and sends input back;
 - `RdpView` (`native/plugin/`, a Qt Quick item) draws it and forwards keys (Linux scancodes),
