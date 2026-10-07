@@ -308,61 +308,95 @@ FocusScope {
         }
     }
 
+    // Where list-or-sidebar keys go on the connections tab.
+    property string focusArea: "list"
+    property int sidebarCursor: 0
+
+    // Every key here goes through Keymap.qml, the same table the keymap sheet (?) draws.
     Keys.onPressed: function (event) {
-        if (root.busy || root.logSession || root.currentTab !== "home")
+        if (root.currentTab !== "home")
             return
-        var ctrl = event.modifiers & Qt.ControlModifier
-        var k = event.key
-        if (ctrl && (k === Qt.Key_PageDown || k === Qt.Key_Tab) || (event.modifiers & Qt.AltModifier) && k === Qt.Key_PageDown) {
-            root.cycleTab(1)
-        } else if (ctrl && (k === Qt.Key_PageUp || k === Qt.Key_Backtab)) {
-            root.cycleTab(-1)
-        } else if ((event.modifiers & Qt.AltModifier) && k >= Qt.Key_1 && k <= Qt.Key_9) {
+        // Alt+1…9 picks a tab by number: one row in the table, nine keys.
+        if ((event.modifiers & Qt.AltModifier) && event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {
             var tabs = ["home"].concat(root.openTabs)
-            if (k - Qt.Key_1 < tabs.length)
-                root.showTab(tabs[k - Qt.Key_1])
-        } else if (ctrl && k === Qt.Key_Q) {
-            if (root.host)
-                root.host.quit()
-        } else if (ctrl && (k === Qt.Key_F || k === Qt.Key_L) || k === Qt.Key_Slash) {
-            search.forceActiveFocus()
-            search.selectAll()
-        } else if (k === Qt.Key_Down || k === Qt.Key_J) {
-            root.move(1)
-        } else if (k === Qt.Key_Up || k === Qt.Key_K) {
-            root.move(-1)
-        } else if (k === Qt.Key_Home || k === Qt.Key_G && !(event.modifiers & Qt.ShiftModifier)) {
-            root.move(-1e6)
-        } else if (k === Qt.Key_End || k === Qt.Key_G) {
-            root.move(1e6)
-        } else if (k === Qt.Key_Return || k === Qt.Key_Enter) {
-            root.connect()
-        } else if (k === Qt.Key_N || ctrl && k === Qt.Key_N) {
-            root.startNew()
-        } else if (k === Qt.Key_E || k === Qt.Key_F2) {
-            root.startEdit()
-        } else if (k === Qt.Key_L) {
-            root.showLog()
-        } else if (k === Qt.Key_D) {
-            root.duplicateSelected()
-        } else if (k === Qt.Key_F) {
-            if (root.selected)
-                Store.toggleFavourite(root.selected.id)
-        } else if (k === Qt.Key_Delete || k === Qt.Key_X) {
-            root.deleteSelected()
-        } else if (k === Qt.Key_Escape) {
-            if (root.deleteArmed)
-                root.deleteArmed = false
-            else if (root.query !== "")
-                root.query = ""
-            else if (root.filter !== "all")
-                root.filter = "all"
-        } else if (k >= Qt.Key_1 && k <= Qt.Key_4) {
-            root.filter = ["all", "favourites", "recent", "active"][k - Qt.Key_1]
-        } else {
+            if (event.key - Qt.Key_1 < tabs.length)
+                root.showTab(tabs[event.key - Qt.Key_1])
+            event.accepted = true
             return
         }
+        // With an editor or the log open only the app-wide keys apply; the rest are theirs.
+        var context = root.busy || root.logSession ? "none" : root.focusArea
+        var action = Keymap.match(event, context)
+        if (action === "")
+            return
+        root.runAction(action)
         event.accepted = true
+    }
+
+    function focusList() {
+        focusArea = "list"
+        root.forceActiveFocus()
+    }
+
+    function runAction(action) {
+        var sidebarEntry = sidebar.entries[sidebarCursor]
+        switch (action) {
+        case "connect": connect(); break
+        case "down": move(1); break
+        case "up": move(-1); break
+        case "first": move(-1e6); break
+        case "last": move(1e6); break
+        case "new": startNew(); break
+        case "edit": startEdit(); break
+        case "duplicate": duplicateSelected(); break
+        case "delete": deleteSelected(); break
+        case "favourite": if (selected) Store.toggleFavourite(selected.id); break
+        case "log": showLog(); break
+        case "groupSettings":
+            if (selected && selected.group)
+                openGroup(selected.group)
+            else
+                say("This connection is not in a group")
+            break
+        case "search":
+            showTab("home")
+            search.forceActiveFocus()
+            search.selectAll()
+            break
+        case "clear":
+            if (deleteArmed) deleteArmed = false
+            else if (query !== "") query = ""
+            else if (filter !== "all") filter = "all"
+            break
+        case "filterAll": filter = "all"; break
+        case "filterFavourites": filter = "favourites"; break
+        case "filterRecent": filter = "recent"; break
+        case "filterActive": filter = "active"; break
+        case "newCredential": openCredential(""); break
+        case "focusSidebar":
+            focusArea = "sidebar"
+            sidebarCursor = Math.max(0, sidebar.indexOf(filter.indexOf("group:") === 0 ? "group" : "filter",
+                                                        filter.indexOf("group:") === 0 ? filter.slice(6) : filter))
+            break
+        case "focusList": focusList(); break
+        case "sidebarDown": sidebarCursor = Math.min(sidebar.entries.length - 1, sidebarCursor + 1); break
+        case "sidebarUp": sidebarCursor = Math.max(0, sidebarCursor - 1); break
+        case "sidebarOpen":
+            if (!sidebarEntry) break
+            if (sidebarEntry.kind === "filter") { filter = sidebarEntry.value; focusList() }
+            else if (sidebarEntry.kind === "group") { filter = "group:" + sidebarEntry.value; focusList() }
+            else if (sidebarEntry.kind === "credential") openCredential(sidebarEntry.value)
+            else openCredential("")
+            break
+        case "sidebarSettings":
+            if (sidebarEntry && sidebarEntry.kind === "group") openGroup(sidebarEntry.value)
+            else if (sidebarEntry && sidebarEntry.kind === "credential") openCredential(sidebarEntry.value)
+            break
+        case "nextTab": cycleTab(1); break
+        case "previousTab": cycleTab(-1); break
+        case "keys": keymapSheet.open(); break
+        case "quit": if (root.host) root.host.quit(); break
+        }
     }
 
     Rectangle {
@@ -444,6 +478,9 @@ FocusScope {
             spacing: 0
 
             Sidebar {
+                id: sidebar
+                focused: root.focusArea === "sidebar" && !root.busy && root.activeFocus
+                cursor: root.sidebarCursor
                 Layout.preferredWidth: 210
                 Layout.fillHeight: true
                 filter: root.filter
@@ -464,7 +501,7 @@ FocusScope {
                     anchors.fill: parent
                     model: root.shown
                     selectedId: root.selectedId
-                    onPicked: function (id) { if (!root.busy) { root.selectedId = id; root.forceActiveFocus() } }
+                    onPicked: function (id) { if (!root.busy) { root.selectedId = id; root.focusList() } }
                     onActivated: function (id) { if (!root.busy) { root.selectedId = id; root.connect(id) } }
                 }
 
@@ -561,7 +598,8 @@ FocusScope {
                         item.reconnectRequested.connect(function () { root.reconnect(tabLoader.session) })
                         item.closeRequested.connect(function () { root.closeTab(tabLoader.modelData) })
                         item.navigate.connect(function (where) {
-                            if (where === "home") root.showTab("home")
+                            if (where === "keys") keymapSheet.open()
+                            else if (where === "home") root.showTab("home")
                             else root.cycleTab(where === "next" ? 1 : -1)
                         })
                         item.toggleFullscreen.connect(root.toggleImmersive)
@@ -594,11 +632,11 @@ FocusScope {
             notice: root.notice
             noticeIsError: root.noticeIsError
             hints: root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"],
-                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"]]
+                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+k", "keys"]]
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
-                 : root.busy ? [["ctrl+s", "save"], ["tab", "next field"], ["esc", "cancel"]]
-                 : [["⏎", "connect"], ["n", "new"], ["e", "edit"], ["l", "log"], ["f", "favourite"], ["/", "search"],
-                    ["1-4", "views"], ["right-click group", "settings"]]
+                 : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
+                 : root.focusArea === "sidebar" ? [["j k", "move"], ["⏎", "open"], ["s", "group settings"], ["tab", "list"], ["?", "keys"]]
+                 : [["⏎", "connect"], ["n", "new"], ["e", "edit"], ["s", "group"], ["/", "search"], ["tab", "sidebar"], ["?", "keys"]]
         }
     }
 
@@ -612,6 +650,35 @@ FocusScope {
         width: root.width - x
         height: root.height - header.height - statusBar.height
         onClosed: root.closeLog()
+    }
+
+    // The keymap sheet covers the whole window.
+    KeymapSheet {
+        id: keymapSheet
+        anchors.fill: parent
+        z: 100
+        onRun: function (action) {
+            root.forceActiveFocus()
+            root.runAction(action)
+        }
+        onClosed: {
+            if (root.currentTab === "home" && !root.busy)
+                root.forceActiveFocus()
+            else
+                root.refocus()
+        }
+    }
+
+    // Puts focus back where it belongs after an overlay: the current session, or the open editor.
+    function refocus() {
+        if (currentTab !== "home") {
+            var view = tabViews.itemAt(openTabs.indexOf(currentTab))
+            if (view && view.item)
+                view.item.focusDesktop()
+        } else if (editing) editor.forceActiveFocus()
+        else if (editingGroup) groupEditor.forceActiveFocus()
+        else if (editingCredential) credentialEditor.forceActiveFocus()
+        else root.forceActiveFocus()
     }
 
     // Surface a failure the moment it happens, even while looking at another connection.
@@ -671,6 +738,18 @@ FocusScope {
         else if (a === "connect") connect()
         else if (a === "delete") deleteSelected()
         else if (a === "log") showLog()
+        else if (a === "keys") keymapSheet.open()
+        else if (a === "enter") keymapSheet.runPicked()
+        else if (parts[0] === "walk") {
+            // Walks the focus chain the way Tab does, n steps.
+            for (var t = 0; t < parseInt(parts[1]); t++) {
+                var w = root.Window.window
+                var next = w.activeFocusItem ? w.activeFocusItem.nextItemInFocusChain(true) : null
+                if (next) next.forceActiveFocus(Qt.TabFocusReason)
+            }
+        }
+        else if (parts[0] === "type") { for (var i = 0; i < parts[1].length; i++) keymapSheet.query += parts[1][i] }
+        else if (a === "sidebar") runAction("focusSidebar")
         else if (parts[0] === "group") openGroup(parts.slice(1).join(":"))
         else if (parts[0] === "pick") editor.pickCredential(parts[1])
         else if (parts[0] === "set") editor.set(parts[1], parts.slice(2).join(":"))

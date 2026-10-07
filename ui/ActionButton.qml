@@ -18,13 +18,23 @@ Rectangle {
     readonly property color ink: !enabled_ ? Theme.muted : primary ? Theme.background : danger ? Theme.urgent : Theme.foreground
     readonly property bool hot: mouse.containsMouse && enabled_
 
+    // Tab reaches it in a form; Enter or Space presses it.
+    activeFocusOnTab: enabled_
+    Keys.onPressed: function (event) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+            root.clicked()
+            event.accepted = true
+        }
+    }
+
     implicitHeight: Theme.control
     implicitWidth: row.implicitWidth + 2 * Style.spacing.controlPaddingX
     radius: Theme.radius
     color: primary ? (hot ? Qt.lighter(Theme.accent, 1.12) : Theme.accent)
                    : (mouse.pressed ? Style.pressedFill : hot ? Style.hoverFill : Style.normalFill)
-    border.width: primary ? 0 : Style.normalBorderWidth
-    border.color: danger && hot ? Theme.urgent : hot ? Style.hoverBorderColor : Style.normalBorderColor
+    border.width: activeFocus ? 2 : (primary ? 0 : Style.normalBorderWidth)
+    border.color: activeFocus ? (primary ? Theme.foreground : Theme.accent)
+                : danger && hot ? Theme.urgent : hot ? Style.hoverBorderColor : Style.normalBorderColor
     opacity: enabled_ ? 1 : 0.55
 
     Row {

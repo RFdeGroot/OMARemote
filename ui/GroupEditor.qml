@@ -129,6 +129,8 @@ Rectangle {
             }
         }
 
+        FollowFocus { flickable: flick }
+
         Flickable {
             id: flick
             Layout.fillWidth: true

@@ -102,7 +102,6 @@ Rectangle {
                     placeholderText: "administrator"
                     text: root.cred.username || ""
                     onTextEdited: { root.set("username", text); root.error = "" }
-                    KeyNavigation.tab: domainField
                 }
             }
             FormRow {
@@ -112,7 +111,6 @@ Rectangle {
                     placeholderText: "optional, e.g. corp.lan"
                     text: root.cred.domain || ""
                     onTextEdited: root.set("domain", text)
-                    KeyNavigation.tab: passwordField
                 }
             }
             FormRow {

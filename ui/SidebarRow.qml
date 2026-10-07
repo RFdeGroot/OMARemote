@@ -7,6 +7,8 @@ Rectangle {
     property string label: ""
     property int count: -1
     property bool current: false
+    // The keyboard cursor while the sidebar has focus.
+    property bool cursor: false
     property color iconColor: current ? Theme.accent : Theme.muted
     // A glyph shown on hover (and always when actionPinned) that runs actionClicked.
     property string action: ""
@@ -19,6 +21,8 @@ Rectangle {
     height: Math.round(Theme.body * 2.1)
     radius: Theme.radius
     color: current ? Theme.selection : (mouse.containsMouse ? Theme.hover : "transparent")
+    border.width: cursor ? 1 : 0
+    border.color: Theme.accent
 
     Glyph {
         id: glyph

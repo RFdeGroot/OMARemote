@@ -19,6 +19,12 @@ Needs `quickshell`, `freerdp` (3.x), `libsecret` and `python` — all already pr
 
 ## Use
 
+Everything works from the keyboard (the mouse works too). Press **`?`** (or **F1**; **Ctrl+Alt+K**
+inside a session) for the keymap sheet: every binding, grouped. Type to filter it and press ⏎ to run
+the highlighted action. The keys come from one table, `ui/Keymap.qml`, which both handles them and
+draws the sheet. The status bar always shows the keys for where you are.
+
+
 | Key | Action |
 | --- | --- |
 | `⏎` | connect (or jump to the running session) |

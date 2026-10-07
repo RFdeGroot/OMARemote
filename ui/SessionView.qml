@@ -56,6 +56,7 @@ Item {
             else if (event.key === Qt.Key_PageUp) root.navigate("previous")
             else if (event.key === Qt.Key_End) view.sendCtrlAltDel()
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.toggleFullscreen()
+            else if (event.key === Qt.Key_K) root.navigate("keys")
             else return
             view.releaseAllKeys()
             event.accepted = true
@@ -216,9 +217,7 @@ Item {
                     columnSpacing: Theme.gap
                     rowSpacing: Theme.gap
                     Text { text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Input { id: authUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : ""; KeyNavigation.tab: authDomain }
                     Text { text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Input { id: authDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : ""; KeyNavigation.tab: authPassword }
                     Text { text: "Password"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input {
                         id: authPassword

@@ -144,6 +144,8 @@ Rectangle {
             font.bold: true
         }
 
+        FollowFocus { flickable: flick }
+
         Flickable {
             id: flick
             Layout.fillWidth: true
@@ -166,7 +168,6 @@ Rectangle {
                         placeholderText: "Work PC"
                         text: root.d.name || ""
                         onTextEdited: root.set("name", text)
-                        KeyNavigation.tab: hostField
                     }
                 }
                 FormRow {
@@ -180,7 +181,6 @@ Rectangle {
                             placeholderText: "pc.example.com"
                             text: root.d.host || ""
                             onTextEdited: { root.set("host", text); root.error = "" }
-                            KeyNavigation.tab: portField
                         }
                         Input {
                             id: portField
@@ -190,7 +190,6 @@ Rectangle {
                             text: String(root.d.port || 3389)
                             validator: IntValidator { bottom: 1; top: 65535 }
                             onTextEdited: root.set("port", text)
-                            KeyNavigation.tab: groupField
                         }
                     }
                 }
@@ -202,7 +201,6 @@ Rectangle {
                         placeholderText: "optional"
                         text: root.d.group || ""
                         onTextEdited: root.changeGroup(text.trim())
-                        KeyNavigation.tab: userField
                     }
                 }
 
@@ -216,7 +214,6 @@ Rectangle {
                         value: root.d.credential || "custom"
                         options: root.credentialOptions
                         onChanged: function (v) { root.pickCredential(v) }
-                        KeyNavigation.tab: root.ownCredentials ? userField : null
                     }
                 }
                 FormRow {
@@ -227,7 +224,6 @@ Rectangle {
                         placeholderText: root.d.credential === "new" ? "administrator" : "asks when connecting"
                         text: root.d.username || ""
                         onTextEdited: root.set("username", text)
-                        KeyNavigation.tab: domainField
                     }
                 }
                 FormRow {
@@ -238,7 +234,6 @@ Rectangle {
                         placeholderText: "optional, e.g. corp.lan"
                         text: root.d.domain || ""
                         onTextEdited: root.set("domain", text)
-                        KeyNavigation.tab: passwordField
                     }
                 }
                 FormRow {
