@@ -1,0 +1,55 @@
+#!/bin/bash
+# omaremote: OMARemote, a remote desktop client for Omarchy.
+#
+#   omaremote                  open the connection manager
+#   omaremote connect <name>   connect straight away (for keybindings and launchers)
+#   omaremote list             list saved connections
+set -euo pipefail
+
+here="$(dirname "$(readlink -f "$0")")"
+root="$(dirname "$here")"
+# Installed layout keeps the UI in /usr/share/omaremote; a checkout keeps it beside bin/.
+ui="$root/ui"
+[[ -d $ui ]] || ui="/usr/share/omaremote/ui"
+export OMAREMOTE_BIN="$here/omaremote-session"
+# The tab renderer's QML plugin: a checkout's build, else the installed one.
+for qml in "$root/native/build/qml" /usr/lib/omaremote/qml; do
+  [[ -d $qml/OMARemote ]] && export QML_IMPORT_PATH="$qml${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}" && break
+done
+
+# Settings saved before the rename to OMARemote move over once.
+for base in "${XDG_CONFIG_HOME:-$HOME/.config}" "${XDG_CACHE_HOME:-$HOME/.cache}"; do
+  [[ -d $base/oma-remote && ! -e $base/omaremote ]] && mv "$base/oma-remote" "$base/omaremote"
+done
+
+case "${1:-}" in
+  connect|launch)
+    shift
+    exec "$OMAREMOTE_BIN" launch "$*"
+    ;;
+  list)
+    python3 -c 'import json,os,sys
+p=os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),"omaremote","connections.json")
+try: cs=json.load(open(p)).get("connections",[])
+except FileNotFoundError: cs=[]
+for c in cs: print(c.get("name") or c.get("host"))'
+    ;;
+  -h|--help|help)
+    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  "")
+    if [[ ! -d /usr/share/omarchy/shell/Commons ]]; then
+      echo "omaremote needs Omarchy's shell (/usr/share/omarchy/shell)" >&2
+      exit 1
+    fi
+    # One manager window: a second launch focuses the first.
+    if hyprctl clients -j 2>/dev/null | grep -q '"class": "omaremote"'; then
+      exec hyprctl dispatch focuswindow class:omaremote >/dev/null
+    fi
+    exec qs -p "$ui/boot" "$@"
+    ;;
+  *)
+    echo "unknown command: $1 (try --help)" >&2
+    exit 2
+    ;;
+esac

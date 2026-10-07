@@ -1,0 +1,885 @@
+#!/usr/bin/env python3
+"""omaremote session backend.
+
+Owns everything the UI should not: the FreeRDP command line, the keyring, and
+the lifetime of each session. A session is supervised by a detached process,
+so closing the window never closes a remote desktop.
+
+  omaremote-session launch <id|name> [--tab WxH@scale]
+                                          start a session (returns at once); --tab runs it for a
+                                          tab in the UI, sized in device pixels
+  omaremote-session list                 running and recent sessions, JSON
+  omaremote-session paths                runtime paths the UI watches, JSON
+  omaremote-session stop <session-id>    disconnect a session
+  omaremote-session forget <session-id>  drop a finished session from the list
+  omaremote-session args <id|name>       the FreeRDP arguments, password redacted
+  omaremote-session secret set|clear|has [credential] <id>   keyring password (set reads stdin)
+  omaremote-session monitor-scale        the focused Hyprland monitor scale, in percent
+"""
+
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+APP = "omaremote"
+CLIENT = os.environ.get("OMAREMOTE_FREERDP", "sdl-freerdp3")
+HERE = os.path.dirname(os.path.realpath(__file__))
+
+
+def tab_client():
+    """The session process for tabs: a checkout's build, else the installed one."""
+    for path in (os.environ.get("OMAREMOTE_RDP"),
+                 os.path.join(HERE, "..", "native", "build", "omaremote-rdp"),
+                 "/usr/lib/omaremote/omaremote-rdp"):
+        if path and os.access(path, os.X_OK):
+            return os.path.realpath(path)
+    return None
+SESSION_APP_ID = "omaremote-session"
+CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), APP)
+CONNECTIONS = os.path.join(CONFIG_DIR, "connections.json")
+RUNTIME_DIR = os.environ.get("OMAREMOTE_RUNTIME_DIR") or os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/{APP}-{os.getuid()}", APP)
+SESSIONS_DIR = os.path.join(RUNTIME_DIR, "sessions")
+# Rewritten in place (never replaced) on every state change, so the UI's inotify watch survives.
+CHANGES = os.path.join(RUNTIME_DIR, "changes")
+
+DEFAULTS = {
+    "protocol": "rdp",
+    "name": "",
+    "group": "",
+    "host": "",
+    "port": 3389,
+    "username": "",
+    "domain": "",
+    "savePassword": False,
+    "display": "fit",        # fit | fixed | fullscreen
+    "width": 1920,
+    "height": 1080,
+    "scale": "auto",         # auto | 100..500
+    "multimon": False,
+    "clipboard": True,
+    "audio": "local",        # local | remote | off
+    "microphone": False,
+    "homeDrive": False,
+    "grabKeyboard": False,
+    "security": "auto",      # auto | nla | tls | rdp
+    "ignoreCert": False,
+    "network": "auto",       # auto | lan | broadband | modem
+    "gateway": "",
+    "gatewayUser": "",
+    "gatewayDomain": "",
+    "kdc": "",               # Kerberos KDCs, comma separated; empty discovers them
+    "extraArgs": "",
+    "openIn": "tab",         # tab | window
+    "favourite": False,
+    "lastConnected": 0,
+}
+
+# sdl-freerdp3 exit codes (client/SDL/SDL3/sdl_utils.hpp) worth a sentence of their own.
+EXIT_MESSAGES = {
+    0: None,
+    1: None,  # server disconnected the session normally
+    2: None,  # user logged off
+    3: "Disconnected after the idle timeout",
+    4: "Logon timed out",
+    5: "Another connection replaced this session",
+    7: "The server denied the connection",
+    9: "Your account is not allowed to log on remotely",
+    11: None,  # disconnected by the user
+    18: "The server has no Remote Desktop license available",
+    26: "Remote connections are disabled on the server",
+    128: "FreeRDP rejected the connection settings (check extra arguments)",
+    131: "Could not connect to the server",
+    132: "Authentication failed: wrong user name or password",
+    133: "Security negotiation failed (try a different security mode)",
+    134: "Logon failed: wrong user name or password",
+    135: "The account is locked out",
+    136: "The session could not start (see the log)",
+    139: "Could not resolve the host name",
+    140: "Host name not found",
+    141: "Could not connect to the server",
+    143: "TLS handshake failed",
+    144: "Insufficient privileges",
+    145: None,  # cancelled by the user (closed a dialog)
+    147: "The connection was lost",
+    148: "The password has expired",
+    149: "The password must be changed before logging on",
+    150: "The Kerberos KDC is unreachable",
+    151: "The account is disabled",
+    152: "The password has expired",
+    154: "Wrong password",
+    155: "Access denied",
+    156: "Account restriction prevents logon",
+    157: "The account has expired",
+    158: "This logon type is not granted to the account",
+    159: "No credentials were provided",
+}
+
+ERROR_RE = re.compile(r"\b(ERRCONNECT_[A-Z_]+|ERRINFO_[A-Z_]+)\b")
+
+
+# ---------------------------------------------------------------- store
+
+LEGACY_APP = "oma-remote"  # the name before OMARemote
+
+
+def migrate_legacy():
+    """Move config and cache from the old name once; the keyring moves per entry in secret_get."""
+    for base in (os.path.dirname(CONFIG_DIR), os.path.dirname(CACHE_DIR)):
+        old, new = os.path.join(base, LEGACY_APP), os.path.join(base, APP)
+        if os.path.isdir(old) and not os.path.exists(new):
+            try:
+                os.rename(old, new)
+            except OSError:
+                pass
+
+
+# Settings a group can set for its connections. A connection stores only what differs from what
+# it inherits, so changing the group changes every connection that did not override it.
+SETTING_KEYS = ("display", "width", "height", "scale", "multimon", "clipboard", "audio", "microphone",
+                "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
+                "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn")
+
+
+def load_data(path=CONNECTIONS):
+    """The saved file: {"connections": [...], "credentials": [...], "groups": {name: {...}}}."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    if isinstance(data, list):  # the very first format
+        data = {"connections": data}
+    return {
+        "connections": [c for c in data.get("connections", []) if isinstance(c, dict)],
+        "credentials": [c for c in data.get("credentials", []) if isinstance(c, dict) and c.get("id")],
+        "groups": {k: v for k, v in (data.get("groups") or {}).items() if isinstance(v, dict)},
+    }
+
+
+def find_credential(cred_id, data):
+    return next((c for c in data["credentials"] if c.get("id") == cred_id), None)
+
+
+def resolve(conn, data):
+    """The connection as it will be used: defaults, then its group's settings, then its own.
+
+    Credentials come from one of three places, recorded in credentialSource:
+      "custom"  the connection's own username/domain, password under the connection's id;
+      "set"     a shared credential set (credential = its id), password under the set's id;
+      "group"   credential = "inherit": the group's credential set, if it has one.
+    secretKind/secretId say where the password lives in the keyring.
+    """
+    group = data["groups"].get(conn.get("group") or "", {})
+    out = dict(DEFAULTS)
+    out.update({k: v for k, v in (group.get("settings") or {}).items() if k in SETTING_KEYS})
+    out.update(conn)
+
+    mode = conn.get("credential") or "custom"
+    cred_id = group.get("credential") if mode == "inherit" else (None if mode == "custom" else mode)
+    if mode == "custom":
+        out.update(credentialSource="custom", secretKind="connection", secretId=conn.get("id"))
+    else:
+        cred = find_credential(cred_id, data) if cred_id else None
+        out.update(username=(cred or {}).get("username", ""), domain=(cred or {}).get("domain", ""),
+                   savePassword=bool((cred or {}).get("savePassword")),
+                   credentialSource="group" if mode == "inherit" else "set",
+                   secretKind="credential", secretId=cred_id)
+    return out
+
+
+def load_connections(path=CONNECTIONS):
+    data = load_data(path)
+    return [resolve(c, data) for c in data["connections"]]
+
+
+def find_connection(key, connections):
+    for c in connections:
+        if c.get("id") == key:
+            return c
+    lowered = key.lower()
+    for c in connections:
+        if c.get("name", "").lower() == lowered:
+            return c
+    return None
+
+
+def mark_connected(conn_id, path=CONNECTIONS):
+    """Stamp lastConnected; rewrites in place so the UI's watch on the file keeps firing."""
+    try:
+        with open(path, "r+", encoding="utf-8") as f:
+            data = json.load(f)
+            for c in data.get("connections", []):
+                if c.get("id") == conn_id:
+                    c["lastConnected"] = int(time.time())
+            f.seek(0)
+            f.write(json.dumps(data, indent=2))
+            f.truncate()
+    except (OSError, ValueError):
+        pass
+
+
+# ---------------------------------------------------------------- keyring
+
+def _secret_attrs(conn_id, kind="connection"):
+    return ["application", APP, kind, conn_id]
+
+
+def _secret_lookup(attrs):
+    try:
+        out = subprocess.run(["secret-tool", "lookup", *attrs], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout if out.returncode == 0 and out.stdout else None
+
+
+def secret_get(conn_id, kind="connection"):
+    password = _secret_lookup(_secret_attrs(conn_id, kind))
+    if password is None and kind == "connection":
+        # Stored before the rename: move it under the new name, then drop the old entry.
+        legacy = ["application", LEGACY_APP, "connection", conn_id]
+        password = _secret_lookup(legacy)
+        conn = find_connection(conn_id, load_connections())
+        label = f"OMARemote password for {conn['name'] if conn else conn_id}"
+        if password is not None and secret_set(conn_id, password, label):
+            subprocess.run(["secret-tool", "clear", *legacy], capture_output=True, timeout=10)
+    return password
+
+
+def secret_set(conn_id, password, label, kind="connection"):
+    out = subprocess.run(["secret-tool", "store", "--label", label, *_secret_attrs(conn_id, kind)],
+                         input=password, text=True, capture_output=True, timeout=30)
+    return out.returncode == 0
+
+
+def secret_clear(conn_id, kind="connection"):
+    subprocess.run(["secret-tool", "clear", *_secret_attrs(conn_id, kind)], capture_output=True, timeout=10)
+
+
+# ---------------------------------------------------------------- scaling
+
+def monitor_scale():
+    """The focused monitor's scale in percent, or 100 when Hyprland cannot answer."""
+    try:
+        out = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=3)
+        for m in json.loads(out.stdout):
+            if m.get("focused"):
+                return int(round(float(m.get("scale", 1)) * 100))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return 100
+
+
+def device_scale(desktop):
+    """RDP device scale only knows 100, 140 and 180; pick the nearest step."""
+    return min((100, 140, 180), key=lambda step: abs(step - desktop))
+
+
+def resolve_scale(setting, auto_scale):
+    if str(setting) == "auto":
+        value = auto_scale
+    else:
+        try:
+            value = int(setting)
+        except (TypeError, ValueError):
+            value = auto_scale
+    return max(100, min(500, value))
+
+
+# ---------------------------------------------------------------- arguments
+
+def build_args(conn, password=None, auto_scale=100, tab=None):
+    """FreeRDP arguments for one connection, one argument per entry (fed to /args-from:stdin).
+
+    tab is {"width", "height", "scale"} in device pixels when the session is drawn in a tab: the
+    desktop then starts at the tab's size and the window-only options are left out.
+    """
+    c = dict(DEFAULTS, **conn)
+    host = c["host"].strip()
+    if not host:
+        raise ValueError("connection has no host")
+    port = int(c.get("port") or 3389)
+    args = [f"/v:{host}" if port == 3389 else f"/v:{host}:{port}"]
+
+    if c["username"]:
+        args.append(f"/u:{c['username']}")
+    if c["domain"]:
+        args.append(f"/d:{c['domain']}")
+    if password:
+        args.append(f"/p:{password}")
+
+    display = c["display"]
+    if tab:
+        if display == "fixed":
+            args.append(f"/size:{int(c['width'])}x{int(c['height'])}")
+        else:
+            # Even width: the display-control channel refuses odd ones.
+            args.append(f"/size:{int(tab['width']) & ~1}x{int(tab['height'])}")
+            args.append("+dynamic-resolution")
+        auto_scale = int(tab.get("scale") or auto_scale)
+    else:
+        args.append(f"/t:{c['name'] or host}")
+
+    # Display. Every mode keeps resolution in step with the window except fixed.
+    if tab:
+        pass
+    elif display == "fixed":
+        args.append(f"/size:{int(c['width'])}x{int(c['height'])}")
+        args.append("+smart-sizing")
+    else:
+        args.append("+dynamic-resolution")
+        if display == "fullscreen":
+            args.append("/f")
+    if c["multimon"] and not tab:
+        args.append("/multimon")
+
+    scale = resolve_scale(c["scale"], auto_scale)
+    if scale != 100:
+        args.append(f"/scale-desktop:{scale}")
+        args.append(f"/scale-device:{device_scale(scale)}")
+
+    # Redirection.
+    args.append("+clipboard" if c["clipboard"] else "-clipboard")
+    if c["audio"] == "local":
+        args.append("/sound")
+    elif c["audio"] == "remote":
+        args.append("/audio-mode:1")
+    else:
+        args.append("/audio-mode:2")
+    if c["microphone"]:
+        args.append("/microphone")
+    if c["homeDrive"]:
+        args.append("+home-drive")
+    if c["grabKeyboard"]:
+        args.append("+grab-keyboard")
+
+    # Transport.
+    if c["security"] in ("nla", "tls", "rdp"):
+        args.append(f"/sec:{c['security']}")
+    if c["ignoreCert"]:
+        args.append("/cert:ignore")
+    args.append(f"/network:{c['network'] if c['network'] in ('lan', 'broadband', 'modem') else 'auto'}")
+    args.append("/gfx")
+    args.append("+auto-reconnect")
+
+    if c["gateway"].strip():
+        gw = [f"g:{c['gateway'].strip()}"]
+        user = c["gatewayUser"] or c["username"]
+        domain = c["gatewayDomain"] or c["domain"]
+        if user:
+            gw.append(f"u:{user}")
+        if domain:
+            gw.append(f"d:{domain}")
+        if password and not c["gatewayUser"]:
+            gw.append(f"p:{password}")
+        args.append("/gateway:" + ",".join(gw))
+
+    if c["extraArgs"].strip():
+        args.extend(shlex.split(c["extraArgs"]))
+    return args
+
+
+def redact(args):
+    out = []
+    for a in args:
+        if a.startswith("/p:"):
+            out.append("/p:********")
+        elif a.startswith("/gateway:"):
+            out.append("/gateway:" + re.sub(r"(^|,)p:[^,]*", r"\1p:********", a[len("/gateway:"):]))
+        else:
+            out.append(a)
+    return out
+
+
+STAGES = (
+    ("verify_cb", "Checking certificate"),
+    ("tls_config_check_certificate", "Checking certificate"),
+    ("credssp_auth_init", "Signing in"),
+    ("Credentials required", "Waiting for credentials"),
+    ("rdp_client_connect_license", "Checking license"),
+)
+AUTH_RE = re.compile(r"Negotiated mechanism: (Kerberos|NTLM)")
+
+
+def session_stage(line):
+    """(stage, auth) a FreeRDP log line announces; either may be None."""
+    m = AUTH_RE.search(line)
+    if m:
+        return "Signing in", m.group(1)
+    for marker, stage in STAGES:
+        if marker in line:
+            return stage, None
+    return None, None
+
+
+def describe_exit(code, log_tail):
+    """A sentence for the UI, or None when the session simply ended."""
+    if code is not None and code < 0:
+        return None  # killed by a signal: stopped from the UI
+    if code in EXIT_MESSAGES:
+        message = EXIT_MESSAGES[code]
+    elif code is not None and 32 <= code < 128:
+        message = f"The server ended the connection (RDP error {code - 32})"
+    else:
+        message = f"FreeRDP exited with code {code}"
+    if message is None:
+        return None
+    errors = ERROR_RE.findall(log_tail or "")
+    if errors and errors[-1] == "ERRCONNECT_CONNECT_CANCELLED":
+        return None  # a FreeRDP dialog was dismissed
+    return f"{message} ({errors[-1]})" if errors else message
+
+
+# ---------------------------------------------------------------- kerberos
+#
+# MIT Kerberos reads every KDC the realm publishes in DNS and tries them in order, one second
+# per UDP timeout before it falls back to TCP. A domain with dozens of DCs behind a VPN that
+# drops UDP makes a ticket take a minute or more, and FreeRDP needs two. Windows avoids this
+# with site-aware DC location; here the KDCs are probed in parallel over TCP, the fastest few
+# are cached, and FreeRDP gets a private krb5.conf naming only those, TCP only.
+
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), APP)
+KDC_CACHE_TTL = 6 * 3600
+KDC_PROBE_TIMEOUT = 1.5
+KDC_KEEP = 3
+
+
+def kerberos_realm(conn):
+    """The realm Kerberos will use: a dotted domain, else the host's DNS suffix. None for IPs and bare names."""
+    domain = (conn.get("domain") or "").strip()
+    if "." in domain:
+        return domain.upper()
+    host = (conn.get("host") or "").strip()
+    if not host or "." not in host or re.fullmatch(r"[\d.]+|\[?[0-9a-fA-F:]+\]?", host):
+        return None
+    return host.split(".", 1)[1].upper()
+
+
+def srv_records(name):
+    """[(host, port)] for an SRV name, via resolvectl, dig or host, whichever answers first."""
+    commands = [
+        (["resolvectl", "query", "-t", "SRV", "--legend=no", name],
+         re.compile(r"IN SRV \d+ \d+ (\d+) (\S+?)\.?(?:\s|$)"), (1, 0)),
+        (["dig", "+short", "SRV", name], re.compile(r"^\d+ \d+ (\d+) (\S+?)\.?$", re.M), (1, 0)),
+        (["host", "-t", "SRV", name], re.compile(r"has SRV record \d+ \d+ (\d+) (\S+?)\.?$", re.M), (1, 0)),
+    ]
+    for cmd, pattern, _order in commands:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        found = [(m.group(2), int(m.group(1))) for m in pattern.finditer(out.stdout)]
+        if found:
+            return found
+    return []
+
+
+def probe_kdcs(targets, timeout=KDC_PROBE_TIMEOUT):
+    """[(latency, host, port)] of the targets accepting a TCP connection, fastest first."""
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+
+    def probe(target):
+        host, port = target
+        start = time.monotonic()
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return (time.monotonic() - start, host, port)
+        except OSError:
+            return None
+
+    if not targets:
+        return []
+    with ThreadPoolExecutor(max_workers=min(32, len(targets))) as pool:
+        results = [r for r in pool.map(probe, targets) if r]
+    return sorted(results)
+
+
+def discover_kdcs(realm, cache_dir=CACHE_DIR):
+    """The fastest reachable KDCs of a realm as "host:port", cached; [] when there is nothing to improve on."""
+    path = os.path.join(cache_dir, "kdc-" + realm.lower() + ".json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            cached = json.load(f)
+        if time.time() - cached.get("probed", 0) < KDC_CACHE_TTL and cached.get("kdcs"):
+            host, _, port = cached["kdcs"][0].rpartition(":")
+            # Still answering? A changed network (VPN off, other site) re-probes.
+            if probe_kdcs([(host, int(port))], timeout=0.5):
+                return cached["kdcs"]
+    except (OSError, ValueError, KeyError, IndexError):
+        pass
+    targets = srv_records(f"_kerberos._tcp.{realm}") or srv_records(f"_kerberos._udp.{realm}")
+    # Dedupe; DNS lists the same DC for both transports.
+    targets = list(dict.fromkeys(targets))
+    kdcs = [f"{h}:{p}" for _, h, p in probe_kdcs(targets)[:KDC_KEEP]]
+    if kdcs:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"realm": realm, "probed": int(time.time()), "kdcs": kdcs, "candidates": len(targets)}, f)
+    return kdcs
+
+
+def krb5_config(realm, kdcs, host=""):
+    """A krb5.conf fragment pinning a realm to the given KDCs over TCP."""
+    lines = ["[libdefaults]", "\tudp_preference_limit = 1", "", "[realms]", f"\t{realm} = {{"]
+    lines += [f"\t\tkdc = {k}" for k in kdcs]
+    lines += ["\t}", ""]
+    if "." in host:
+        lines += ["[domain_realm]", f"\t.{host.split('.', 1)[1].lower()} = {realm}", ""]
+    return "\n".join(lines)
+
+
+def kerberos_domain(conn):
+    """The domain to sign in with: a NetBIOS name ("acme") becomes the matching DNS domain
+    ("acme.lan") when the host lives there, because Kerberos needs the DNS name as its realm and
+    FreeRDP takes the realm from the domain. NTLM accepts either form."""
+    domain = (conn.get("domain") or "").strip()
+    realm = kerberos_realm(conn)
+    if domain and "." not in domain and realm and realm.split(".")[0] == domain.upper():
+        return realm.lower()
+    return domain
+
+
+def kerberos_env(conn, runtime_dir=RUNTIME_DIR, discover=discover_kdcs):
+    """Environment for FreeRDP so Kerberos goes straight to reachable KDCs; {} when not applicable."""
+    realm = kerberos_realm(conn)
+    if not realm:
+        return {}
+    manual = [k.strip() for k in (conn.get("kdc") or "").split(",") if k.strip()]
+    kdcs = manual or discover(realm)
+    if not kdcs:
+        return {}
+    os.makedirs(runtime_dir, exist_ok=True)
+    path = os.path.join(runtime_dir, "krb5-" + realm.lower() + ".conf")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(krb5_config(realm, kdcs, conn.get("host", "")))
+    base = os.environ.get("KRB5_CONFIG") or "/etc/krb5.conf"
+    return {"KRB5_CONFIG": path + ":" + base}
+
+
+# ---------------------------------------------------------------- session state
+
+def _session_path(sid):
+    return os.path.join(SESSIONS_DIR, sid + ".json")
+
+
+def write_session(state):
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    tmp = _session_path(state["id"]) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp, _session_path(state["id"]))
+    touch_changes()
+
+
+def touch_changes():
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    fd = os.open(CHANGES, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, str(time.time_ns()).encode())
+    finally:
+        os.close(fd)
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, TypeError):
+        return False
+    except PermissionError:
+        return True
+
+
+def ensure_changes():
+    """Create the watch target without touching it, so a watcher can attach before any session."""
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    os.close(os.open(CHANGES, os.O_WRONLY | os.O_CREAT, 0o600))
+
+
+def list_sessions():
+    sessions = []
+    try:
+        names = os.listdir(SESSIONS_DIR)
+    except FileNotFoundError:
+        return sessions
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(SESSIONS_DIR, name), encoding="utf-8") as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if s.get("state") in ("connecting", "connected") and not _alive(s.get("supervisor")):
+            s["state"] = "failed"
+            s["error"] = s.get("error") or "The session supervisor disappeared"
+        sessions.append(s)
+    sessions.sort(key=lambda s: s.get("started", 0), reverse=True)
+    return prune(sessions)
+
+
+KEEP_FINISHED = 3
+
+
+def prune(sessions):
+    """Keep the newest few finished sessions per connection; their logs are what a failure is read from."""
+    kept, finished = [], {}
+    for s in sessions:
+        if s.get("state") in ("connecting", "connected"):
+            kept.append(s)
+            continue
+        n = finished.get(s.get("connection"), 0)
+        finished[s.get("connection")] = n + 1
+        if n < KEEP_FINISHED:
+            kept.append(s)
+        else:
+            for suffix in (".json", ".log", ".stop"):
+                try:
+                    os.remove(os.path.join(SESSIONS_DIR, s["id"] + suffix))
+                except (FileNotFoundError, KeyError):
+                    pass
+    return kept
+
+
+# ---------------------------------------------------------------- supervisor
+
+def session_socket(sid):
+    """Where a tab session listens; Unix socket paths are capped at 107 bytes."""
+    path = os.path.join(SESSIONS_DIR, sid + ".sock")
+    if len(path.encode()) < 100:
+        return path
+    short = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"omaremote-{sid}.sock")
+    return short
+
+
+def supervise(conn, sid, tab=None):
+    """Runs detached: starts FreeRDP, follows its log, records state until it exits."""
+    log_path = os.path.join(SESSIONS_DIR, sid + ".log")
+    socket_path = session_socket(sid) if tab else None
+    state = {
+        "id": sid, "connection": conn["id"], "name": conn.get("name") or conn["host"],
+        "host": conn["host"], "protocol": conn.get("protocol", "rdp"), "state": "connecting",
+        "stage": "Finding domain controller", "auth": None,
+        "started": int(time.time()), "ended": 0, "pid": 0, "supervisor": os.getpid(),
+        "exitCode": None, "error": None, "log": log_path,
+        "tab": bool(tab), "socket": socket_path,
+    }
+    write_session(state)
+    try:
+        krb_env = kerberos_env(conn)
+    except Exception:  # discovery is an optimisation; FreeRDP still works without it
+        krb_env = {}
+    conn = dict(conn, domain=kerberos_domain(conn))
+    password = None
+    if conn.get("savePassword") and conn.get("secretId"):
+        password = secret_get(conn["secretId"], conn.get("secretKind", "connection"))
+    args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
+    env = dict(os.environ, SDL_APP_ID=SESSION_APP_ID, WLOG_LEVEL=os.environ.get("WLOG_LEVEL", "INFO"),
+               **krb_env)
+    # The stage markers below are DEBUG lines; raise only their tags, not the whole log.
+    env.setdefault("WLOG_FILTER", "com.freerdp.core.nego:DEBUG,com.freerdp.core.auth:DEBUG,com.winpr.negotiate:DEBUG")
+    state["stage"] = "Connecting"
+    if tab:
+        client = tab_client()
+        if not client:
+            state.update(state="failed", ended=int(time.time()),
+                         error="The tab renderer is not built: run ./install.sh (or open in a window)")
+            write_session(state)
+            return 1
+        command = [client]  # reads its arguments from stdin
+        env["OMAREMOTE_SOCKET"] = socket_path
+    else:
+        command = [CLIENT, "/args-from:stdin"]
+    try:
+        # WLog writes INFO to stdout through stdio, which a pipe would block-buffer: line mode
+        # is what lets the "connected" marker arrive when it happens.
+        proc = subprocess.Popen(["stdbuf", "-oL", "-eL", *command], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True,
+                                errors="replace")
+    except OSError as e:
+        state.update(state="failed", error=f"Could not start {command[0]}: {e}", ended=int(time.time()))
+        write_session(state)
+        return 1
+    state["pid"] = proc.pid
+    write_session(state)
+
+    def forward(signum, _frame):
+        proc.send_signal(signum)
+    signal.signal(signal.SIGTERM, forward)
+    signal.signal(signal.SIGINT, forward)
+
+    proc.stdin.write("\n".join(args) + "\n")
+    proc.stdin.close()
+    del password, args
+
+    tail = []
+    with open(log_path, "w", encoding="utf-8") as log:
+        if krb_env:
+            log.write(f"[omaremote] Kerberos: {krb_env['KRB5_CONFIG'].split(':')[0]}\n")
+        for line in proc.stdout:
+            log.write(line)
+            log.flush()
+            tail.append(line)
+            del tail[:-60]
+            if state["state"] != "connecting":
+                continue
+            # gdi_init_ex runs in post-connect: the session is up and drawing.
+            if "gdi_init_ex" in line:
+                state.update(state="connected", stage=None)
+                write_session(state)
+                mark_connected(conn["id"])
+                continue
+            stage, auth = session_stage(line)
+            if (stage and stage != state["stage"]) or (auth and auth != state["auth"]):
+                state["stage"] = stage or state["stage"]
+                state["auth"] = auth or state["auth"]
+                write_session(state)
+    code = proc.wait()
+    stopped = os.path.join(SESSIONS_DIR, sid + ".stop")
+    error = None if os.path.exists(stopped) else describe_exit(code, "".join(tail))
+    if os.path.exists(stopped):
+        os.remove(stopped)
+    state.update(state="failed" if error else "ended", exitCode=code, error=error, ended=int(time.time()))
+    write_session(state)
+    if error and os.environ.get("OMAREMOTE_NOTIFY", "1") == "1":
+        subprocess.run(["notify-send", "-a", "OMARemote", "-u", "normal",
+                        f"{state['name']}: connection failed", error], capture_output=True)
+    return 0
+
+
+def parse_tab(spec):
+    """"2560x1500@160" -> {"width": 2560, "height": 1500, "scale": 160}."""
+    m = re.fullmatch(r"(\d+)x(\d+)(?:@(\d+))?", spec or "")
+    if not m:
+        raise ValueError(f"bad --tab size {spec!r}, expected WxH@scale")
+    return {"width": int(m.group(1)), "height": int(m.group(2)), "scale": int(m.group(3) or 100)}
+
+
+def launch(key, tab=None):
+    conn = find_connection(key, load_connections())
+    if conn is None:
+        print(f"no connection named or with id {key!r}", file=sys.stderr)
+        return 2
+    if not conn.get("host", "").strip():
+        print("connection has no host", file=sys.stderr)
+        return 2
+    sid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    # Double fork: the supervisor belongs to no terminal and outlives the UI.
+    child = os.fork()
+    if child > 0:
+        os.waitpid(child, 0)
+        print(sid)
+        return 0
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(devnull, fd)
+    try:
+        os._exit(supervise(conn, sid, tab))
+    except Exception as e:  # never leave a session stuck in "connecting"
+        write_session({"id": sid, "connection": conn["id"], "name": conn.get("name", ""),
+                       "host": conn.get("host", ""), "state": "failed", "error": str(e),
+                       "started": int(time.time()), "ended": int(time.time())})
+        os._exit(1)
+
+
+def stop(sid):
+    for s in list_sessions():
+        if s["id"] == sid and s.get("state") in ("connecting", "connected"):
+            pid = s.get("pid")
+            if not pid:
+                return 1
+            # Tells the supervisor the exit that follows was asked for, not a failure.
+            open(os.path.join(SESSIONS_DIR, sid + ".stop"), "w").close()
+            try:
+                os.kill(pid, signal.SIGTERM)
+                # FreeRDP ignores SIGTERM while one of its own dialogs is open.
+                for _ in range(30):
+                    time.sleep(0.1)
+                    if not _alive(pid):
+                        return 0
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            return 0
+    return 1
+
+
+def forget(sid):
+    for suffix in (".json", ".log", ".stop", ".sock"):
+        try:
+            os.remove(os.path.join(SESSIONS_DIR, sid + suffix))
+        except FileNotFoundError:
+            pass
+    touch_changes()
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    migrate_legacy()
+    cmd, rest = argv[1], argv[2:]
+    if cmd in ("launch", "connect") and rest:
+        tab = parse_tab(rest[rest.index("--tab") + 1]) if "--tab" in rest[1:-1] else None
+        return launch(rest[0], tab)
+    if cmd == "list":
+        ensure_changes()
+        print(json.dumps(list_sessions()))
+        return 0
+    if cmd == "stop" and rest:
+        return stop(rest[0])
+    if cmd == "forget" and rest:
+        return forget(rest[0])
+    if cmd == "args" and rest:
+        conn = find_connection(rest[0], load_connections())
+        if conn is None:
+            return 2
+        print(" ".join(shlex.quote(a) for a in redact(build_args(conn, "x" if conn["savePassword"] else None,
+                                                                    monitor_scale()))))
+        return 0
+    if cmd == "paths":
+        ensure_changes()
+        print(json.dumps({"runtime": RUNTIME_DIR, "changes": CHANGES, "connections": CONNECTIONS}))
+        return 0
+    if cmd == "monitor-scale":
+        print(monitor_scale())
+        return 0
+    if cmd == "secret" and len(rest) in (2, 3):
+        # secret <set|clear|has> <connection-id>   or   secret <set|clear|has> credential <set-id>
+        action, kind, key = (rest[0], "connection", rest[1]) if len(rest) == 2 else rest
+        if kind not in ("connection", "credential"):
+            return 2
+        if action == "set":
+            data = load_data()
+            if kind == "credential":
+                cred = find_credential(key, data)
+                who = f"{cred.get('domain')}\\{cred.get('username')}" if cred and cred.get("domain") else (cred or {}).get("username", key)
+                label = f"OMARemote password for {who}"
+            else:
+                conn = next((c for c in data["connections"] if c.get("id") == key), None)
+                label = f"OMARemote password for {conn['name'] if conn else key}"
+            return 0 if secret_set(key, sys.stdin.read().rstrip("\n"), label, kind) else 1
+        if action == "clear":
+            secret_clear(key, kind)
+            return 0
+        if action == "has":
+            return 0 if secret_get(key, kind) else 1
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

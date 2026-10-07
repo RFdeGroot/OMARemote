@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=OMARemote
+GenericName=Remote Desktop
+Comment=Connect to Windows PCs and servers over RDP
+Exec=omaremote
+Icon=preferences-desktop-remote-desktop
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=rdp;remote;desktop;windows;freerdp;
+StartupWMClass=omaremote

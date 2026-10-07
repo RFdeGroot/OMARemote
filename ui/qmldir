@@ -1,0 +1,22 @@
+module omaremote
+singleton Theme 1.0 Theme.qml
+singleton Store 1.0 Store.qml
+singleton Sessions 1.0 Sessions.qml
+Body 1.0 Body.qml
+Sidebar 1.0 Sidebar.qml
+SidebarRow 1.0 SidebarRow.qml
+ConnectionList 1.0 ConnectionList.qml
+ConnectionRow 1.0 ConnectionRow.qml
+Detail 1.0 Detail.qml
+Editor 1.0 Editor.qml
+FormRow 1.0 FormRow.qml
+Segment 1.0 Segment.qml
+Check 1.0 Check.qml
+Input 1.0 Input.qml
+ActionButton 1.0 ActionButton.qml
+Glyph 1.0 Glyph.qml
+StatusBar 1.0 StatusBar.qml
+LogView 1.0 LogView.qml
+TabBar 1.0 TabBar.qml
+GroupEditor 1.0 GroupEditor.qml
+CredentialEditor 1.0 CredentialEditor.qml
