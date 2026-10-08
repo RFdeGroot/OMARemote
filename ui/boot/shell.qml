@@ -15,9 +15,10 @@ ShellRoot {
         implicitHeight: 640
         color: "#101315"
 
-        // Quickshell 0.3.1 has no exit API, so the process ends itself the way Flea's does.
+        // Qt.quit() ends Quickshell cleanly (exit code 0); killing the process instead made a
+        // shell print "Terminated" after closing the window. Sessions run on regardless.
         function quit() {
-            Quickshell.execDetached(["kill", String(Quickshell.processId)])
+            Qt.quit()
         }
 
         Connections {
