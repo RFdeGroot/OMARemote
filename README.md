@@ -34,12 +34,13 @@ The screenshots use made-up sample data and a mock desktop.
 
 ### From a release (recommended)
 
-Each [release](https://github.com/RFdeGroot/OMARemote/releases) has a ready-built Arch package.
-Download it, then pacman installs it together with everything it needs:
+Each [release](https://github.com/RFdeGroot/OMARemote/releases) has ready-built Arch packages for
+Intel/AMD (`x86_64`) and for Omarchy on Apple Silicon (`aarch64`, Arch Linux ARM). Download the one
+for your machine (`uname -m` picks it), then pacman installs it together with everything it needs:
 
 ```bash
-curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/omaremote-0.1alpha-1-x86_64.pkg.tar.zst
-sudo pacman -U ./omaremote-0.1alpha-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/omaremote-0.1alpha-1-$(uname -m).pkg.tar.zst
+sudo pacman -U ./omaremote-0.1alpha-1-$(uname -m).pkg.tar.zst
 omaremote                    # or "OMARemote" from the launcher
 ```
 
