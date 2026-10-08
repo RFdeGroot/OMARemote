@@ -36,7 +36,7 @@ git clone https://github.com/RFdeGroot/OMARemote.git && cd OMARemote
 omaremote
 ```
 
-A checkout runs straight from its files: change a `.qml` file and restart the app (`ctrl+q`, then
+A checkout runs straight from its files: change a `.qml` file and restart the app (`super+w`, then
 `omaremote`); change anything under `native/` and run `ninja -C native/build` first. The README's
 *How it works* section maps the code.
 

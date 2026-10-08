@@ -54,9 +54,9 @@ refuses one straight from a URL (`failed retrieving file '….pkg.tar.zst.sig'`)
 #### Updating
 
 Run the same commands again: they fetch the newest release, and pacman upgrades OMARemote in place.
-Then restart it (`ctrl+q`, and open it again); running sessions keep going and come back as tabs.
-`omaremote --version` shows which version you have, and each release's notes say what changed. To
-hear about new releases, use *Watch → Custom → Releases* on the GitHub page.
+Then restart it (close it with `super+w` and open it again); running sessions keep going and come
+back as tabs. `omaremote --version` shows which version you have, and each release's notes say what
+changed. To hear about new releases, use *Watch → Custom → Releases* on the GitHub page.
 
 #### Building from source
 
