@@ -35,5 +35,6 @@ package() {
   install -Dm755 ../build/qml/OMARemote/libomaremote_plugin.so "$qml/libomaremote_plugin.so"
   install -Dm644 -t "$qml" ../build/qml/OMARemote/qmldir ../build/qml/OMARemote/omaremote_plugin.qmltypes
   install -Dm644 share/applications/omaremote.desktop "$pkgdir/usr/share/applications/omaremote.desktop"
+  install -Dm644 share/icons/hicolor/scalable/apps/omaremote.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/omaremote.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

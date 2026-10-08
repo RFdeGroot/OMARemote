@@ -10,10 +10,11 @@ set -euo pipefail
 src="$(cd "$(dirname "$0")" && pwd)"
 bin="$HOME/.local/bin"
 apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+icons="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
 mode="${1:-install}"
 
 if [[ $mode == --uninstall ]]; then
-  rm -f "$bin/omaremote" "$bin/omaremote-session" "$apps/omaremote.desktop"
+  rm -f "$bin/omaremote" "$bin/omaremote-session" "$apps/omaremote.desktop" "$icons/omaremote.svg"
   echo "Removed. Saved connections stay in ~/.config/omaremote."
   exit 0
 fi
@@ -99,8 +100,9 @@ ninja -C "$src/native/build"
 # Links from before the rename to OMARemote.
 rm -f "$bin/oma-remote" "$bin/oma-remote-session" "$apps/oma-remote.desktop"
 
-mkdir -p "$bin" "$apps"
+mkdir -p "$bin" "$apps" "$icons"
 ln -sfn "$src/bin/omaremote" "$bin/omaremote"
 ln -sfn "$src/bin/omaremote-session" "$bin/omaremote-session"
 ln -sfn "$src/share/applications/omaremote.desktop" "$apps/omaremote.desktop"
+ln -sfn "$src/share/icons/hicolor/scalable/apps/omaremote.svg" "$icons/omaremote.svg"
 echo "Installed. Launch 'OMARemote' from the app launcher, or run: omaremote"
