@@ -15,11 +15,41 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 
 ## Install
 
+> **Alpha.** 0.1-alpha is the first release: it works day to day, but expect rough edges.
+
+### From a release (recommended)
+
+Each [release](https://github.com/RFdeGroot/OMARemote/releases) has a ready-built Arch package.
+pacman installs it together with everything it needs:
+
+```bash
+sudo pacman -U https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/omaremote-0.1alpha-1-x86_64.pkg.tar.zst
+omaremote                    # or "OMARemote" from the launcher
+```
+
+To build the same package from source instead, take the release's `PKGBUILD`:
+
+```bash
+mkdir omaremote && cd omaremote
+curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/PKGBUILD
+makepkg -si                  # installs the build tools and dependencies, builds, installs
+```
+
+Update by installing a newer release the same way; remove with `sudo pacman -R omaremote` (your
+connections stay in `~/.config/omaremote`, passwords in the keyring). `omaremote --version` says
+which version you have.
+
+### From a checkout (development)
+
 ```bash
 git clone https://github.com/RFdeGroot/OMARemote.git && cd OMARemote
 ./install.sh                 # checks dependencies, builds the tab renderers, links into ~/.local
 omaremote                    # or "OMARemote" from the launcher
 ```
+
+Keep to one of the two: with both, which one runs depends on the order of your `PATH`. Run
+`./install.sh --uninstall` before installing a release, and `sudo pacman -R omaremote` before
+going back to a checkout.
 
 The installer checks everything first and lists what is missing, grouped by what needs it, with
 the packages to install:

@@ -1,0 +1,37 @@
+# Maintainer: Roelof de Groot <roelofgroot@proton.me>
+pkgname=omaremote
+_tag=v0.1-alpha
+pkgver=0.1alpha
+pkgrel=1
+pkgdesc="Keyboard-first remote desktop client (RDP, VNC) for Omarchy"
+arch=('x86_64')
+url="https://github.com/RFdeGroot/OMARemote"
+license=('MIT')
+depends=('omarchy' 'quickshell' 'hyprland' 'qt6-declarative' 'freerdp' 'libvncserver'
+         'python' 'libsecret' 'coreutils')
+makedepends=('git' 'cmake' 'ninja' 'pkgconf')
+optdepends=('libnotify: a desktop notification when a session started from the command line fails')
+options=('!debug')
+source=("git+$url.git#tag=$_tag")
+sha256sums=('SKIP')
+
+build() {
+  cmake -S OMARemote/native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+  ninja -C build
+}
+
+package() {
+  cd OMARemote
+  # The launcher finds the UI in /usr/share/omaremote and the renderers in /usr/lib/omaremote.
+  install -Dm755 bin/omaremote "$pkgdir/usr/bin/omaremote"
+  install -Dm755 bin/omaremote-session "$pkgdir/usr/bin/omaremote-session"
+  install -dm755 "$pkgdir/usr/share/omaremote"
+  cp -r --no-preserve=ownership ui "$pkgdir/usr/share/omaremote/"
+  install -Dm755 ../build/omaremote-rdp "$pkgdir/usr/lib/omaremote/omaremote-rdp"
+  install -Dm755 ../build/omaremote-vnc "$pkgdir/usr/lib/omaremote/omaremote-vnc"
+  local qml="$pkgdir/usr/lib/omaremote/qml/OMARemote"
+  install -Dm755 ../build/qml/OMARemote/libomaremote_plugin.so "$qml/libomaremote_plugin.so"
+  install -Dm644 -t "$qml" ../build/qml/OMARemote/qmldir ../build/qml/OMARemote/omaremote_plugin.qmltypes
+  install -Dm644 share/applications/omaremote.desktop "$pkgdir/usr/share/applications/omaremote.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

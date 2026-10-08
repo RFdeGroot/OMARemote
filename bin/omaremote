@@ -4,7 +4,9 @@
 #   omaremote                  open the connection manager
 #   omaremote connect <name>   connect straight away (for keybindings and launchers)
 #   omaremote list             list saved connections
+#   omaremote --version        print the version
 set -euo pipefail
+version="0.1-alpha"
 
 here="$(dirname "$(readlink -f "$0")")"
 root="$(dirname "$here")"
@@ -35,7 +37,10 @@ except FileNotFoundError: cs=[]
 for c in cs: print(c.get("name") or c.get("host"))'
     ;;
   -h|--help|help)
-    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  -v|--version|version)
+    echo "omaremote $version"
     ;;
   "")
     if [[ ! -d /usr/share/omarchy/shell/Commons ]]; then
