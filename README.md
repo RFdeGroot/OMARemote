@@ -30,7 +30,7 @@ The screenshots use made-up sample data and a mock desktop.
 
 ## Install
 
-> **Alpha.** OMARemote is in alpha (0.1.2-alpha): it works day to day, but expect rough edges.
+> **Alpha.** OMARemote is in alpha (0.1.3-alpha): it works day to day, but expect rough edges.
 
 ### From a release (recommended)
 
