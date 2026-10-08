@@ -53,16 +53,40 @@ refuses one straight from a URL (`failed retrieving file '….pkg.tar.zst.sig'`)
 
 #### Updating
 
-Run the same commands again: they fetch the newest release, and pacman upgrades OMARemote in place.
-Then restart it (close it with `super+w` and open it again); running sessions keep going and come
-back as tabs. `omaremote --version` shows which version you have, and each release's notes say what
-changed. To hear about new releases, use *Watch → Custom → Releases* on the GitHub page.
+From 0.1.5-alpha on, OMARemote updates itself:
 
-OMARemote also looks for a newer release by itself: at startup it asks GitHub's releases API once,
-and when there is one, an *Update to …* button appears at the bottom of the sidebar. It runs
-`omaremote-update` in a floating terminal: the same download and `pacman -U` as above, then
-OMARemote restarts on the new version (sessions keep running). The version you run is shown below
-it. Set `OMAREMOTE_NO_UPDATE_CHECK=1` to skip the check; a checkout only mentions a newer release.
+1. At startup it asks GitHub once whether there is a newer release with a package for your machine.
+2. If there is, an **Update to …** button appears at the bottom of the sidebar, above the version
+   you run (also reachable with the keyboard: `tab` to the sidebar, then down to the button).
+3. Clicking it opens a floating terminal that downloads the package and installs it with
+   `sudo pacman -U` (type your password there), then restarts OMARemote on the new version.
+   Running sessions keep going and come back as tabs.
+
+The button runs `omaremote-update`, which you can also run yourself in a terminal, any time:
+
+```bash
+omaremote-update             # install the newest release for this machine, restart OMARemote
+omaremote --version          # the version you have
+```
+
+Updating by hand works too: run the install commands above again, and pacman upgrades OMARemote in
+place; then close it with `super+w` and open it again. Each release's notes say what changed; to
+hear about new ones, use *Watch → Custom → Releases* on the GitHub page.
+
+**Turning the startup check off.** The check is one request to `api.github.com` when OMARemote
+starts. To skip it, set `OMAREMOTE_NO_UPDATE_CHECK=1` in the environment Omarchy gives your apps,
+then log out and back in:
+
+```bash
+mkdir -p ~/.config/environment.d
+echo 'OMAREMOTE_NO_UPDATE_CHECK=1' > ~/.config/environment.d/omaremote.conf
+```
+
+For a single run, start it as `OMAREMOTE_NO_UPDATE_CHECK=1 omaremote` instead. Remove the file
+(and log in again) to turn the check back on; `omaremote-update` works either way.
+
+A checkout (see below) shows `(dev)` after the version and never offers the button; it only
+mentions that a newer release exists. Update a checkout with `git pull && ./install.sh`.
 
 #### Building from source
 
