@@ -1,6 +1,6 @@
-# Builds the Arch package in a clean container and attaches it, with its PKGBUILD, to the
-# GitHub release of the tag. A clean build keeps the package's metadata free of whatever the
-# maintainer's machine has installed.
+# Builds the Arch package for x86_64 and aarch64 in clean containers and attaches both, with the
+# PKGBUILD, to the GitHub release of the tag. A clean build keeps the package's metadata free of
+# whatever the maintainer's machine has installed; packaging/arch/ci-build.sh does the build.
 #
 # Releasing: set _tag/pkgver in packaging/arch/PKGBUILD, commit, tag (v0.2-alpha, …), push the tag.
 # For a tag pushed before this workflow existed: Actions → Release → Run workflow, with the tag.
@@ -18,24 +18,22 @@ on:
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   package:
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            image: archlinux:base-devel
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            image: archlinuxarm:local
+    runs-on: ${{ matrix.runner }}
     steps:
-      # Omarchy's own mirror trails Arch, and a Qt plugin built against a newer Qt than the user's
-      # will not load: build against what Omarchy installs (it keeps working on newer Qt).
-      - name: Tools and build dependencies, from Omarchy's mirror
-        run: |
-          echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-          pacman -Syyuu --noconfirm
-          pacman -S --noconfirm --needed git github-cli cmake ninja pkgconf qt6-declarative freerdp libvncserver
-          pacman -Q qt6-base qt6-declarative freerdp libvncserver glibc
-
       - uses: actions/checkout@v5
 
       - name: Check the PKGBUILD is for this tag
@@ -43,25 +41,47 @@ jobs:
           grep -qx "_tag=$TAG" packaging/arch/PKGBUILD || {
             echo "packaging/arch/PKGBUILD does not build $TAG (set _tag and pkgver)"; exit 1; }
 
+      # Arch Linux ARM publishes no container image; its root filesystem becomes one.
+      - name: Arch Linux ARM image
+        if: matrix.arch == 'aarch64'
+        run: curl -fsSL http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz | docker import - archlinuxarm:local
+
       - name: Build the package
         run: |
-          useradd -m builder
-          install -d -o builder /home/builder/pkg
-          install -m644 -o builder packaging/arch/PKGBUILD /home/builder/pkg/PKGBUILD
-          cd /home/builder/pkg
-          # Runtime-only dependencies (omarchy among them) are not in the Arch repos and are not
-          # needed to build; the build dependencies are installed above.
-          sudo -u builder env PACKAGER="OMARemote release workflow <$GITHUB_SERVER_URL/$GH_REPO>" makepkg --nodeps
-          ls -l *.pkg.tar.zst
+          docker run --rm -v "$PWD:/src" \
+            -e PACKAGER="OMARemote release workflow <$GITHUB_SERVER_URL/$GITHUB_REPOSITORY>" \
+            ${{ matrix.image }} bash /src/packaging/arch/ci-build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.arch }}
+          path: out/*.pkg.tar.zst
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: out
 
       - name: Attach to the release
         run: |
-          cd /home/builder/pkg
-          pkg=$(ls *.pkg.tar.zst)
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             prerelease=; [[ $TAG == *-* ]] && prerelease=--prerelease
+            pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
+            pkgrel=$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)
+            pkg="omaremote-$pkgver-$pkgrel-\$(uname -m).pkg.tar.zst"
             cat > notes.md <<EOF
-          Install on Omarchy; pacman pulls in every dependency:
+          Install on Omarchy, on Intel/AMD (x86_64) or Apple Silicon (aarch64); pacman pulls in every dependency:
 
           \`\`\`bash
           curl -LO $GITHUB_SERVER_URL/$GH_REPO/releases/download/$TAG/$pkg
@@ -74,4 +94,4 @@ jobs:
           EOF
             gh release create "$TAG" $prerelease --verify-tag --title "OMARemote ${TAG#v}" --notes-file notes.md
           fi
-          gh release upload "$TAG" "$pkg" PKGBUILD --clobber
+          gh release upload "$TAG" out/*.pkg.tar.zst packaging/arch/PKGBUILD --clobber
