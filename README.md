@@ -30,7 +30,7 @@ The screenshots use made-up sample data and a mock desktop.
 
 ## Install
 
-> **Alpha.** 0.1-alpha is the first release: it works day to day, but expect rough edges.
+> **Alpha.** OMARemote is in alpha (0.1.1-alpha): it works day to day, but expect rough edges.
 
 ### From a release (recommended)
 
@@ -39,8 +39,8 @@ Intel/AMD (`x86_64`) and for Omarchy on Apple Silicon (`aarch64`, Arch Linux ARM
 for your machine (`uname -m` picks it), then pacman installs it together with everything it needs:
 
 ```bash
-curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/omaremote-0.1alpha-1-$(uname -m).pkg.tar.zst
-sudo pacman -U ./omaremote-0.1alpha-1-$(uname -m).pkg.tar.zst
+curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1.1-alpha/omaremote-0.1.1alpha-1-$(uname -m).pkg.tar.zst
+sudo pacman -U ./omaremote-0.1.1alpha-1-$(uname -m).pkg.tar.zst
 omaremote                    # or "OMARemote" from the launcher
 ```
 
@@ -51,7 +51,7 @@ To build the same package from source instead, take the release's `PKGBUILD`:
 
 ```bash
 mkdir omaremote && cd omaremote
-curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/PKGBUILD
+curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1.1-alpha/PKGBUILD
 makepkg -si                  # installs the build tools and dependencies, builds, installs
 ```
 
