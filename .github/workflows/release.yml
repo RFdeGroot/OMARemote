@@ -90,6 +90,8 @@ jobs:
 
           The package is not signed: pacman installs it from a downloaded file, not straight from the URL.
 
+          Updating from an earlier release works the same way: pacman upgrades in place. Restart OMARemote afterwards.
+
           Or build it from source with the attached \`PKGBUILD\`: \`makepkg -si\`. See the README for more.
           EOF
             gh release create "$TAG" $prerelease --verify-tag --title "OMARemote ${TAG#v}" --notes-file notes.md

@@ -35,29 +35,43 @@ The screenshots use made-up sample data and a mock desktop.
 ### From a release (recommended)
 
 Each [release](https://github.com/RFdeGroot/OMARemote/releases) has ready-built Arch packages for
-Intel/AMD (`x86_64`) and for Omarchy on Apple Silicon (`aarch64`, Arch Linux ARM). Download the one
-for your machine (`uname -m` picks it), then pacman installs it together with everything it needs:
+Intel/AMD (`x86_64`) and for Omarchy on Apple Silicon (`aarch64`, Arch Linux ARM). These commands
+download the newest one for your machine, and pacman installs it together with everything it needs:
 
 ```bash
-curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1.1-alpha/omaremote-0.1.1alpha-1-$(uname -m).pkg.tar.zst
-sudo pacman -U ./omaremote-0.1.1alpha-1-$(uname -m).pkg.tar.zst
+url=$(curl -s https://api.github.com/repos/RFdeGroot/OMARemote/releases | grep -o "https://[^\"]*-$(uname -m)\.pkg\.tar\.zst" | head -1)
+curl -LO "$url"
+sudo pacman -U "./${url##*/}"
 omaremote                    # or "OMARemote" from the launcher
 ```
+
+(The first line asks GitHub for the newest release, alphas included; you can also download a
+package from the [releases page](https://github.com/RFdeGroot/OMARemote/releases) by hand.)
 
 Release packages are not signed yet. pacman installs an unsigned package from a file on disk, but
 refuses one straight from a URL (`failed retrieving file '….pkg.tar.zst.sig'`), hence the download.
 
-To build the same package from source instead, take the release's `PKGBUILD`:
+#### Updating
+
+Run the same commands again: they fetch the newest release, and pacman upgrades OMARemote in place.
+Then restart it (`ctrl+q`, and open it again); running sessions keep going and come back as tabs.
+`omaremote --version` shows which version you have, and each release's notes say what changed. To
+hear about new releases, use *Watch → Custom → Releases* on the GitHub page.
+
+#### Building from source
+
+To build the package yourself instead, take the newest release's `PKGBUILD`:
 
 ```bash
 mkdir omaremote && cd omaremote
-curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1.1-alpha/PKGBUILD
+curl -LO "$(curl -s https://api.github.com/repos/RFdeGroot/OMARemote/releases | grep -o 'https://[^"]*/PKGBUILD' | head -1)"
 makepkg -si                  # installs the build tools and dependencies, builds, installs
 ```
 
-Update by installing a newer release the same way; remove with `sudo pacman -R omaremote` (your
-connections stay in `~/.config/omaremote`, passwords in the keyring). `omaremote --version` says
-which version you have.
+#### Removing
+
+`sudo pacman -R omaremote`. Your connections stay in `~/.config/omaremote`, and saved passwords in
+the keyring.
 
 ### From a checkout (development)
 
@@ -66,6 +80,9 @@ git clone https://github.com/RFdeGroot/OMARemote.git && cd OMARemote
 ./install.sh                 # checks dependencies, builds the tab renderers, links into ~/.local
 omaremote                    # or "OMARemote" from the launcher
 ```
+
+Update a checkout with `git pull && ./install.sh` (it rebuilds the tab renderers), then restart
+OMARemote.
 
 Keep to one of the two: with both, which one runs depends on the order of your `PATH`. Run
 `./install.sh --uninstall` before installing a release, and `sudo pacman -R omaremote` before
