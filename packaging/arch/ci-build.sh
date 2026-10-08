@@ -30,7 +30,8 @@ install -m644 -o builder /src/packaging/arch/PKGBUILD /home/builder/pkg/PKGBUILD
 cd /home/builder/pkg
 # Runtime-only dependencies (omarchy among them) are not in the distribution's repos and are not
 # needed to build; the build dependencies are installed above.
-sudo -u builder env PACKAGER="$PACKAGER" makepkg --nodeps
+# Same file name and compression on both architectures (Arch Linux ARM's defaults differ).
+sudo -u builder env PACKAGER="$PACKAGER" PKGDEST=/home/builder/pkg PKGEXT=.pkg.tar.zst makepkg --nodeps
 install -d /src/out
 cp ./*.pkg.tar.zst /src/out/
 ls -l /src/out
