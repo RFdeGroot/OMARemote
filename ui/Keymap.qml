@@ -53,7 +53,7 @@ Singleton {
         { group: "Tabs", context: "app", action: "nextTab", keys: ["ctrl+tab", "ctrl+pgdown"], label: "Next tab" },
         { group: "Tabs", context: "app", action: "previousTab", keys: ["ctrl+shift+tab", "ctrl+pgup"], label: "Previous tab" },
         { group: "Tabs", context: "app", action: "tabN", keys: ["alt+1…9"], label: "Go to tab 1–9", run: false },
-        { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list beside sessions" },
+        { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
         { group: "Tabs", context: "app", action: "quit", keys: ["ctrl+q"], label: "Quit OMARemote" },
 

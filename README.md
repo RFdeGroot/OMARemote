@@ -4,6 +4,8 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 [Flea](https://github.com/thisisgm/flea): a Quickshell UI built from Omarchy's own shell components
 (`/usr/share/omarchy/shell/Commons` and `Ui`), so it follows your theme, live.
 
+![The connections: library, groups and credential sets in the sidebar, connections grouped, details of the selected one](docs/screenshots/connections.png)
+
 - **RDP** through FreeRDP and **VNC** through libvncclient.
 - **Sessions in tabs** inside the app, or (RDP) in their own window for multi-monitor; pin the
   connections list beside them and the remote desktop resizes to fit.
@@ -12,6 +14,19 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 - **Fast Kerberos** on networks with many domain controllers.
 - **Keyboard-driven**, with a keymap sheet on `?`; the mouse works everywhere too.
 - Passwords optional, in your keyring; sessions survive closing the window.
+
+## Screenshots
+
+A VNC session in a tab, with the connections list pinned beside it; the desktop resizes to the room
+left:
+
+![A VNC session in a tab, with the connections list pinned beside it](docs/screenshots/session-pinned.png)
+
+| Editing a connection; its credentials come from its group | Every key, on `?` |
+| --- | --- |
+| ![Editing a connection that takes its credentials from its group](docs/screenshots/editor.png) | ![The keymap sheet](docs/screenshots/keymap.png) |
+
+The screenshots use made-up sample data and a mock desktop.
 
 ## Install
 
