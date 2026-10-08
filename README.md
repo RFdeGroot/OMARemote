@@ -20,12 +20,16 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 ### From a release (recommended)
 
 Each [release](https://github.com/RFdeGroot/OMARemote/releases) has a ready-built Arch package.
-pacman installs it together with everything it needs:
+Download it, then pacman installs it together with everything it needs:
 
 ```bash
-sudo pacman -U https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/omaremote-0.1alpha-1-x86_64.pkg.tar.zst
+curl -LO https://github.com/RFdeGroot/OMARemote/releases/download/v0.1-alpha/omaremote-0.1alpha-1-x86_64.pkg.tar.zst
+sudo pacman -U ./omaremote-0.1alpha-1-x86_64.pkg.tar.zst
 omaremote                    # or "OMARemote" from the launcher
 ```
+
+Release packages are not signed yet. pacman installs an unsigned package from a file on disk, but
+refuses one straight from a URL (`failed retrieving file '….pkg.tar.zst.sig'`), hence the download.
 
 To build the same package from source instead, take the release's `PKGBUILD`:
 
