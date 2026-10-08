@@ -815,7 +815,7 @@ FocusScope {
     function openNamed(name) {
         var c = findConnection(name)
         if (!c)
-            return "unknown connection: " + name
+            return showRunning(name) ? "ok" : "unknown connection: " + name
         var running = Sessions.activeFor(c.id)
         var ownWindow = running.length > 0 ? !running[0].tab : (c.openIn === "window" && c.protocol !== "vnc")
         selectedId = c.id
@@ -826,6 +826,26 @@ FocusScope {
     }
 
     // This window, on whichever workspace it is.
+    // A running session by its connection id or its own id: still there when its connection was
+    // deleted while it ran (the bar plugin names sessions by connection id).
+    function showRunning(name) {
+        var want = String(name || "").trim()
+        var list = Sessions.sessions
+        for (var i = 0; i < list.length; i++) {
+            var s = list[i]
+            if (!Sessions.isActive(s) || (s.connection !== want && s.id !== want))
+                continue
+            if (s.tab) {
+                showTab(s.id)
+                raise()
+            } else {
+                Sessions.focus(s)
+            }
+            return true
+        }
+        return false
+    }
+
     function raise() {
         Quickshell.execDetached([Sessions.bin, "focus", "class", "omaremote"])
     }
