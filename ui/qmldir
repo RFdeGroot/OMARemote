@@ -7,6 +7,7 @@ Sidebar 1.0 Sidebar.qml
 SidebarRow 1.0 SidebarRow.qml
 ConnectionList 1.0 ConnectionList.qml
 ConnectionRow 1.0 ConnectionRow.qml
+PinnedList 1.0 PinnedList.qml
 Detail 1.0 Detail.qml
 Editor 1.0 Editor.qml
 FormRow 1.0 FormRow.qml

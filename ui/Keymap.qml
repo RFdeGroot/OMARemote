@@ -53,6 +53,7 @@ Singleton {
         { group: "Tabs", context: "app", action: "nextTab", keys: ["ctrl+tab", "ctrl+pgdown"], label: "Next tab" },
         { group: "Tabs", context: "app", action: "previousTab", keys: ["ctrl+shift+tab", "ctrl+pgup"], label: "Previous tab" },
         { group: "Tabs", context: "app", action: "tabN", keys: ["alt+1…9"], label: "Go to tab 1–9", run: false },
+        { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list beside sessions" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
         { group: "Tabs", context: "app", action: "quit", keys: ["ctrl+q"], label: "Quit OMARemote" },
 
@@ -62,6 +63,7 @@ Singleton {
         { group: "In a session", context: "session", action: "previousTab", keys: ["ctrl+alt+pgup"], label: "Previous tab", run: false },
         { group: "In a session", context: "session", action: "cad", keys: ["ctrl+alt+end"], label: "Send Ctrl+Alt+Del", run: false },
         { group: "In a session", context: "session", action: "fullscreen", keys: ["ctrl+alt+return"], label: "Fullscreen", run: false },
+        { group: "In a session", context: "session", action: "pin", keys: ["ctrl+alt+p"], label: "Pin or unpin the connections list", run: false },
         { group: "In a session", context: "session", action: "keys", keys: ["ctrl+alt+k"], label: "This keymap", run: false },
 
         // Editors

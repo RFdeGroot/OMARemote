@@ -71,7 +71,7 @@ Rectangle {
             Glyph {
                 id: star
                 visible: root.modelData.favourite
-                width: visible ? implicitWidth : 0
+                width: root.modelData.favourite ? implicitWidth : 0
                 text: ""
                 size: Theme.caption
                 color: Theme.accent

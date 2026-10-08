@@ -108,8 +108,6 @@ private:
 	QTimer m_attachTimer;
 	QTimer m_sizeTimer;
 
-	void* m_map = nullptr;
-	size_t m_mapSize = 0;
 	QImage m_image;
 	bool m_dirty = false;
 

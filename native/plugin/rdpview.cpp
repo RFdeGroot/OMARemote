@@ -300,18 +300,39 @@ void RdpView::setState(const QString& state, int code)
 
 // ---------------------------------------------------------------- framebuffer
 
+namespace {
+struct Mapping
+{
+	void* addr;
+	size_t size;
+};
+
+void releaseMapping(void* info)
+{
+	auto* m = static_cast<Mapping*>(info);
+	munmap(m->addr, m->size);
+	delete m;
+}
+}
+
 void RdpView::mapFrame(int fd, int w, int h, int stride)
 {
 	unmapFrame();
 	const size_t size = static_cast<size_t>(stride) * static_cast<size_t>(h);
 	void* p = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
 	close(fd);
-	if (p == MAP_FAILED || w <= 0 || h <= 0)
+	if (p == MAP_FAILED)
 		return;
-	m_map = p;
-	m_mapSize = size;
-	// BGRX in memory is 0xffRRGGBB as a little-endian word: Qt's RGB32.
-	m_image = QImage(static_cast<const uchar*>(p), w, h, stride, QImage::Format_RGB32);
+	if (w <= 0 || h <= 0)
+	{
+		munmap(p, size);
+		return;
+	}
+	// BGRX in memory is 0xffRRGGBB as a little-endian word: Qt's RGB32. The mapping lives as long
+	// as any copy of the image: the render thread uploads from a copy after sync, so unmapping
+	// here when the session resizes would pull the pixels out from under that upload.
+	m_image = QImage(static_cast<const uchar*>(p), w, h, stride, QImage::Format_RGB32, releaseMapping,
+	                 new Mapping { p, size });
 	m_dirty = true;
 	emit remoteSizeChanged();
 	update();
@@ -319,10 +340,6 @@ void RdpView::mapFrame(int fd, int w, int h, int stride)
 
 void RdpView::unmapFrame()
 {
-	if (m_map)
-		munmap(m_map, m_mapSize);
-	m_map = nullptr;
-	m_mapSize = 0;
 	m_image = QImage();
 }
 
@@ -392,8 +409,14 @@ void RdpView::itemChange(ItemChange change, const ItemChangeData& value)
 	QQuickItem::itemChange(change, value);
 	if (change == ItemDevicePixelRatioHasChanged || change == ItemSceneChange)
 		scheduleSize();
-	if (change == ItemVisibleHasChanged && value.boolValue && m_dirty)
-		update();
+	// A hidden tab sends no size, so one resized meanwhile (the list pinned or the window
+	// resized) catches up when shown; the session ignores a size it already has.
+	if (change == ItemVisibleHasChanged && value.boolValue)
+	{
+		scheduleSize();
+		if (m_dirty)
+			update();
+	}
 }
 
 void RdpView::scheduleSize()

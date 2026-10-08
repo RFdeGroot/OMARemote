@@ -30,6 +30,9 @@ FocusScope {
     property var pendingTabs: []
     // Fullscreen with the chrome hidden, for a session tab.
     property bool immersive: false
+    // The connections list docked beside session tabs; the desktop resizes to the room left.
+    readonly property bool pinned: !!Store.ui.pinned
+    readonly property int dockWidth: pinned && !immersive ? 211 : 0
 
     readonly property var tabSessions: {
         var byId = {}
@@ -56,11 +59,25 @@ FocusScope {
         })
         if (root.filter === "recent")
             return list.sort(function (a, b) { return b.lastConnected - a.lastConnected })
-        return list.sort(function (a, b) {
-            if (a.favourite !== b.favourite)
-                return a.favourite ? -1 : 1
-            return (a.name || a.host).localeCompare(b.name || b.host)
-        })
+        if (root.grouped)
+            return list.sort(function (a, b) {
+                // Groups by name, those without one last, each in the usual order.
+                if (a.group !== b.group)
+                    return !a.group ? 1 : !b.group ? -1 : a.group.localeCompare(b.group)
+                return byName(a, b)
+            })
+        return list.sort(byName)
+    }
+
+    // All connections, unsearched, is shown under group headings once there are groups.
+    readonly property bool grouped: filter === "all" && query === ""
+                                    && Store.connections.some(function (c) { return !!c.group })
+
+    // Favourites first, then by name: the list's order, and the pinned list's.
+    function byName(a, b) {
+        if (a.favourite !== b.favourite)
+            return a.favourite ? -1 : 1
+        return (a.name || a.host).localeCompare(b.name || b.host)
     }
 
     readonly property var selected: { Store.connections; return Store.get(root.selectedId) }
@@ -119,7 +136,7 @@ FocusScope {
         }
         // Start the desktop at the size it will be shown at, in device pixels.
         var dpr = Sessions.monitorScale / 100
-        Sessions.launchInTab(c.id, Math.round(content.width * dpr), Math.round(content.height * dpr), Math.round(dpr * 100))
+        Sessions.launchInTab(c.id, Math.round(sessionArea.width * dpr), Math.round(sessionArea.height * dpr), Math.round(dpr * 100))
         pendingTabs = pendingTabs.concat([c.id])
     }
 
@@ -156,6 +173,11 @@ FocusScope {
     function reconnect(s) {
         closeTab(s.id)
         connect(s.connection)
+    }
+
+    function togglePinned() {
+        Store.setUi("pinned", !pinned)
+        say(pinned ? "Connections pinned beside sessions" : "Connections unpinned")
     }
 
     function toggleImmersive() {
@@ -392,6 +414,7 @@ FocusScope {
             if (sidebarEntry && sidebarEntry.kind === "group") openGroup(sidebarEntry.value)
             else if (sidebarEntry && sidebarEntry.kind === "credential") openCredential(sidebarEntry.value)
             break
+        case "pin": togglePinned(); break
         case "nextTab": cycleTab(1); break
         case "previousTab": cycleTab(-1); break
         case "keys": keymapSheet.open(); break
@@ -429,6 +452,26 @@ FocusScope {
                     tabs: root.tabSessions.map(function (s) { return { id: s.id, title: s.name, state: s.state } })
                     onPicked: function (id) { root.showTab(id) }
                     onClosed: function (id) { root.closeTab(id) }
+                }
+                Rectangle {
+                    Layout.preferredWidth: Theme.chrome - 6
+                    Layout.preferredHeight: Theme.chrome - 6
+                    radius: Theme.radius
+                    color: root.pinned ? Theme.selection : pinMouse.containsMouse ? Theme.hover : "transparent"
+                    Glyph {
+                        anchors.centerIn: parent
+                        text: "\uf08d"
+                        size: Theme.caption
+                        color: root.pinned ? Theme.accent : Theme.muted
+                        rotation: root.pinned ? 0 : 45
+                    }
+                    MouseArea {
+                        id: pinMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.togglePinned()
+                    }
                 }
                 Input {
                     id: search
@@ -500,6 +543,7 @@ FocusScope {
                     id: list
                     anchors.fill: parent
                     model: root.shown
+                    grouped: root.grouped
                     selectedId: root.selectedId
                     onPicked: function (id) { if (!root.busy) { root.selectedId = id; root.focusList() } }
                     onActivated: function (id) { if (!root.busy) { root.selectedId = id; root.connect(id) } }
@@ -574,51 +618,77 @@ FocusScope {
             }
         }
 
-            // One view per open tab, kept alive while hidden so switching is instant. Loaded by
-            // URL so a missing native plugin breaks only the tabs, not the whole window.
-            Repeater {
-                id: tabViews
-                model: root.openTabs
-                delegate: Loader {
-                    id: tabLoader
-                    required property string modelData
-                    readonly property var session: {
-                        for (var i = 0; i < root.tabSessions.length; i++)
-                            if (root.tabSessions[i].id === modelData)
-                                return root.tabSessions[i]
-                        return null
-                    }
-                    anchors.fill: parent
-                    visible: root.currentTab === modelData
-                    focus: visible
-                    source: Qt.resolvedUrl("SessionView.qml")
-                    onLoaded: {
-                        item.session = Qt.binding(function () { return tabLoader.session })
-                        item.current = Qt.binding(function () { return root.currentTab === tabLoader.modelData })
-                        item.reconnectRequested.connect(function () { root.reconnect(tabLoader.session) })
-                        item.closeRequested.connect(function () { root.closeTab(tabLoader.modelData) })
-                        item.navigate.connect(function (where) {
-                            if (where === "keys") keymapSheet.open()
-                            else if (where === "home") root.showTab("home")
-                            else root.cycleTab(where === "next" ? 1 : -1)
-                        })
-                        item.toggleFullscreen.connect(root.toggleImmersive)
-                    }
-                    Column {
-                        anchors.centerIn: parent
-                        visible: tabLoader.status === Loader.Error
-                        spacing: Theme.gap
-                        Text {
-                            text: "Sessions cannot be shown in a tab: the native renderer is not built."
-                            color: Theme.urgent
-                            font.family: Theme.font
-                            font.pixelSize: Theme.body
+            PinnedList {
+                width: root.dockWidth
+                height: parent.height
+                visible: root.dockWidth > 0 && root.currentTab !== "home"
+                // Every connection, whatever the connections tab is searching or showing.
+                model: Store.connections.slice().sort(root.byName)
+                currentConnection: {
+                    for (var i = 0; i < root.tabSessions.length; i++)
+                        if (root.tabSessions[i].id === root.currentTab)
+                            return root.tabSessions[i].connection
+                    return ""
+                }
+                onUnpin: root.togglePinned()
+                onSwitchRequested: function (id) { root.connect(id) }
+                onConnectRequested: function (id) { root.connect(id) }
+            }
+
+            // Where session tabs draw: right of the docked list while pinned. Sized the same on
+            // the connections tab, so a new session starts at the size it will be shown at.
+            Item {
+                id: sessionArea
+                anchors.fill: parent
+                anchors.leftMargin: root.dockWidth
+
+                // One view per open tab, kept alive while hidden so switching is instant. Loaded by
+                // URL so a missing native plugin breaks only the tabs, not the whole window.
+                Repeater {
+                    id: tabViews
+                    model: root.openTabs
+                    delegate: Loader {
+                        id: tabLoader
+                        required property string modelData
+                        readonly property var session: {
+                            for (var i = 0; i < root.tabSessions.length; i++)
+                                if (root.tabSessions[i].id === modelData)
+                                    return root.tabSessions[i]
+                            return null
                         }
-                        Text {
-                            text: "Run ./install.sh, or set this connection to open in a window."
-                            color: Theme.muted
-                            font.family: Theme.font
-                            font.pixelSize: Theme.small
+                        anchors.fill: parent
+                        visible: root.currentTab === modelData
+                        focus: visible
+                        source: Qt.resolvedUrl("SessionView.qml")
+                        onLoaded: {
+                            item.session = Qt.binding(function () { return tabLoader.session })
+                            item.current = Qt.binding(function () { return root.currentTab === tabLoader.modelData })
+                            item.reconnectRequested.connect(function () { root.reconnect(tabLoader.session) })
+                            item.closeRequested.connect(function () { root.closeTab(tabLoader.modelData) })
+                            item.navigate.connect(function (where) {
+                                if (where === "keys") keymapSheet.open()
+                                else if (where === "home") root.showTab("home")
+                                else root.cycleTab(where === "next" ? 1 : -1)
+                            })
+                            item.toggleFullscreen.connect(root.toggleImmersive)
+                            item.togglePinned.connect(root.togglePinned)
+                        }
+                        Column {
+                            anchors.centerIn: parent
+                            visible: tabLoader.status === Loader.Error
+                            spacing: Theme.gap
+                            Text {
+                                text: "Sessions cannot be shown in a tab: the native renderer is not built."
+                                color: Theme.urgent
+                                font.family: Theme.font
+                                font.pixelSize: Theme.body
+                            }
+                            Text {
+                                text: "Run ./install.sh, or set this connection to open in a window."
+                                color: Theme.muted
+                                font.family: Theme.font
+                                font.pixelSize: Theme.small
+                            }
                         }
                     }
                 }
@@ -632,7 +702,7 @@ FocusScope {
             notice: root.notice
             noticeIsError: root.noticeIsError
             hints: root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"],
-                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+k", "keys"]]
+                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]]
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
                  : root.focusArea === "sidebar" ? [["j k", "move"], ["⏎", "open"], ["s", "group settings"], ["tab", "list"], ["?", "keys"]]
@@ -645,7 +715,7 @@ FocusScope {
         id: logView
         visible: root.logSession !== null
         session: root.logSession
-        x: root.currentTab === "home" ? 211 : 0
+        x: root.currentTab === "home" ? 211 : root.dockWidth
         y: header.height
         width: root.width - x
         height: root.height - header.height - statusBar.height
@@ -755,6 +825,7 @@ FocusScope {
         else if (parts[0] === "set") editor.set(parts[1], parts.slice(2).join(":"))
         else if (a === "save") (editingGroup ? groupEditor : editingCredential ? credentialEditor : editor).save()
         else if (parts[0] === "cred") openCredential(parts[1] === "new" ? "" : parts[1])
+        else if (a === "pin") togglePinned()
         else if (parts[0] === "tab") showTab(parts[1] === "1" ? openTabs[0] : parts[1])
         else if (parts[0] === "filter") filter = parts.slice(1).join(":")
         else if (parts[0] === "create") { startNew(); editor.set("host", parts[1]); editor.set("group", "Lab"); editor.save() }

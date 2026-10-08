@@ -6,6 +6,8 @@ Rectangle {
     property string icon: ""
     property string label: ""
     property int count: -1
+    // Text in the count's place, for rows that have no count (the pinned list's protocol).
+    property string note: ""
     property bool current: false
     // The keyboard cursor while the sidebar has focus.
     property bool cursor: false
@@ -15,6 +17,7 @@ Rectangle {
     property bool actionPinned: false
     signal clicked()
     signal rightClicked()
+    signal doubleClicked()
     signal actionClicked()
 
     width: parent ? parent.width : 0
@@ -69,7 +72,7 @@ Rectangle {
         anchors.right: parent.right
         anchors.rightMargin: Theme.padX
         anchors.verticalCenter: parent.verticalCenter
-        text: root.count >= 0 ? String(root.count) : ""
+        text: root.count >= 0 ? String(root.count) : root.note
         color: Theme.muted
         font.family: Theme.font
         font.pixelSize: Theme.caption
@@ -85,6 +88,10 @@ Rectangle {
                 root.rightClicked()
             else
                 root.clicked()
+        }
+        onDoubleClicked: function (event) {
+            if (event.button === Qt.LeftButton)
+                root.doubleClicked()
         }
     }
 }

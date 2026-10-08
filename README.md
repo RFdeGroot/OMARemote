@@ -5,7 +5,8 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 (`/usr/share/omarchy/shell/Commons` and `Ui`), so it follows your theme, live.
 
 - **RDP** through FreeRDP and **VNC** through libvncclient.
-- **Sessions in tabs** inside the app, or (RDP) in their own window for multi-monitor.
+- **Sessions in tabs** inside the app, or (RDP) in their own window for multi-monitor; pin the
+  connections list beside them and the remote desktop resizes to fit.
 - **HiDPI scaling** that follows Hyprland: the remote desktop matches the tab's size and your scale.
 - **Credential sets** shared between hosts, and **group settings** that connections inherit.
 - **Fast Kerberos** on networks with many domain controllers.
@@ -57,6 +58,7 @@ The most used:
 | `1`–`4` | All, Favourites, Recent, Active |
 | `tab` | move to the sidebar (`j` `k`, `⏎` open, `s` group settings, `esc` back) |
 | `ctrl+tab`, `alt+1`–`9` | switch tabs |
+| `p` | pin the connections list beside session tabs |
 | `ctrl+s` / `esc` | save / cancel in an editor; `tab` walks every field |
 
 Inside a session every key goes to the remote desktop, except these:
@@ -67,7 +69,15 @@ Inside a session every key goes to the remote desktop, except these:
 | `ctrl+alt+pgup` / `pgdn` | previous / next tab |
 | `ctrl+alt+end` | send ctrl+alt+del |
 | `ctrl+alt+⏎` | fullscreen, chrome hidden |
+| `ctrl+alt+p` | pin or unpin the connections list |
 | `ctrl+alt+k` | keymap sheet |
+
+**Pinning** (`p`, `ctrl+alt+p` or the pin in the tab strip) docks the connections on the left of
+every session tab, in the sidebar's style: running sessions under *Active*, the rest under their
+groups, always all of them whatever the connections tab is searching. The session gives up that
+width, and a desktop that follows its tab resizes to the room left; unpin and it grows back to the
+full width. Click a running connection to switch to it, double-click any to connect. The choice is
+remembered.
 
 Closing a tab disconnects (a Windows session stays logged in). Closing the app does not: sessions
 keep running and come back as tabs when it opens again.
@@ -76,6 +86,9 @@ From a keybinding or script: `omaremote connect "Work PC"`.
 
 ## Credentials and groups
 
+- **All connections** lists them under their group headings once any group exists, favourites first
+  within each group, and those without a group under OTHER. A search, and the other views, list
+  them flat.
 - **Credential sets** (sidebar, CREDENTIALS) hold a user name, domain and optionally a password
   (in the keyring) that any number of connections can use.
 - **Group settings**: right-click a group, click its gear, or press `s`. A group can name a
@@ -157,7 +170,7 @@ Each session is its own process, so one crashing never takes the window or other
 live in `$XDG_RUNTIME_DIR/omaremote/sessions/`; RDP sessions in their own window have the Wayland
 app id `omaremote-session`, for Hyprland window rules.
 
-**Data.** Connections, credential sets and group settings live in
+**Data.** Connections, credential sets, group settings and whether the list is pinned live in
 `~/.config/omaremote/connections.json`. Passwords are optional and live in the keyring
 (`secret-tool`, attributes `application=omaremote` plus `connection=<id>` or `credential=<id>`).
 They reach the session process over stdin, never on the command line.

@@ -18,6 +18,8 @@ Singleton {
     property var credentials: []
     // Per group: {credential: set id or "", settings: {key: value}}.
     property var groupSettings: ({})
+    // Window preferences: {pinned: the connections list docked beside session tabs}.
+    property var ui: ({})
     property bool loaded: false
 
     // Keep in step with DEFAULTS in bin/omaremote-session.
@@ -179,6 +181,7 @@ Singleton {
             root.stored = (data.connections || []).filter(function (c) { return c && c.id })
             root.credentials = (data.credentials || []).filter(function (c) { return c && c.id })
             root.groupSettings = data.groups || {}
+            root.ui = data.ui || {}
         } catch (e) {
             console.warn("connections.json is not valid JSON, leaving it untouched: " + e)
         }
@@ -186,7 +189,14 @@ Singleton {
     }
 
     function write() {
-        file.setText(JSON.stringify({ version: 2, credentials: credentials, groups: groupSettings, connections: stored }, null, 2) + "\n")
+        file.setText(JSON.stringify({ version: 2, ui: ui, credentials: credentials, groups: groupSettings, connections: stored }, null, 2) + "\n")
+    }
+
+    function setUi(key, value) {
+        var copy = Object.assign({}, ui)
+        copy[key] = value
+        root.ui = copy
+        write()
     }
 
     function saveStored(list) {

@@ -21,6 +21,7 @@ Item {
     signal closeRequested()
     signal navigate(string where) // home, next, previous
     signal toggleFullscreen()
+    signal togglePinned()
 
     function focusDesktop() {
         if (hasPrompt)
@@ -62,6 +63,7 @@ Item {
             else if (event.key === Qt.Key_End) view.sendCtrlAltDel()
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.toggleFullscreen()
             else if (event.key === Qt.Key_K) root.navigate("keys")
+            else if (event.key === Qt.Key_P) root.togglePinned()
             else return
             view.releaseAllKeys()
             event.accepted = true
