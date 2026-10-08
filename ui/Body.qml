@@ -146,7 +146,7 @@ FocusScope {
         currentTab = id
         if (id === "home") {
             immersive = false
-            root.forceActiveFocus()
+            root.takeKeys()
         }
     }
 
@@ -204,7 +204,7 @@ FocusScope {
 
     function finishEdit() {
         closePanels()
-        root.forceActiveFocus()
+        root.takeKeys()
     }
 
     function closePanels() {
@@ -322,13 +322,22 @@ FocusScope {
     function closeLog() {
         logSession = null
         if (currentTab === "home")
-            root.forceActiveFocus()
+            root.takeKeys()
         else {
             var view = tabViews.itemAt(openTabs.indexOf(currentTab))
             if (view && view.item)
                 view.item.focusDesktop()
         }
     }
+
+    // Gives the keyboard back to the app's own keys (the handler below). Focusing this FocusScope
+    // itself would hand the keys to whichever child had them last, even one hidden since (the
+    // editor's name field after a save, the closed keymap sheet), which then swallowed typed keys
+    // while arrows still reached the list.
+    function takeKeys() {
+        keyHome.forceActiveFocus()
+    }
+    Item { id: keyHome; focus: true }
 
     // Where list-or-sidebar keys go on the connections tab.
     property string focusArea: "list"
@@ -357,7 +366,7 @@ FocusScope {
 
     function focusList() {
         focusArea = "list"
-        root.forceActiveFocus()
+        root.takeKeys()
     }
 
     function runAction(action) {
@@ -487,10 +496,10 @@ FocusScope {
                     Keys.onPressed: function (event) {
                         if (event.key === Qt.Key_Escape) {
                             root.query = ""
-                            root.forceActiveFocus()
+                            root.takeKeys()
                             event.accepted = true
                         } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                            root.forceActiveFocus()
+                            root.takeKeys()
                             if (event.key !== Qt.Key_Down && root.shown.length === 1)
                                 root.connect(root.shown[0].id)
                             event.accepted = true
@@ -529,7 +538,7 @@ FocusScope {
                 filter: root.filter
                 editingGroup: root.editingGroup
                 editingCredential: root.editingCredential
-                onPicked: function (f) { if (root.busy) root.finishEdit(); root.filter = f; root.forceActiveFocus() }
+                onPicked: function (f) { if (root.busy) root.finishEdit(); root.filter = f; root.takeKeys() }
                 onGroupSettingsRequested: function (name) { root.openGroup(name) }
                 onCredentialRequested: function (id) { root.openCredential(id) }
             }
@@ -586,6 +595,7 @@ FocusScope {
                     onEditRequested: root.startEdit()
                     onDuplicateRequested: root.duplicateSelected()
                     onDeleteRequested: root.deleteSelected()
+                    onFavouriteRequested: root.runAction("favourite")
                     onNewRequested: root.startNew()
                 }
                 Editor {
@@ -728,12 +738,12 @@ FocusScope {
         anchors.fill: parent
         z: 100
         onRun: function (action) {
-            root.forceActiveFocus()
+            root.takeKeys()
             root.runAction(action)
         }
         onClosed: {
             if (root.currentTab === "home" && !root.busy)
-                root.forceActiveFocus()
+                root.takeKeys()
             else
                 root.refocus()
         }
@@ -748,7 +758,7 @@ FocusScope {
         } else if (editing) editor.forceActiveFocus()
         else if (editingGroup) groupEditor.forceActiveFocus()
         else if (editingCredential) credentialEditor.forceActiveFocus()
-        else root.forceActiveFocus()
+        else root.takeKeys()
     }
 
     // Surface a failure the moment it happens, even while looking at another connection.
@@ -799,7 +809,8 @@ FocusScope {
             showTab(focus)
     }
 
-    // Driven by the snapshot hook in boot/shell.qml: new, edit, down, connect, filter:<f>, query:<q>.
+    // Driven by the snapshot hook in boot/shell.qml: new, edit, down, connect, filter:<f>, query:<q>,
+    // run:<keymap action>, focus (logs which item has the keyboard).
     function debugAction(a) {
         var parts = a.split(":")
         if (a === "new") startNew()
@@ -826,6 +837,14 @@ FocusScope {
         else if (a === "save") (editingGroup ? groupEditor : editingCredential ? credentialEditor : editor).save()
         else if (parts[0] === "cred") openCredential(parts[1] === "new" ? "" : parts[1])
         else if (a === "pin") togglePinned()
+        else if (parts[0] === "run") runAction(parts[1])
+        else if (a === "focus") {
+            // Which item has the keyboard, and its parents: for chasing keys that go nowhere.
+            var chain = []
+            for (var f = root.Window.window.activeFocusItem; f; f = f.parent)
+                chain.push(String(f).split("(")[0] + (f.visible ? "" : "[hidden]"))
+            console.log("FOCUS " + (chain.join(" < ") || "nothing"))
+        }
         else if (parts[0] === "tab") showTab(parts[1] === "1" ? openTabs[0] : parts[1])
         else if (parts[0] === "filter") filter = parts.slice(1).join(":")
         else if (parts[0] === "create") { startNew(); editor.set("host", parts[1]); editor.set("group", "Lab"); editor.save() }
@@ -833,5 +852,5 @@ FocusScope {
         else if (parts[0] === "scroll") editor.children[0].children[1].contentY = parseInt(parts[1])
     }
 
-    Component.onCompleted: root.forceActiveFocus()
+    Component.onCompleted: root.takeKeys()
 }

@@ -12,6 +12,7 @@ Rectangle {
     signal editRequested()
     signal duplicateRequested()
     signal deleteRequested()
+    signal favouriteRequested()
     signal newRequested()
 
     color: Theme.surface
@@ -128,6 +129,42 @@ Rectangle {
                         color: Theme.muted
                         font.family: Theme.font
                         font.pixelSize: Theme.small
+                    }
+                }
+                // Favourite: hollow until it is one, then filled like the star in the list.
+                Rectangle {
+                    id: star
+                    readonly property bool on: !!root.connection && !!root.connection.favourite
+                    Layout.alignment: Qt.AlignTop
+                    implicitWidth: starRow.implicitWidth + 2 * Theme.gap
+                    implicitHeight: Theme.hitMin + Theme.gap
+                    radius: Theme.radius
+                    color: starMouse.containsMouse ? Theme.hover : "transparent"
+                    Row {
+                        id: starRow
+                        anchors.centerIn: parent
+                        spacing: Theme.gap
+                        Text {
+                            visible: starMouse.containsMouse
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "f"
+                            color: Theme.muted
+                            font.family: Theme.font
+                            font.pixelSize: Theme.caption
+                        }
+                        Glyph {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: star.on ? "\uf005" : "\uf006"
+                            size: Theme.title
+                            color: star.on ? Theme.accent : (starMouse.containsMouse ? Theme.foreground : Theme.muted)
+                        }
+                    }
+                    MouseArea {
+                        id: starMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.favouriteRequested()
                     }
                 }
             }
