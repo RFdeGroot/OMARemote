@@ -149,7 +149,13 @@ remembered.
 Closing a tab disconnects (a Windows session stays logged in). Closing the app does not: sessions
 keep running and come back as tabs when it opens again.
 
-From a keybinding or script: `omaremote connect "Work PC"`.
+From a keybinding or script: `omaremote open "Work PC"` shows that connection in OMARemote (its
+running session, or a new one in a tab, starting OMARemote if needed); `omaremote connect "Work PC"`
+connects without the window. Both take a connection's id, name or host.
+
+**In the Omarchy bar:** the [OMARemote plugin](https://github.com/RFdeGroot/omarchy-omaremote) lists
+running sessions and favourite connections, a click away
+(`omarchy plugin add https://github.com/RFdeGroot/omarchy-omaremote.git --enable`).
 
 ## Credentials and groups
 

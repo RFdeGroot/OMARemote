@@ -15,6 +15,7 @@ so closing the window never closes a remote desktop.
   omaremote-session args <id|name>       the FreeRDP arguments, password redacted
   omaremote-session secret set|clear|has [credential] <id>   keyring password (set reads stdin)
   omaremote-session monitor-scale        the focused Hyprland monitor scale, in percent
+  omaremote-session focus class|pid <v>  bring a window forward, switching workspace if needed
 """
 
 import json
@@ -272,6 +273,29 @@ def secret_clear(conn_id, kind="connection"):
 
 
 # ---------------------------------------------------------------- scaling
+
+def focus_window(kind, value):
+    """Brings the first window whose class is exactly value (or whose pid is) forward; True if found."""
+    try:
+        clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True,
+                                            text=True, timeout=5).stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+    key = "pid" if kind == "pid" else "class"
+    want = int(value) if key == "pid" and str(value).isdigit() else value
+    window = next((c for c in clients if c.get(key) == want), None)
+    if not window:
+        return False
+    target = "address:" + window["address"]
+    # Hyprland with a Lua config takes hl.dsp.focus and rejects the old dispatcher (exit 7);
+    # older ones only know focuswindow. Both switch to the window's workspace.
+    new = subprocess.run(["hyprctl", "dispatch", 'hl.dsp.focus({ window = "%s" })' % target],
+                         capture_output=True, text=True)
+    if new.returncode == 0 and "error" not in new.stdout.lower():
+        return True
+    subprocess.run(["hyprctl", "dispatch", "focuswindow", target], capture_output=True)
+    return True
+
 
 def monitor_scale():
     """The focused monitor's scale in percent, or 100 when Hyprland cannot answer."""
@@ -897,6 +921,8 @@ def main(argv):
         ensure_changes()
         print(json.dumps({"runtime": RUNTIME_DIR, "changes": CHANGES, "connections": CONNECTIONS}))
         return 0
+    if cmd == "focus" and len(rest) == 2 and rest[0] in ("class", "pid"):
+        return 0 if focus_window(rest[0], rest[1]) else 1
     if cmd == "monitor-scale":
         print(monitor_scale())
         return 0

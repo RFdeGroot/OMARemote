@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import "js/Format.js" as Format
 
@@ -781,6 +782,53 @@ FocusScope {
         }
     }
     property bool ready: false
+    // `omaremote open <name>` while the app was not running: connect once sessions are known.
+    onReadyChanged: if (ready && Quickshell.env("OMAREMOTE_OPEN"))
+        Qt.callLater(function () { root.openNamed(Quickshell.env("OMAREMOTE_OPEN")) })
+
+    // For `omaremote open` and the Omarchy bar plugin: qs ipc --pid <pid> call omaremote open <name>.
+    IpcHandler {
+        target: "omaremote"
+        function open(name: string): string { return root.openNamed(name) }
+        function focus(): void { root.raise() }
+    }
+
+    // A connection by id, then by name, then by host (names and hosts ignore case).
+    function findConnection(name) {
+        var want = String(name || "").trim()
+        var lower = want.toLowerCase()
+        var list = Store.connections
+        var byId = Store.get(want)
+        if (byId)
+            return byId
+        for (var i = 0; i < list.length; i++)
+            if (String(list[i].name || "").toLowerCase() === lower)
+                return list[i]
+        for (var j = 0; j < list.length; j++)
+            if (String(list[j].host || "").toLowerCase() === lower)
+                return list[j]
+        return null
+    }
+
+    // Shows the connection's running session, or connects it; brings this window forward unless
+    // the session lives in its own window (connect() focuses that one).
+    function openNamed(name) {
+        var c = findConnection(name)
+        if (!c)
+            return "unknown connection: " + name
+        var running = Sessions.activeFor(c.id)
+        var ownWindow = running.length > 0 ? !running[0].tab : (c.openIn === "window" && c.protocol !== "vnc")
+        selectedId = c.id
+        connect(c.id)
+        if (!ownWindow)
+            raise()
+        return "ok"
+    }
+
+    // This window, on whichever workspace it is.
+    function raise() {
+        Quickshell.execDetached([Sessions.bin, "focus", "class", "omaremote"])
+    }
 
     // Gives every live tab session a tab: ones just launched (and switches to them), and on
     // startup the ones still running from before, which reattach.

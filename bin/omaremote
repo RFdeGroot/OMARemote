@@ -2,7 +2,9 @@
 # omaremote: OMARemote, a remote desktop client for Omarchy.
 #
 #   omaremote                  open the connection manager
-#   omaremote connect <name>   connect straight away (for keybindings and launchers)
+#   omaremote open <name>      show a connection in OMARemote: its running session, or connect it
+#                              in a tab (by id, name or host; starts OMARemote when needed)
+#   omaremote connect <name>   connect straight away, without the window (for keybindings)
 #   omaremote list             list saved connections
 #   omaremote --version        print the version
 set -euo pipefail
@@ -24,6 +26,20 @@ for base in "${XDG_CONFIG_HOME:-$HOME/.config}" "${XDG_CACHE_HOME:-$HOME/.cache}
   [[ -d $base/oma-remote && ! -e $base/omaremote ]] && mv "$base/oma-remote" "$base/omaremote"
 done
 
+require_omarchy() {
+  if [[ ! -d /usr/share/omarchy/shell/Commons ]]; then
+    echo "omaremote needs Omarchy's shell (/usr/share/omarchy/shell)" >&2
+    exit 1
+  fi
+}
+
+# The process of the open OMARemote window, if there is one.
+running_pid() {
+  hyprctl clients -j 2>/dev/null | python3 -c 'import json,sys
+for c in json.load(sys.stdin):
+    if c.get("class") == "omaremote": print(c["pid"]); break' 2>/dev/null
+}
+
 case "${1:-}" in
   connect|launch)
     shift
@@ -36,20 +52,28 @@ try: cs=json.load(open(p)).get("connections",[])
 except FileNotFoundError: cs=[]
 for c in cs: print(c.get("name") or c.get("host"))'
     ;;
+  open)
+    shift
+    [[ -n ${1:-} ]] || { echo "usage: omaremote open <name>" >&2; exit 2; }
+    # Running: ask that window. Otherwise start one that connects once it is up.
+    pid=$(running_pid)
+    if [[ -n $pid ]]; then
+      exec qs ipc --pid "$pid" call omaremote open "$*"
+    fi
+    require_omarchy
+    OMAREMOTE_OPEN="$*" exec qs -p "$ui/boot"
+    ;;
   -h|--help|help)
-    sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   -v|--version|version)
     echo "omaremote $version"
     ;;
   "")
-    if [[ ! -d /usr/share/omarchy/shell/Commons ]]; then
-      echo "omaremote needs Omarchy's shell (/usr/share/omarchy/shell)" >&2
-      exit 1
-    fi
+    require_omarchy
     # One manager window: a second launch focuses the first.
-    if hyprctl clients -j 2>/dev/null | grep -q '"class": "omaremote"'; then
-      exec hyprctl dispatch focuswindow class:omaremote >/dev/null
+    if [[ -n $(running_pid) ]]; then
+      exec "$OMAREMOTE_BIN" focus class omaremote
     fi
     exec qs -p "$ui/boot" "$@"
     ;;

@@ -65,7 +65,7 @@ Singleton {
     // Raise the session's window; Hyprland switches to its workspace.
     function focus(s) {
         if (s && s.pid)
-            Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "pid:" + s.pid])
+            Quickshell.execDetached([bin, "focus", "pid", String(s.pid)])
     }
 
     function stop(sid) {
