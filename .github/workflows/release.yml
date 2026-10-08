@@ -1,0 +1,68 @@
+# Builds the Arch package in a clean container and attaches it, with its PKGBUILD, to the
+# GitHub release of the tag. A clean build keeps the package's metadata free of whatever the
+# maintainer's machine has installed.
+#
+# Releasing: set _tag/pkgver in packaging/arch/PKGBUILD, commit, tag (v0.2-alpha, …), push the tag.
+# For a tag pushed before this workflow existed: Actions → Release → Run workflow, with the tag.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and release (its PKGBUILD _tag must match)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Tools and build dependencies
+        run: pacman -Syu --noconfirm --needed git github-cli cmake ninja pkgconf qt6-declarative freerdp libvncserver
+
+      - uses: actions/checkout@v4
+
+      - name: Check the PKGBUILD is for this tag
+        run: |
+          grep -qx "_tag=$TAG" packaging/arch/PKGBUILD || {
+            echo "packaging/arch/PKGBUILD does not build $TAG (set _tag and pkgver)"; exit 1; }
+
+      - name: Build the package
+        run: |
+          useradd -m builder
+          install -d -o builder /home/builder/pkg
+          install -m644 -o builder packaging/arch/PKGBUILD /home/builder/pkg/PKGBUILD
+          cd /home/builder/pkg
+          # Runtime-only dependencies (omarchy among them) are not in the Arch repos and are not
+          # needed to build; the build dependencies are installed above.
+          sudo -u builder env PACKAGER="OMARemote release workflow <$GITHUB_SERVER_URL/$GH_REPO>" makepkg --nodeps
+          ls -l *.pkg.tar.zst
+
+      - name: Attach to the release
+        run: |
+          cd /home/builder/pkg
+          pkg=$(ls *.pkg.tar.zst)
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            prerelease=; [[ $TAG == *-* ]] && prerelease=--prerelease
+            cat > notes.md <<EOF
+          Install on Omarchy; pacman pulls in every dependency:
+
+          \`\`\`bash
+          sudo pacman -U $GITHUB_SERVER_URL/$GH_REPO/releases/download/$TAG/$pkg
+          \`\`\`
+
+          Or build it from source with the attached \`PKGBUILD\`: \`makepkg -si\`. See the README for more.
+          EOF
+            gh release create "$TAG" $prerelease --verify-tag --title "OMARemote ${TAG#v}" --notes-file notes.md
+          fi
+          gh release upload "$TAG" "$pkg" PKGBUILD --clobber

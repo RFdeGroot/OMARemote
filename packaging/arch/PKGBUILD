@@ -16,6 +16,8 @@ source=("git+$url.git#tag=$_tag")
 sha256sums=('SKIP')
 
 build() {
+  # Logging macros keep source paths; keep the build folder out of them.
+  export CXXFLAGS+=" -ffile-prefix-map=$srcdir/="
   cmake -S OMARemote/native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
   ninja -C build
 }
