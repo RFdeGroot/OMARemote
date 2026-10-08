@@ -27,10 +27,16 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Tools and build dependencies
-        run: pacman -Syu --noconfirm --needed git github-cli cmake ninja pkgconf qt6-declarative freerdp libvncserver
+      # Omarchy's own mirror trails Arch, and a Qt plugin built against a newer Qt than the user's
+      # will not load: build against what Omarchy installs (it keeps working on newer Qt).
+      - name: Tools and build dependencies, from Omarchy's mirror
+        run: |
+          echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syyuu --noconfirm
+          pacman -S --noconfirm --needed git github-cli cmake ninja pkgconf qt6-declarative freerdp libvncserver
+          pacman -Q qt6-base qt6-declarative freerdp libvncserver glibc
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check the PKGBUILD is for this tag
         run: |
