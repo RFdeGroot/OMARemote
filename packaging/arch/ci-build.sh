@@ -13,7 +13,9 @@ case $(uname -m) in
     pacman -Syyuu --noconfirm
     ;;
   aarch64)
-    # The plain Arch Linux ARM root filesystem: set up its keyring, add the build tools.
+    # The plain Arch Linux ARM root filesystem: set up its keyring, add the build tools. Docker
+    # blocks pacman's download sandbox (Landlock); Arch's own image turns it off the same way.
+    sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
     pacman-key --init
     pacman-key --populate archlinuxarm
     pacman -Syu --noconfirm --needed base-devel
