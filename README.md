@@ -233,6 +233,14 @@ They reach the session process over stdin, never on the command line.
 python3 -m unittest discover tests
 ```
 
+## Contributing
+
+OMARemote is meant to grow into a community project, and to become the remote desktop client for
+Omarchy. Try it and tell me what breaks or what is missing: [open an
+issue](https://github.com/RFdeGroot/OMARemote/issues/new/choose) for a bug or a feature request,
+or send a pull request. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to report a bug, how the
+code is laid out, and what a pull request needs.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

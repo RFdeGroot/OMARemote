@@ -1,0 +1,37 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Before pasting logs, replace your own host names, user names and
+        domains with examples (`dc01.acme.lan`, `alex`, `ACME`).
+  - type: input
+    id: version
+    attributes:
+      label: Version and machine
+      description: Output of `omaremote --version` and `uname -m`; release package or checkout?
+      placeholder: omaremote 0.1-alpha, x86_64, release package
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Protocol
+      options: [RDP in a tab, RDP in its own window, VNC, Not about a session]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The session log (select the connection and press `l`), or what `omaremote` prints when started from a terminal.
+      render: text

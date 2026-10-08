@@ -1,0 +1,24 @@
+name: Feature request
+description: Something OMARemote should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: The task, not the solution, e.g. "connect through an RD Gateway with a smart card".
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today?
+      description: Another client, a workaround, or not at all. If another client does it well, name it.
+  - type: dropdown
+    id: help
+    attributes:
+      label: Would you like to build it?
+      options:
+        - "No"
+        - "Yes, with some pointers"
+        - "Yes, I will open a pull request"
