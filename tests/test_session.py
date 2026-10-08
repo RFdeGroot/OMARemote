@@ -257,3 +257,30 @@ class Vnc(unittest.TestCase):
         self.assertEqual(session.resolve({"id": "v", "host": "h", "protocol": "vnc"}, data)["port"], 5900)
         self.assertEqual(session.resolve({"id": "r", "host": "h"}, data)["port"], 3389)
         self.assertEqual(session.resolve({"id": "v", "host": "h", "protocol": "vnc", "port": 5901}, data)["port"], 5901)
+
+
+class Updates(unittest.TestCase):
+    def test_versions_numbers_then_prerelease(self):
+        cmp = session.compare_versions
+        self.assertEqual(cmp("0.1.4-alpha", "0.1.4-alpha"), 0)
+        self.assertEqual(cmp("v0.1.5-alpha", "0.1.4-alpha"), 1)
+        self.assertEqual(cmp("0.1.10-alpha", "0.1.9-alpha"), 1)
+        self.assertEqual(cmp("0.1.4-alpha", "0.1.4-beta"), -1)
+        self.assertEqual(cmp("0.1.4", "0.1.4-alpha"), 1)
+        self.assertEqual(cmp("0.2", "0.1.9"), 1)
+
+    def test_newest_release_with_this_machines_package(self):
+        base = "https://github.com/RFdeGroot/OMARemote/releases/download/"
+        releases = [
+            {"tag_name": "v0.2.0-alpha", "draft": True,
+             "assets": [{"name": "omaremote-0.2.0alpha-1-x86_64.pkg.tar.zst", "browser_download_url": base + "draft"}]},
+            {"tag_name": "v0.1.5-alpha",
+             "assets": [{"name": "omaremote-0.1.5alpha-1-aarch64.pkg.tar.zst", "browser_download_url": base + "arm"}]},
+            {"tag_name": "v0.1.4-alpha",
+             "assets": [{"name": "PKGBUILD", "browser_download_url": base + "pkgbuild"},
+                        {"name": "omaremote-debug-0.1.4alpha-1-x86_64.pkg.tar.zst", "browser_download_url": base + "debug"},
+                        {"name": "omaremote-0.1.4alpha-1-x86_64.pkg.tar.zst", "browser_download_url": base + "x86"}]},
+        ]
+        self.assertEqual(session.newest_release(releases, "x86_64"), ("0.1.4-alpha", base + "x86"))
+        self.assertEqual(session.newest_release(releases, "aarch64"), ("0.1.5-alpha", base + "arm"))
+        self.assertEqual(session.newest_release([], "x86_64"), (None, None))

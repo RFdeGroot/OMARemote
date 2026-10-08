@@ -16,6 +16,8 @@ Rectangle {
         for (var j = 0; j < Store.credentials.length; j++)
             out.push({ kind: "credential", value: Store.credentials[j].id })
         out.push({ kind: "newCredential", value: "" })
+        if (Updates.canUpdate)
+            out.push({ kind: "update", value: "" })
         return out
     }
     function indexOf(kind, value) {
@@ -64,7 +66,10 @@ Rectangle {
     }
 
     Flickable {
-        anchors.fill: parent
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: footer.top
         anchors.margins: Theme.gap
         contentHeight: column.height
         clip: true
@@ -136,6 +141,58 @@ Rectangle {
                 cursor: root.hasCursor("newCredential", "")
                 onClicked: root.credentialRequested("")
             }
+        }
+    }
+
+    // The version, small at the bottom; above it the update button when GitHub has a newer release.
+    Column {
+        id: footer
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: Theme.gap
+        spacing: Theme.gap * 0.5
+
+        ActionButton {
+            id: updateButton
+            visible: Updates.canUpdate
+            width: parent.width
+            primary: true
+            fontSize: Theme.caption
+            icon: "\uf019"
+            text: "Update to " + Updates.latest
+            onClicked: Updates.install()
+
+            // The sidebar's keyboard cursor, drawn over the button so its fill does not hide it.
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -2
+                visible: root.hasCursor("update", "")
+                radius: Theme.radius + 2
+                color: "transparent"
+                border.width: 2
+                border.color: Theme.foreground
+            }
+        }
+        Text {
+            width: parent.width
+            leftPadding: Theme.padX
+            elide: Text.ElideRight
+            visible: Updates.version !== ""
+            text: "OMARemote " + Updates.version + (Updates.checkout ? " (dev)" : "")
+            color: Theme.muted
+            font.family: Theme.font
+            font.pixelSize: Theme.caption - 1
+        }
+        Text {
+            width: parent.width
+            leftPadding: Theme.padX
+            elide: Text.ElideRight
+            visible: Updates.checkout && Updates.newer
+            text: Updates.latest + " released"
+            color: Theme.muted
+            font.family: Theme.font
+            font.pixelSize: Theme.caption - 1
         }
     }
 }

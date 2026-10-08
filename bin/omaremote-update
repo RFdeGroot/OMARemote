@@ -1,0 +1,41 @@
+#!/bin/bash
+# omaremote-update: install the newest OMARemote release for this machine with pacman, then restart
+# the open OMARemote window on it. Running sessions are separate processes: they keep going and come
+# back as tabs. The update button in OMARemote runs this in a floating Omarchy terminal, where sudo
+# can ask for the password.
+set -uo pipefail
+
+here="$(dirname "$(readlink -f "$0")")"
+current=$("$here/omaremote" --version 2>/dev/null | awk '{print $2}')
+
+check=$("$here/omaremote-session" update-check "${current:-0}") || {
+  echo "Could not reach GitHub to look for a newer OMARemote."
+  exit 1
+}
+read -r latest url < <(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["latest"] or "-", d["url"] or "-")' <<<"$check")
+if [[ $url == - ]]; then
+  echo "The newest OMARemote release has no package for $(uname -m)."
+  exit 1
+fi
+if [[ $latest == "$current" ]]; then
+  echo "OMARemote $current is the newest release already."
+  exit 0
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+package="$work/${url##*/}"
+echo "Updating OMARemote $current to $latest…"
+curl -fL --progress-bar -o "$package" "$url" || exit 1
+sudo pacman -U "$package" || exit 1
+
+# The open window still runs the old version from memory: close it and start the new one.
+pid=$(hyprctl clients -j 2>/dev/null | python3 -c 'import json,sys
+for c in json.load(sys.stdin):
+    if c.get("class") == "omaremote": print(c["pid"]); break' 2>/dev/null)
+if [[ -n $pid ]]; then
+  qs ipc --pid "$pid" call omaremote quit >/dev/null 2>&1
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+fi
+setsid -f uwsm-app -- omaremote >/dev/null 2>&1
+echo "OMARemote $latest is installed."

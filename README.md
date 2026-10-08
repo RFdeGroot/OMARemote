@@ -58,6 +58,12 @@ Then restart it (close it with `super+w` and open it again); running sessions ke
 back as tabs. `omaremote --version` shows which version you have, and each release's notes say what
 changed. To hear about new releases, use *Watch → Custom → Releases* on the GitHub page.
 
+OMARemote also looks for a newer release by itself: at startup it asks GitHub's releases API once,
+and when there is one, an *Update to …* button appears at the bottom of the sidebar. It runs
+`omaremote-update` in a floating terminal: the same download and `pacman -U` as above, then
+OMARemote restarts on the new version (sessions keep running). The version you run is shown below
+it. Set `OMAREMOTE_NO_UPDATE_CHECK=1` to skip the check; a checkout only mentions a newer release.
+
 #### Building from source
 
 To build the package yourself instead, take the newest release's `PKGBUILD`:

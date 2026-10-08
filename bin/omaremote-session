@@ -16,6 +16,7 @@ so closing the window never closes a remote desktop.
   omaremote-session secret set|clear|has [credential] <id>   keyring password (set reads stdin)
   omaremote-session monitor-scale        the focused Hyprland monitor scale, in percent
   omaremote-session focus class|pid <v>  bring a window forward, switching workspace if needed
+  omaremote-session update-check <ver>   the newest release on GitHub for this machine, JSON
 """
 
 import json
@@ -273,6 +274,57 @@ def secret_clear(conn_id, kind="connection"):
 
 
 # ---------------------------------------------------------------- scaling
+
+RELEASES_API = "https://api.github.com/repos/RFdeGroot/OMARemote/releases"
+
+
+def split_version(version):
+    """'0.1.4-alpha' -> ([0, 1, 4], 'alpha'); a leading v is ignored."""
+    text = str(version or "").strip().lstrip("v")
+    core, _, tag = text.partition("-")
+    numbers = [int(n) if n.isdigit() else 0 for n in core.split(".")] if core else []
+    return numbers, tag
+
+
+def compare_versions(a, b):
+    """-1, 0 or 1. Numbers first; at equal numbers a pre-release (alpha < beta < rc) sorts before the release."""
+    (na, ta), (nb, tb) = split_version(a), split_version(b)
+    width = max(len(na), len(nb))
+    na, nb = na + [0] * (width - len(na)), nb + [0] * (width - len(nb))
+    if na != nb:
+        return -1 if na < nb else 1
+    if ta == tb:
+        return 0
+    if not ta or not tb:
+        return 1 if not ta else -1
+    return -1 if ta < tb else 1
+
+
+def newest_release(releases, arch):
+    """(version, package url) of the newest published release with a package for arch, or (None, None).
+    GitHub lists releases newest first; drafts and releases without this machine's package are skipped."""
+    pattern = re.compile(r"^omaremote-\d[^/]*-%s\.pkg\.tar\.zst$" % re.escape(arch))
+    for release in releases or []:
+        if release.get("draft"):
+            continue
+        for asset in release.get("assets") or []:
+            if pattern.match(asset.get("name", "")):
+                return release.get("tag_name", "").lstrip("v"), asset.get("browser_download_url")
+    return None, None
+
+
+def update_check(current):
+    """What the update button needs: the newest release for this machine and whether it beats current."""
+    import platform
+    import urllib.request
+    request = urllib.request.Request(RELEASES_API, headers={"Accept": "application/vnd.github+json",
+                                                            "User-Agent": "omaremote/" + current})
+    with urllib.request.urlopen(request, timeout=8) as response:
+        releases = json.load(response)
+    latest, url = newest_release(releases, platform.machine())
+    return {"current": current, "latest": latest or "", "url": url or "",
+            "newer": bool(latest) and compare_versions(latest, current) > 0}
+
 
 def focus_window(kind, value):
     """Brings the first window whose class is exactly value (or whose pid is) forward; True if found."""
@@ -920,6 +972,13 @@ def main(argv):
     if cmd == "paths":
         ensure_changes()
         print(json.dumps({"runtime": RUNTIME_DIR, "changes": CHANGES, "connections": CONNECTIONS}))
+        return 0
+    if cmd == "update-check" and len(rest) == 1:
+        try:
+            print(json.dumps(update_check(rest[0])))
+        except (OSError, ValueError) as e:
+            print(f"update check failed: {e}", file=sys.stderr)
+            return 1
         return 0
     if cmd == "focus" and len(rest) == 2 and rest[0] in ("class", "pid"):
         return 0 if focus_window(rest[0], rest[1]) else 1

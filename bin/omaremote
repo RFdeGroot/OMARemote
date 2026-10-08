@@ -14,7 +14,10 @@ here="$(dirname "$(readlink -f "$0")")"
 root="$(dirname "$here")"
 # Installed layout keeps the UI in /usr/share/omaremote; a checkout keeps it beside bin/.
 ui="$root/ui"
-[[ -d $ui ]] || ui="/usr/share/omaremote/ui"
+install_kind=checkout
+[[ -d $ui ]] || { ui="/usr/share/omaremote/ui"; install_kind=package; }
+# The window shows the version, and offers updates only to a package install.
+export OMAREMOTE_VERSION="$version" OMAREMOTE_INSTALL="$install_kind"
 export OMAREMOTE_BIN="$here/omaremote-session"
 # The tab renderer's QML plugin: a checkout's build, else the installed one.
 for qml in "$root/native/build/qml" /usr/lib/omaremote/qml; do

@@ -24,3 +24,4 @@ CredentialEditor 1.0 CredentialEditor.qml
 FollowFocus 1.0 FollowFocus.qml
 KeymapSheet 1.0 KeymapSheet.qml
 singleton Keymap 1.0 Keymap.qml
+singleton Updates 1.0 Updates.qml

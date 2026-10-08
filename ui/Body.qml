@@ -418,6 +418,7 @@ FocusScope {
             if (sidebarEntry.kind === "filter") { filter = sidebarEntry.value; focusList() }
             else if (sidebarEntry.kind === "group") { filter = "group:" + sidebarEntry.value; focusList() }
             else if (sidebarEntry.kind === "credential") openCredential(sidebarEntry.value)
+            else if (sidebarEntry.kind === "update") Updates.install()
             else openCredential("")
             break
         case "sidebarSettings":
@@ -791,6 +792,8 @@ FocusScope {
         target: "omaremote"
         function open(name: string): string { return root.openNamed(name) }
         function focus(): void { root.raise() }
+        // For bin/omaremote-update, which restarts the window on the new version.
+        function quit(): void { if (root.host) root.host.quit() }
     }
 
     // A connection by id, then by name, then by host (names and hosts ignore case).
@@ -878,7 +881,7 @@ FocusScope {
     }
 
     // Driven by the snapshot hook in boot/shell.qml: new, edit, down, connect, filter:<f>, query:<q>,
-    // run:<keymap action>, focus (logs which item has the keyboard).
+    // run:<keymap action>, focus (logs which item has the keyboard), update:<version> (as if GitHub had it).
     function debugAction(a) {
         var parts = a.split(":")
         if (a === "new") startNew()
@@ -906,6 +909,7 @@ FocusScope {
         else if (parts[0] === "cred") openCredential(parts[1] === "new" ? "" : parts[1])
         else if (a === "pin") togglePinned()
         else if (parts[0] === "run") runAction(parts[1])
+        else if (parts[0] === "update") { Updates.latest = parts.slice(1).join(":"); Updates.newer = true }
         else if (a === "focus") {
             // Which item has the keyboard, and its parents: for chasing keys that go nowhere.
             var chain = []

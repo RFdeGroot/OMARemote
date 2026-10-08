@@ -27,6 +27,7 @@ package() {
   # The launcher finds the UI in /usr/share/omaremote and the renderers in /usr/lib/omaremote.
   install -Dm755 bin/omaremote "$pkgdir/usr/bin/omaremote"
   install -Dm755 bin/omaremote-session "$pkgdir/usr/bin/omaremote-session"
+  install -Dm755 bin/omaremote-update "$pkgdir/usr/bin/omaremote-update"
   install -dm755 "$pkgdir/usr/share/omaremote"
   cp -r --no-preserve=ownership ui "$pkgdir/usr/share/omaremote/"
   install -Dm755 ../build/omaremote-rdp "$pkgdir/usr/lib/omaremote/omaremote-rdp"
