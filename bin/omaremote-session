@@ -42,7 +42,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 
 
 def tab_client(protocol="rdp"):
-    """The session process for tabs (omaremote-rdp, omaremote-vnc): a checkout's build, else the installed one."""
+    """The session process for tabs (omaremote-rdp, -vnc, -ssh): a checkout's build, else the installed one."""
     name = f"omaremote-{protocol}"
     for path in (os.environ.get("OMAREMOTE_" + protocol.upper()),
                  os.path.join(HERE, "..", "native", "build", name),
@@ -51,7 +51,8 @@ def tab_client(protocol="rdp"):
             return os.path.realpath(path)
     return None
 SESSION_APP_ID = "omaremote-session"
-CONFIG_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), APP)
+CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+CONFIG_DIR = os.path.join(CONFIG_HOME, APP)
 CONNECTIONS = os.path.join(CONFIG_DIR, "connections.json")
 RUNTIME_DIR = os.environ.get("OMAREMOTE_RUNTIME_DIR") or os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/{APP}-{os.getuid()}", APP)
@@ -86,10 +87,11 @@ DEFAULTS = {
     "gatewayDomain": "",
     "kdc": "",               # Kerberos KDCs, comma separated; empty discovers them
     "extraArgs": "",
-    "openIn": "tab",         # tab | window (RDP; VNC always opens in a tab)
+    "openIn": "tab",         # tab | window (OMARemote's own window; RDP with all monitors: FreeRDP's)
     "vncScaling": "fit",     # fit | native | resize
     "vncQuality": "auto",    # auto | high | low
     "viewOnly": False,
+    "sshArgs": "",           # SSH: extra ssh options, the connection's own (never a group's)
     "favourite": False,
     "lastConnected": 0,
 }
@@ -160,7 +162,7 @@ SETTING_KEYS = ("display", "width", "height", "scale", "multimon", "clipboard", 
                 "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn",
                 "vncScaling", "vncQuality", "viewOnly")
 
-DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900}
+DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22}
 
 
 def load_data(path=CONNECTIONS):
@@ -672,6 +674,69 @@ def build_vnc_config(conn, password=None):
     return lines
 
 
+# The terminal's look: the theme's terminal colours (Omarchy writes a foot.ini for every theme) and
+# the default terminal's font size; the font is fontconfig's monospace, which Omarchy sets.
+THEME_TERMINAL = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                              "omarchy", "current", "theme", "foot.ini")
+FONT_SIZE_RES = {
+    "foot": (os.path.join(CONFIG_HOME, "foot", "foot.ini"), r"^\s*font\s*=.*?:size=([\d.]+)"),
+    "alacritty": (os.path.join(CONFIG_HOME, "alacritty", "alacritty.toml"), r"^\s*size\s*=\s*([\d.]+)"),
+    "ghostty": (os.path.join(CONFIG_HOME, "ghostty", "config"), r"^\s*font-size\s*=\s*([\d.]+)"),
+    "kitty": (os.path.join(CONFIG_HOME, "kitty", "kitty.conf"), r"^\s*font_size\s+([\d.]+)"),
+}
+
+
+def default_terminal():
+    """The default terminal's name (foot, alacritty, ghostty, kitty), as xdg-terminal-exec picks it."""
+    try:
+        out = subprocess.run(["xdg-terminal-exec", "--print-id"], capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    out = out.strip().lower()
+    return next((name for name in FONT_SIZE_RES if name in out), "")
+
+
+def terminal_font_size(terminal=None, fallback=9.0):
+    """The point size the default terminal uses, read from its config; Omarchy's 9 otherwise."""
+    order = [terminal if terminal is not None else default_terminal()] + list(FONT_SIZE_RES)
+    for name in order:
+        if name not in FONT_SIZE_RES:
+            continue
+        path, pattern = FONT_SIZE_RES[name]
+        try:
+            with open(path, encoding="utf-8") as f:
+                m = re.search(pattern, f.read(), re.M)
+        except OSError:
+            continue
+        if m:
+            return float(m.group(1))
+    return fallback
+
+
+def build_ssh_command(conn):
+    """The ssh command line. ~/.ssh/config still applies: the port and user go along only when set."""
+    host = conn["host"].strip()
+    if not host or host.startswith("-") or any(ch.isspace() for ch in host):
+        raise ValueError(f"not a host name: {host!r}")
+    args = ["ssh"]
+    port = int(conn.get("port") or 22)
+    if port != 22:
+        args += ["-p", str(port)]
+    user = (conn.get("username") or "").strip()
+    if user:
+        args += ["-l", user]
+    args += shlex.split(conn.get("sshArgs") or "")
+    return args + [host]
+
+
+def build_ssh_config(conn):
+    """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
+    lines = [f"arg={a}" for a in build_ssh_command(conn)]
+    lines += [f"host={conn['host'].strip()}", "font=monospace", f"fontSize={terminal_font_size():g}",
+              f"theme={THEME_TERMINAL}"]
+    return lines
+
+
 def redact(args):
     out = []
     for a in args:
@@ -706,8 +771,17 @@ def session_stage(line):
     return None, None
 
 
-def describe_exit(code, log_tail):
+SSH_FAILED_RE = re.compile(r"^\[omaremote\] connection failed: (.+)$", re.M)
+
+
+def describe_exit(code, log_tail, protocol="rdp"):
     """A sentence for the UI, or None when the session simply ended."""
+    if protocol == "ssh":
+        # A shell ends with its last command's status; only ssh's own 255 means it could not connect.
+        if code != 255:
+            return None
+        said = SSH_FAILED_RE.findall(log_tail or "")
+        return said[-1].strip() if said and said[-1].strip() else "Could not connect to the server"
     if code is not None and code < 0:
         return None  # killed by a signal: stopped from the UI
     if code in EXIT_MESSAGES:
@@ -969,8 +1043,8 @@ def session_socket(sid):
 def supervise(conn, sid, tab=None):
     """Runs detached: starts the session's client, follows its log, records state until it exits."""
     protocol = conn.get("protocol") or "rdp"
-    if protocol == "vnc" and not tab:
-        tab = {"width": 1280, "height": 800, "scale": 100}  # VNC sessions always live in a tab
+    if protocol in ("vnc", "ssh") and not tab:
+        tab = {"width": 1280, "height": 800, "scale": 100}  # VNC and SSH sessions always live in a tab
     log_path = os.path.join(SESSIONS_DIR, sid + ".log")
     socket_path = session_socket(sid) if tab else None
     state = {
@@ -984,7 +1058,7 @@ def supervise(conn, sid, tab=None):
         # or, for a session without a tab renderer, FreeRDP's own window.
         "view": "tab" if tab else "window", "viewer": None,
     }
-    if protocol == "vnc":
+    if protocol in ("vnc", "ssh"):
         state["stage"] = "Connecting"
     write_session(state)
     krb_env = {}
@@ -999,6 +1073,8 @@ def supervise(conn, sid, tab=None):
         password = secret_get(conn["secretId"], conn.get("secretKind", "connection"))
     if protocol == "vnc":
         args = build_vnc_config(conn, password=password)
+    elif protocol == "ssh":
+        args = build_ssh_config(conn)
     else:
         args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
     env = dict(os.environ, SDL_APP_ID=SESSION_APP_ID, WLOG_LEVEL=os.environ.get("WLOG_LEVEL", "INFO"),
@@ -1052,7 +1128,7 @@ def supervise(conn, sid, tab=None):
             if state["state"] != "connecting":
                 continue
             # gdi_init_ex runs in post-connect: the session is up and drawing.
-            # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc says so itself.
+            # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc and -ssh say so themselves.
             if "gdi_init_ex" in line or line.startswith("[omaremote] connected to"):
                 state.update(state="connected", stage=None)
                 write_session(state)
@@ -1065,7 +1141,7 @@ def supervise(conn, sid, tab=None):
                 write_session(state)
     code = proc.wait()
     stopped = os.path.join(SESSIONS_DIR, sid + ".stop")
-    error = None if os.path.exists(stopped) else describe_exit(code, "".join(tail))
+    error = None if os.path.exists(stopped) else describe_exit(code, "".join(tail), protocol)
     if os.path.exists(stopped):
         os.remove(stopped)
     state.update(state="failed" if error else "ended", exitCode=code, error=error, ended=int(time.time()))
@@ -1170,6 +1246,9 @@ def main(argv):
             return 2
         if conn.get("protocol") == "vnc":
             print("\n".join(redact(build_vnc_config(conn, "x" if conn["savePassword"] else None))))
+            return 0
+        if conn.get("protocol") == "ssh":
+            print(" ".join(shlex.quote(a) for a in build_ssh_command(conn)))
             return 0
         print(" ".join(shlex.quote(a) for a in redact(build_args(conn, "x" if conn["savePassword"] else None,
                                                                     monitor_scale()))))

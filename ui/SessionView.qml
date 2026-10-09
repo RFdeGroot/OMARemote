@@ -46,11 +46,13 @@ Item {
         visible: root.current
         socketPath: root.live && root.session.socket ? root.session.socket : ""
         // RDP: the desktop follows the tab unless fixed. VNC: fit scales the picture to the tab,
-        // native shows it pixel for pixel, resize asks the server to follow the tab.
+        // native shows it pixel for pixel, resize asks the server to follow the tab. SSH: the
+        // terminal always fills the tab, at the screen's own scale.
         followSize: !root.connection ? true
                   : root.connection.protocol === "vnc" ? root.connection.vncScaling !== "fit"
+                  : root.connection.protocol === "ssh" ? true
                   : root.connection.display !== "fixed"
-        desktopScale: root.connection && root.connection.protocol !== "vnc" && root.connection.scale !== "auto"
+        desktopScale: root.connection && (root.connection.protocol || "rdp") === "rdp" && root.connection.scale !== "auto"
                       ? parseInt(root.connection.scale) : 0
         focus: root.current
 
@@ -82,7 +84,7 @@ Item {
         spacing: Theme.gap * 1.5
         Glyph {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: ""
+            text: root.session && root.session.protocol === "ssh" ? "" : ""
             size: Theme.display * 2
             color: Theme.accent
             SequentialAnimation on opacity {

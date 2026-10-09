@@ -6,7 +6,7 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 
 ![The connections: library, groups and credential sets in the sidebar, connections grouped, details of the selected one](docs/screenshots/connections.png)
 
-- **RDP** through FreeRDP and **VNC** through libvncclient.
+- **RDP** through FreeRDP, **VNC** through libvncclient, and **SSH** in a terminal drawn in the tab.
 - **Sessions in tabs** inside the app, or (RDP) in their own window for multi-monitor; pin the
   connections list beside them and the remote desktop resizes to fit.
 - **HiDPI scaling** that follows Hyprland: the remote desktop matches the tab's size and your scale.
@@ -135,6 +135,7 @@ the packages to install:
 | building the tab renderers | `cmake`, `ninja`, `gcc`, `pkgconf`, `qt6-declarative` |
 | RDP | `freerdp` (3.x) |
 | VNC | `libvncserver` (for libvncclient) |
+| SSH | `openssh`, `libvterm`, `libxkbcommon` |
 | optional | `libnotify` (a notification when a session fails) |
 
 `./install.sh --install-deps` installs the missing packages with pacman (it asks first),
@@ -263,6 +264,27 @@ They sign in with a VNC password, or a user name and password for servers that a
 - Clipboard text goes both ways (UTF-8 where the server supports it), and the server's cursor is
   drawn locally. Keys are sent as X keysyms, so the server's own keyboard layout applies.
 
+## SSH
+
+Pick **SSH** as a connection's protocol (port 22 by default). The session is a terminal OMARemote
+draws in the tab (or in its own window), so it gets tabs, pinning and own windows like the desktops,
+and it keeps running when you close OMARemote.
+
+- **Sign in** is plain `ssh`: your keys and ssh-agent (1Password's agent works too), and ssh asks
+  in the terminal for anything else (a password, a new host key, a second factor). OMARemote stores
+  no SSH passwords.
+- **`~/.ssh/config` applies.** The host can be a `Host` alias from it; the port and user name are
+  only passed when the connection sets them, so jump hosts, keys and users from your config still
+  work. *Extra ssh options* are passed to ssh as-is (for example `-J jump.example.com`).
+- **Looks like your terminal**: Omarchy's terminal font (fontconfig's `monospace`) at your default
+  terminal's size, in the theme's terminal colours, following a theme switch live.
+- **Keys**: `ctrl+shift+c` copies the selection (drag to select), `ctrl+shift+v`, `shift+insert`
+  or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel scroll back (10,000 lines).
+  Programs that use the mouse (htop, vim with `mouse=a`) get it; hold `shift` to select anyway.
+  Remote programs can set your clipboard (OSC 52, as tmux and Neovim do). The `ctrl+alt` keys stay
+  OMARemote's, as in every session.
+- A session that ends normally just closes; one where ssh could not connect shows ssh's reason.
+
 ## How it works
 
 ```
@@ -271,6 +293,7 @@ bin/omaremote            launcher: opens the UI, or `connect <name>`
 bin/omaremote-session    backend: session settings, keyring, Kerberos discovery, session supervisor
 native/rdp/              omaremote-rdp: an RDP session for a tab (libfreerdp)
 native/vnc/              omaremote-vnc: a VNC session for a tab (libvncclient)
+native/ssh/              omaremote-ssh: an SSH session for a tab (ssh in a pty, libvterm, drawn with Qt)
 native/common/           the link both share with the UI
 native/plugin/           RdpView, the Qt Quick item that shows a session in a tab
 ```
@@ -278,10 +301,11 @@ native/plugin/           RdpView, the Qt Quick item that shows a session in a ta
 **Tabs.** Wayland has no way to embed another program's window, so the app draws sessions itself.
 Each session is its own process, so one crashing never takes the window or other tabs with it:
 
-- libfreerdp or libvncclient renders into a shared-memory framebuffer (memfd);
+- libfreerdp or libvncclient renders into a shared-memory framebuffer (memfd); for SSH,
+  omaremote-ssh runs ssh in a pseudo-terminal and draws libvterm's screen into one;
 - the UI attaches over a Unix socket in `$XDG_RUNTIME_DIR/omaremote/sessions/`, receives that
   framebuffer as a file descriptor plus damage rectangles, and sends input back: keys (scancodes
-  for RDP, keysyms for VNC), mouse, wheel, text clipboard, and resizes with the HiDPI scale;
+  for RDP, keysyms for VNC, keysyms and typed text for SSH), mouse, wheel, text clipboard, and resizes with the HiDPI scale;
 - certificate and credential questions are asked inside the tab.
 
 **Sessions** run under a detached supervisor, so closing the window keeps them open. State and logs

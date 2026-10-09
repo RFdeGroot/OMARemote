@@ -21,8 +21,8 @@ case $(uname -m) in
     pacman -Syu --noconfirm --needed base-devel
     ;;
 esac
-pacman -S --noconfirm --needed git cmake ninja pkgconf qt6-declarative freerdp libvncserver
-pacman -Q qt6-base qt6-declarative freerdp libvncserver
+pacman -S --noconfirm --needed git cmake ninja pkgconf qt6-declarative freerdp libvncserver libvterm libxkbcommon
+pacman -Q qt6-base qt6-declarative freerdp libvncserver libvterm
 
 useradd -m builder
 install -d -o builder /home/builder/pkg

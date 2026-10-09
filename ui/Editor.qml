@@ -17,13 +17,15 @@ Rectangle {
 
     readonly property bool isNew: !d.id
     readonly property bool isVnc: d.protocol === "vnc"
+    readonly property bool isSsh: d.protocol === "ssh"
+    readonly property bool isRdp: !isVnc && !isSsh
+    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22 })
 
     // Switching protocol moves the port along when it is still the old protocol's default.
     function pickProtocol(value) {
         var next = Object.assign({}, d)
-        var defaults = { rdp: 3389, vnc: 5900 }
-        if (!next.port || Number(next.port) === defaults[next.protocol || "rdp"])
-            next.port = defaults[value]
+        if (!next.port || Number(next.port) === defaultPorts[next.protocol || "rdp"])
+            next.port = defaultPorts[value]
         next.protocol = value
         d = next
     }
@@ -105,7 +107,10 @@ Rectangle {
         if (!c.name.trim())
             c.name = c.host
         var port = parseInt(c.port)
-        c.port = port > 0 && port < 65536 ? port : 3389
+        c.port = port > 0 && port < 65536 ? port : defaultPorts[c.protocol || "rdp"]
+        // SSH signs in with keys and the agent (ssh asks for anything else): no credential sets.
+        if (c.protocol === "ssh")
+            c.credential = "custom"
         if (c.credential === "new" && !String(c.username || "").trim()) {
             error = "A credential set needs a user name."
             userField.forceActiveFocus()
@@ -176,7 +181,7 @@ Rectangle {
                     label: "Protocol"
                     Segment {
                         value: root.d.protocol || "rdp"
-                        options: [{ value: "rdp", label: "RDP" }, { value: "vnc", label: "VNC" }]
+                        options: [{ value: "rdp", label: "RDP" }, { value: "vnc", label: "VNC" }, { value: "ssh", label: "SSH" }]
                         onPicked: function (v) { root.pickProtocol(v) }
                     }
                 }
@@ -197,7 +202,7 @@ Rectangle {
                         Input {
                             id: hostField
                             Layout.fillWidth: true
-                            placeholderText: "pc.example.com"
+                            placeholderText: root.isSsh ? "server.example.com or a Host from ~/.ssh/config" : "pc.example.com"
                             text: root.d.host || ""
                             onTextEdited: { root.set("host", text); root.error = "" }
                         }
@@ -205,8 +210,8 @@ Rectangle {
                             id: portField
                             Layout.preferredWidth: 72
                             width: 72
-                            placeholderText: root.isVnc ? "5900" : "3389"
-                            text: String(root.d.port || (root.isVnc ? 5900 : 3389))
+                            placeholderText: String(root.defaultPorts[root.d.protocol || "rdp"])
+                            text: String(root.d.port || root.defaultPorts[root.d.protocol || "rdp"])
                             validator: IntValidator { bottom: 1; top: 65535 }
                             onTextEdited: root.set("port", text)
                         }
@@ -226,6 +231,7 @@ Rectangle {
                 Section { text: "SIGN IN" }
                 FormRow {
                     label: "Credentials"
+                    visible: !root.isSsh
                     Kit.Dropdown {
                         id: credentialPicker
                         width: parent.width
@@ -237,17 +243,19 @@ Rectangle {
                 }
                 FormRow {
                     label: "User name"
-                    visible: root.ownCredentials
+                    visible: root.ownCredentials || root.isSsh
+                    help: root.isSsh ? "Keys and ssh-agent sign in; ssh asks for anything else" : ""
                     Input {
                         id: userField
-                        placeholderText: root.d.credential === "new" ? "administrator" : "asks when connecting"
+                        placeholderText: root.isSsh ? "from ~/.ssh/config, else yours"
+                                       : root.d.credential === "new" ? "administrator" : "asks when connecting"
                         text: root.d.username || ""
                         onTextEdited: root.set("username", text)
                     }
                 }
                 FormRow {
                     label: "Domain"
-                    visible: !root.isVnc && (root.ownCredentials)
+                    visible: root.isRdp && (root.ownCredentials)
                     Input {
                         id: domainField
                         placeholderText: "optional, e.g. corp.lan"
@@ -257,7 +265,7 @@ Rectangle {
                 }
                 FormRow {
                     label: "Password"
-                    visible: root.ownCredentials
+                    visible: root.ownCredentials && !root.isSsh
                     Input {
                         id: passwordField
                         password: true
@@ -276,7 +284,7 @@ Rectangle {
                 FormRow {
                     label: "Save credentials"
                     help: root.d.credential === "new" ? "As a set others can use" : "Password in your keyring"
-                    visible: root.ownCredentials
+                    visible: root.ownCredentials && !root.isSsh
                     Check {
                         checked: !!root.d.savePassword
                         onToggled: root.set("savePassword", !checked)
@@ -284,7 +292,7 @@ Rectangle {
                 }
                 FormRow {
                     label: "Password"
-                    visible: !root.ownCredentials
+                    visible: !root.ownCredentials && !root.isSsh
                     Text {
                         width: parent.width
                         topPadding: 6
@@ -351,7 +359,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("display")
                     label: "Resolution"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     Segment {
                         value: root.d.display || "fit"
                         options: [{ value: "fit", label: "Fit window" }, { value: "fullscreen", label: "Fullscreen" }, { value: "fixed", label: "Fixed" }]
@@ -362,7 +370,7 @@ Rectangle {
                     inherited: root.fromGroup("width") && root.fromGroup("height")
                     label: "Size"
                     help: "Scaled to the window"
-                    visible: !root.isVnc && (root.d.display === "fixed")
+                    visible: root.isRdp && (root.d.display === "fixed")
                     RowLayout {
                         width: parent.width
                         spacing: Theme.gap
@@ -387,7 +395,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("scale")
                     label: "Scale"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "Auto follows Hyprland, now " + Sessions.monitorScale + "%"
                     Segment {
                         value: String(root.d.scale || "auto")
@@ -399,7 +407,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("multimon")
                     label: "All monitors"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "With own window: FreeRDP's window, across every screen"
                     Check {
                         checked: !!root.d.multimon
@@ -407,10 +415,11 @@ Rectangle {
                     }
                 }
 
-                Section { text: "DEVICES" }
+                Section { text: "DEVICES"; visible: !root.isSsh }
                 FormRow {
                     inherited: root.fromGroup("clipboard")
                     label: "Clipboard"
+                    visible: !root.isSsh
                     Check {
                         checked: !!root.d.clipboard
                         onToggled: root.set("clipboard", !checked)
@@ -419,7 +428,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("audio")
                     label: "Sound"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     Segment {
                         value: root.d.audio || "local"
                         options: [{ value: "local", label: "Here" }, { value: "remote", label: "On remote" }, { value: "off", label: "Off" }]
@@ -429,7 +438,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("microphone")
                     label: "Microphone"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     Check {
                         checked: !!root.d.microphone
                         onToggled: root.set("microphone", !checked)
@@ -438,7 +447,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("homeDrive")
                     label: "Home folder"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "Shared as a drive"
                     Check {
                         checked: !!root.d.homeDrive
@@ -448,7 +457,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("grabKeyboard")
                     label: "Super key"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "Send to remote instead of Hyprland"
                     Check {
                         checked: !!root.d.grabKeyboard
@@ -460,7 +469,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("security")
                     label: "Security"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     Segment {
                         value: root.d.security || "auto"
                         options: [{ value: "auto", label: "Auto" }, { value: "nla", label: "NLA" }, { value: "tls", label: "TLS" }, { value: "rdp", label: "RDP" }]
@@ -470,7 +479,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("network")
                     label: "Network"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     Segment {
                         value: root.d.network || "auto"
                         options: [{ value: "auto", label: "Auto" }, { value: "lan", label: "LAN" }, { value: "broadband", label: "Broadband" }, { value: "modem", label: "Slow" }]
@@ -480,7 +489,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("ignoreCert")
                     label: "Ignore certificate"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "Skip the server identity check"
                     Check {
                         checked: !!root.d.ignoreCert
@@ -490,7 +499,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("gateway")
                     label: "Gateway"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "RD Gateway, optional"
                     Input {
                         placeholderText: "gateway.example.com"
@@ -501,7 +510,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("gatewayUser")
                     label: "Gateway user"
-                    visible: !root.isVnc && (!!(root.d.gateway || "").trim())
+                    visible: root.isRdp && (!!(root.d.gateway || "").trim())
                     Input {
                         placeholderText: "same as above"
                         text: root.d.gatewayUser || ""
@@ -511,7 +520,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("kdc")
                     label: "Kerberos KDC"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "Found automatically; list DCs to pin them"
                     Input {
                         placeholderText: "auto  (dc1.corp.lan, dc2.corp.lan)"
@@ -520,9 +529,19 @@ Rectangle {
                     }
                 }
                 FormRow {
+                    label: "Extra ssh options"
+                    visible: root.isSsh
+                    help: "Passed to ssh as-is"
+                    Input {
+                        placeholderText: "-J jump.example.com  -A"
+                        text: root.d.sshArgs || ""
+                        onTextEdited: root.set("sshArgs", text)
+                    }
+                }
+                FormRow {
                     inherited: root.fromGroup("extraArgs")
                     label: "Extra arguments"
-                    visible: !root.isVnc
+                    visible: root.isRdp
                     help: "Passed to FreeRDP as-is"
                     Input {
                         placeholderText: "/kbd:layout:0x409"

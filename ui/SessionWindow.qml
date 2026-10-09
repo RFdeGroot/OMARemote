@@ -148,7 +148,8 @@ FocusScope {
         StatusBar {
             Layout.fillWidth: true
             showCounts: false
-            hints: [["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+end", "ctrl+alt+del"],
+            hints: [["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
+                    root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"] : ["ctrl+alt+end", "ctrl+alt+del"],
                     ["ctrl+alt+home", "to connections"], ["super+w", "disconnect"]]
         }
     }

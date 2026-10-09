@@ -287,6 +287,58 @@ class Updates(unittest.TestCase):
         self.assertEqual(session.newest_release([], "x86_64"), (None, None))
 
 
+class Ssh(unittest.TestCase):
+    def ssh(self, **kw):
+        return conn(protocol="ssh", **kw)
+
+    def test_plain_host_leaves_the_rest_to_ssh_config(self):
+        self.assertEqual(session.build_ssh_command(self.ssh(port=22)), ["ssh", "pc.lan"])
+
+    def test_port_user_and_options(self):
+        cmd = session.build_ssh_command(self.ssh(port=2222, username="admin", sshArgs="-J jump.lan -A"))
+        self.assertEqual(cmd, ["ssh", "-p", "2222", "-l", "admin", "-J", "jump.lan", "-A", "pc.lan"])
+
+    def test_freerdp_arguments_never_reach_ssh(self):
+        self.assertEqual(session.build_ssh_command(self.ssh(extraArgs="/kbd:layout:0x409")), ["ssh", "pc.lan"])
+
+    def test_a_host_that_looks_like_an_option_is_refused(self):
+        with self.assertRaises(ValueError):
+            session.build_ssh_command(self.ssh(host="-oProxyCommand=evil"))
+
+    def test_config_lines(self):
+        lines = session.build_ssh_config(self.ssh())
+        self.assertEqual(lines[:2], ["arg=ssh", "arg=pc.lan"])
+        self.assertIn("font=monospace", lines)
+        self.assertTrue(any(l.startswith("theme=") and l.endswith("foot.ini") for l in lines))
+
+    def test_shell_exit_codes_are_not_failures(self):
+        self.assertIsNone(session.describe_exit(0, "", "ssh"))
+        self.assertIsNone(session.describe_exit(1, "", "ssh"))
+        self.assertIsNone(session.describe_exit(130, "", "ssh"))
+
+    def test_ssh_failure_says_why(self):
+        tail = "[omaremote] connected to pc.lan\n[omaremote] connection failed: ssh: connect to host pc.lan port 22: Connection refused\n"
+        self.assertEqual(session.describe_exit(255, tail, "ssh"), "ssh: connect to host pc.lan port 22: Connection refused")
+        self.assertEqual(session.describe_exit(255, "", "ssh"), "Could not connect to the server")
+
+    def test_font_size_from_the_terminal_config(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "foot.ini")
+            with open(path, "w") as f:
+                f.write("[main]\nfont=JetBrainsMono Nerd Font:size=11\n")
+            saved = dict(session.FONT_SIZE_RES)
+            try:
+                session.FONT_SIZE_RES.clear()
+                session.FONT_SIZE_RES["foot"] = (path, saved["foot"][1])
+                self.assertEqual(session.terminal_font_size("foot"), 11.0)
+                session.FONT_SIZE_RES["foot"] = (os.path.join(d, "missing"), saved["foot"][1])
+                self.assertEqual(session.terminal_font_size("foot"), 9.0)
+            finally:
+                session.FONT_SIZE_RES.clear()
+                session.FONT_SIZE_RES.update(saved)
+
+
 class Views(unittest.TestCase):
     def setUp(self):
         import tempfile

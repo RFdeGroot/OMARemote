@@ -105,7 +105,7 @@ Rectangle {
                     color: Theme.selection
                     Glyph {
                         anchors.centerIn: parent
-                        text: ""
+                        text: root.connection && root.connection.protocol === "ssh" ? "" : ""
                         size: Theme.display
                         color: Theme.accent
                     }
@@ -286,6 +286,8 @@ Rectangle {
                         var c = root.connection
                         if (!c)
                             return ""
+                        if (c.protocol === "ssh")
+                            return c.username ? c.username : "from ~/.ssh/config, else yours"
                         var who = Format.account(c) || "asks when connecting"
                         if (c.credentialSource === "group")
                             return c.secretId ? who + "  (from group " + c.group + ")" : "asks when connecting (group " + c.group + " has no credentials)"
@@ -294,14 +296,21 @@ Rectangle {
                         return who
                     }
                 }
+                readonly property bool ssh: !!root.connection && root.connection.protocol === "ssh"
                 Fact {
-                    label: "Password"
-                    value: !root.connection ? "" : !root.connection.savePassword ? "asks when connecting"
+                    label: parent.ssh ? "Sign in" : "Password"
+                    value: !root.connection ? "" : parent.ssh ? "keys and ssh-agent; ssh asks for anything else"
+                         : !root.connection.savePassword ? "asks when connecting"
                          : Sessions.passwordStored(root.connection) === false ? "not stored yet" : "stored in keyring"
                 }
-                Fact { label: "Display"; value: root.connection ? Format.displayLabel(root.connection, Sessions.monitorScale) : "" }
-                Fact { label: "Devices"; value: root.connection ? Format.devicesLabel(root.connection) : "" }
-                Fact { label: "Gateway"; value: root.connection ? root.connection.gateway : "" }
+                Fact {
+                    label: parent.ssh ? "Opens in" : "Display"
+                    value: !root.connection ? "" : parent.ssh ? (root.connection.openIn === "window" ? "its own window" : "a tab")
+                         : Format.displayLabel(root.connection, Sessions.monitorScale)
+                }
+                Fact { label: "Devices"; value: root.connection && !parent.ssh ? Format.devicesLabel(root.connection) : "" }
+                Fact { label: "ssh options"; value: parent.ssh ? (root.connection.sshArgs || "") : "" }
+                Fact { label: "Gateway"; value: root.connection && !parent.ssh ? root.connection.gateway : "" }
                 Fact { label: "Group"; value: root.connection ? root.connection.group : "" }
                 Fact { label: "Last connected"; value: root.connection ? Format.ago(root.connection.lastConnected) : "" }
             }

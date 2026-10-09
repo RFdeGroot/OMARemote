@@ -62,6 +62,11 @@ need_pkgconfig "RDP" winpr3 freerdp
 # VNC: libvncclient (VNC tabs).
 need_pkgconfig "VNC" libvncclient libvncserver
 
+# SSH: ssh in a terminal OMARemote draws (libvterm for the screen, xkbcommon for keys).
+need_command "SSH" ssh openssh
+need_pkgconfig "SSH" vterm libvterm
+need_pkgconfig "SSH" xkbcommon libxkbcommon
+
 # Nice to have: a desktop notification when a session started from the command line fails.
 if ! command -v notify-send >/dev/null 2>&1; then
   echo "note: notify-send not found (package libnotify): no desktop notification when a session fails" >&2

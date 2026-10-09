@@ -135,7 +135,7 @@ FocusScope {
         if (c.openIn === "window" && c.protocol !== "vnc") {
             say("Connecting to " + (c.name || c.host) + "…")
             // All monitors needs FreeRDP's own window; otherwise OMARemote draws the window itself.
-            if (c.multimon) {
+            if (c.multimon && (c.protocol || "rdp") === "rdp") {
                 Sessions.launch(c.id)
                 return
             }
@@ -386,6 +386,15 @@ FocusScope {
         keyHome.forceActiveFocus()
     }
     Item { id: keyHome; focus: true }
+
+    // The tab shown is a terminal: its hints are copy and paste, not ctrl+alt+del.
+    readonly property bool currentIsSsh: {
+        var list = Sessions.sessions
+        for (var i = 0; i < list.length; i++)
+            if (list[i].id === currentTab)
+                return list[i].protocol === "ssh"
+        return false
+    }
 
     // Where list-or-sidebar keys go on the connections tab.
     property string focusArea: "list"
@@ -774,8 +783,9 @@ FocusScope {
             visible: !root.immersive
             notice: root.notice
             noticeIsError: root.noticeIsError
-            hints: root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"],
-                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]]
+            hints: root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"]]
+                                                .concat(root.currentIsSsh ? [["ctrl+shift+c/v", "copy/paste"]] : [["ctrl+alt+end", "ctrl+alt+del"]])
+                                                .concat([["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]])
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
                  : root.focusArea === "sidebar" ? [["j k", "move"], ["⏎", "open"], ["s", "group settings"], ["tab", "list"], ["?", "keys"]]

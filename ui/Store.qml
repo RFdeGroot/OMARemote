@@ -30,14 +30,14 @@ Singleton {
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", kdc: "",
-        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false,
+        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, sshArgs: "",
         favourite: false, lastConnected: 0
     })
     // Settings a group can set (SETTING_KEYS in bin/omaremote-session).
     readonly property var settingKeys: ["display", "width", "height", "scale", "multimon", "clipboard", "audio",
         "microphone", "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
         "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn", "vncScaling", "vncQuality", "viewOnly"]
-    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900 })
+    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22 })
     readonly property var resolvedOnly: ["credentialSource", "secretKind", "secretId"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.

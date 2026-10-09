@@ -25,6 +25,14 @@ add_executable(omaremote-vnc vnc/main.cpp)
 target_link_libraries(omaremote-vnc PRIVATE omaremote-link PkgConfig::VNC)
 target_compile_options(omaremote-vnc PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
+# SSH sessions: ssh in a pseudo-terminal, libvterm for the screen, Qt (offscreen) to draw it.
+pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm)
+pkg_check_modules(XKB REQUIRED IMPORTED_TARGET xkbcommon)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Gui)
+add_executable(omaremote-ssh ssh/main.cpp)
+target_link_libraries(omaremote-ssh PRIVATE omaremote-link Qt6::Gui PkgConfig::VTERM PkgConfig::XKB)
+target_compile_options(omaremote-ssh PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
 # The QML side: RdpView shows a session in the app and forwards input.
 find_package(Qt6 6.5 REQUIRED COMPONENTS Quick)
 qt_standard_project_setup(REQUIRES 6.5)

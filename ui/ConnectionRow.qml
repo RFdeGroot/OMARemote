@@ -37,7 +37,7 @@ Rectangle {
         x: Theme.padX + 2
         width: Theme.icon * 1.6
         anchors.verticalCenter: parent.verticalCenter
-        text: ""
+        text: root.modelData.protocol === "ssh" ? "" : ""
         size: Theme.title
         color: root.stateColor
         SequentialAnimation on opacity {

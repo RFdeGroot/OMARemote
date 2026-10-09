@@ -3,12 +3,12 @@ pkgname=omaremote
 _tag=v0.1.9-alpha
 pkgver=0.1.9alpha
 pkgrel=1
-pkgdesc="Keyboard-first remote desktop client (RDP, VNC) for Omarchy"
+pkgdesc="Keyboard-first remote desktop client (RDP, VNC, SSH) for Omarchy"
 arch=('x86_64' 'aarch64')
 url="https://github.com/RFdeGroot/OMARemote"
 license=('MIT')
 depends=('omarchy' 'quickshell' 'hyprland' 'qt6-declarative' 'freerdp' 'libvncserver'
-         'python' 'libsecret' 'coreutils')
+         'libvterm' 'libxkbcommon' 'openssh' 'python' 'libsecret' 'coreutils')
 makedepends=('git' 'cmake' 'ninja' 'pkgconf')
 optdepends=('libnotify: a desktop notification when a session started from the command line fails')
 options=('!debug')
@@ -32,6 +32,7 @@ package() {
   cp -r --no-preserve=ownership ui "$pkgdir/usr/share/omaremote/"
   install -Dm755 ../build/omaremote-rdp "$pkgdir/usr/lib/omaremote/omaremote-rdp"
   install -Dm755 ../build/omaremote-vnc "$pkgdir/usr/lib/omaremote/omaremote-vnc"
+  install -Dm755 ../build/omaremote-ssh "$pkgdir/usr/lib/omaremote/omaremote-ssh"
   local qml="$pkgdir/usr/lib/omaremote/qml/OMARemote"
   install -Dm755 ../build/qml/OMARemote/libomaremote_plugin.so "$qml/libomaremote_plugin.so"
   install -Dm644 -t "$qml" ../build/qml/OMARemote/qmldir ../build/qml/OMARemote/omaremote_plugin.qmltypes
