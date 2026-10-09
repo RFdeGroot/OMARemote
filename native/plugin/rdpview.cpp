@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <utility>
 
 // Toggle-key bits of the RDP synchronize event (KBD_SYNC_*).
 static constexpr int kSyncScroll = 1, kSyncNum = 2, kSyncCaps = 4;
@@ -113,7 +114,10 @@ void RdpView::detach()
 	m_attachTimer.stop();
 	if (m_fd < 0)
 		return;
+	// A failed send detaches on its own: then there is nothing left to do here.
 	releaseAllKeys();
+	if (m_fd < 0)
+		return;
 	delete m_notifier;
 	m_notifier = nullptr;
 	close(m_fd);
@@ -259,6 +263,8 @@ void RdpView::handleLine(const QByteArray& line)
 		setCursor(Qt::BlankCursor);
 	else if (cmd == "cursor-default")
 		setCursor(Qt::ArrowCursor);
+	else if (cmd == "cursor-text")
+		setCursor(Qt::IBeamCursor);
 	else if (cmd == "clip" && w.size() >= 2)
 	{
 		m_lastClip = unb64(w[1]);
@@ -510,13 +516,24 @@ void RdpView::keyPressEvent(QKeyEvent* e)
 	const quint32 code = e->nativeScanCode();
 	if (code < 8)
 	{
+		// Text without a key (an input method's or compose's result): SSH types it.
+		if (!e->text().isEmpty())
+		{
+			send("text " + e->text().toUtf8().toBase64());
+			e->accept();
+			return;
+		}
 		e->ignore();
 		return;
 	}
 	const quint32 evdev = code - 8;
 	m_pressed.insert(evdev);
-	// RDP sends the scancode; VNC needs the keysym, which on Wayland and X11 is the native virtual key.
-	send("key 1 " + QByteArray::number(evdev) + ' ' + QByteArray::number(e->nativeVirtualKey()));
+	// RDP sends the scancode; VNC needs the keysym, which on Wayland and X11 is the native virtual key;
+	// SSH types the text the layout made of it (dead keys included).
+	QByteArray line = "key 1 " + QByteArray::number(evdev) + ' ' + QByteArray::number(e->nativeVirtualKey());
+	if (!e->text().isEmpty())
+		line += ' ' + e->text().toUtf8().toBase64();
+	send(line);
 	e->accept();
 }
 
@@ -541,9 +558,11 @@ void RdpView::keyReleaseEvent(QKeyEvent* e)
 
 void RdpView::releaseAllKeys()
 {
-	for (quint32 evdev : std::as_const(m_pressed))
+	// Taken off the list first: a send to a session that just ended detaches, and detaching
+	// releases the keys again (the Enter of an SSH "exit" is still held when the session ends).
+	const QSet<quint32> keys = std::exchange(m_pressed, {});
+	for (quint32 evdev : keys)
 		send("key 0 " + QByteArray::number(evdev));
-	m_pressed.clear();
 }
 
 void RdpView::focusInEvent(QFocusEvent* e)
