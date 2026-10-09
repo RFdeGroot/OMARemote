@@ -73,8 +73,16 @@ Updating by hand works too: run the install commands above again, and pacman upg
 place; then close it with `super+w` and open it again. Each release's notes say what changed; to
 hear about new ones, use *Watch → Custom → Releases* on the GitHub page.
 
-**Turning the startup check off.** The check is one request to `api.github.com` when OMARemote
-starts. To skip it, set `OMAREMOTE_NO_UPDATE_CHECK=1` in the environment Omarchy gives your apps,
+**The bar plugin.** The sidebar's footer also looks after the
+[Omarchy bar plugin](https://github.com/RFdeGroot/omarchy-omaremote): when it is not installed,
+an *Install bar plugin* button runs `omarchy plugin add` for it in a floating terminal (where Omarchy
+asks where in the bar it goes); when the plugin has a newer release, *Update bar plugin* runs
+`omarchy plugin update rfdegroot.omaremote` there. Not interested? *hide* next to "Bar plugin not installed"
+(or `x` on the button) keeps the offer away for good; "Show the bar plugin offer again" in the
+keymap (`?`) brings it back.
+
+**Turning the startup check off.** The check is two requests to `api.github.com` when OMARemote
+starts (OMARemote and the plugin). To skip it, set `OMAREMOTE_NO_UPDATE_CHECK=1` in the environment Omarchy gives your apps,
 then log out and back in:
 
 ```bash
@@ -218,8 +226,8 @@ running sessions and favourite connections, a click away
 - **Open in: Own window** shows the session in a window of its own, with its name on top and its
   keys at the bottom. It opens floating at 90% of the screen, centred, on the current workspace;
   from there it is an ordinary window (Omarchy's keys resize it, tile it, move it). `ctrl+alt+t`
-  there moves it into a tab of the manager, `ctrl+alt+home` too while the manager comes forward on
-  its connections; `ctrl+alt+o` in a tab sends it out to its own window. The connection stays up
+  there moves it into a tab of the manager without leaving your workspace; `ctrl+alt+home` does too,
+  and takes you to the manager on its connections; `ctrl+alt+o` in a tab sends it out to its own window. The connection stays up
   either way. `omaremote open --window <name>` does the same from a script or keybinding. With *All monitors* on, the
   session opens in FreeRDP's own window (`sdl-freerdp3`) instead, spanning every screen.
 

@@ -190,8 +190,8 @@ FocusScope {
         Quickshell.execDetached(["uwsm-app", "--", Sessions.bin.replace(/omaremote-session$/, "omaremote"), "window", id])
     }
 
-    // An own window's ctrl+alt+t (or omaremote adopt): the session moves into a tab here, shown, or
-    // with home, kept in its tab while the connections come forward.
+    // An own window's ctrl+alt+t (or omaremote adopt): the session moves into a tab here, shown there
+    // without taking the focus; with home (ctrl+alt+home) the manager comes forward on its connections.
     function adoptSession(id, home) {
         var list = Sessions.sessions
         for (var i = 0; i < list.length; i++) {
@@ -204,7 +204,9 @@ FocusScope {
             if (openTabs.indexOf(id) < 0)
                 openTabs = openTabs.concat([id])
             showTab(home ? "home" : id)
-            raise()
+            // ctrl+alt+home goes to the manager (its workspace); ctrl+alt+t leaves you where you are.
+            if (home)
+                raise()
             return "ok"
         }
         return "unknown session: " + id
@@ -464,7 +466,19 @@ FocusScope {
             else if (sidebarEntry.kind === "group") { filter = "group:" + sidebarEntry.value; focusList() }
             else if (sidebarEntry.kind === "credential") openCredential(sidebarEntry.value)
             else if (sidebarEntry.kind === "update") Updates.install()
+            else if (sidebarEntry.kind === "pluginInstall") Updates.installPlugin()
+            else if (sidebarEntry.kind === "pluginUpdate") Updates.updatePlugin()
             else openCredential("")
+            break
+        case "sidebarDismiss":
+            if (sidebarEntry && sidebarEntry.kind === "pluginInstall") {
+                Updates.declinePlugin(true)
+                say("Bar plugin offer hidden; ? → \"Show the bar plugin offer again\" brings it back")
+            }
+            break
+        case "pluginOffer":
+            Updates.declinePlugin(false)
+            say(Updates.pluginMissing ? "Bar plugin offer shown again" : "The bar plugin is installed already")
             break
         case "sidebarSettings":
             if (sidebarEntry && sidebarEntry.kind === "group") openGroup(sidebarEntry.value)
@@ -983,6 +997,8 @@ FocusScope {
         else if (a === "popout") popOut(currentTab)
         else if (parts[0] === "run") runAction(parts[1])
         else if (parts[0] === "update") { Updates.latest = parts.slice(1).join(":"); Updates.newer = true }
+        else if (a === "plugin-missing") { Updates.pluginSupported = true; Updates.pluginInstalled = false }
+        else if (a === "plugin-newer") { Updates.pluginSupported = true; Updates.pluginNewer = true }
         else if (a === "focus") {
             // Which item has the keyboard, and its parents: for chasing keys that go nowhere.
             var chain = []

@@ -47,6 +47,7 @@ Singleton {
         { group: "Sidebar", context: "sidebar", action: "sidebarUp", keys: ["k", "up"], label: "Previous entry" },
         { group: "Sidebar", context: "sidebar", action: "sidebarOpen", keys: ["return", "enter", "l", "right"], label: "Open view, group or credential set" },
         { group: "Sidebar", context: "sidebar", action: "sidebarSettings", keys: ["s", "menu"], label: "Group settings" },
+        { group: "Sidebar", context: "sidebar", action: "sidebarDismiss", keys: ["x", "delete"], label: "Hide the bar plugin offer (on it)" },
         { group: "Sidebar", context: "sidebar", action: "focusList", keys: ["tab", "escape", "h", "left"], label: "Back to the list" },
 
         // Tabs
@@ -54,6 +55,7 @@ Singleton {
         { group: "Tabs", context: "app", action: "previousTab", keys: ["ctrl+shift+tab", "ctrl+pgup"], label: "Previous tab" },
         { group: "Tabs", context: "app", action: "tabN", keys: ["alt+1…9"], label: "Go to tab 1–9", run: false },
         { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list" },
+        { group: "Tabs", context: "app", action: "pluginOffer", keys: [], label: "Show the bar plugin offer again" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
         { group: "Tabs", context: "app", action: "quit", keys: ["ctrl+q"], label: "Quit OMARemote" },
 

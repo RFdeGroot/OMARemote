@@ -18,6 +18,10 @@ Rectangle {
         out.push({ kind: "newCredential", value: "" })
         if (Updates.canUpdate)
             out.push({ kind: "update", value: "" })
+        if (Updates.pluginOffered)
+            out.push({ kind: "pluginInstall", value: "" })
+        else if (Updates.pluginNewer)
+            out.push({ kind: "pluginUpdate", value: "" })
         return out
     }
     function indexOf(kind, value) {
@@ -193,6 +197,54 @@ Rectangle {
             color: Theme.muted
             font.family: Theme.font
             font.pixelSize: Theme.caption - 1
+        }
+
+        // The Omarchy bar plugin: installed from here when missing, updated when it has a new release.
+        ActionButton {
+            visible: Updates.pluginOffered || Updates.pluginNewer
+            width: parent.width
+            primary: Updates.pluginNewer
+            fontSize: Theme.caption
+            icon: Updates.pluginOffered ? "\uf067" : "\uf019"
+            text: Updates.pluginOffered ? "Install bar plugin" : "Update bar plugin"
+            onClicked: Updates.pluginOffered ? Updates.installPlugin() : Updates.updatePlugin()
+
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -2
+                visible: root.hasCursor("pluginInstall", "") || root.hasCursor("pluginUpdate", "")
+                radius: Theme.radius + 2
+                color: "transparent"
+                border.width: 2
+                border.color: Theme.foreground
+            }
+        }
+        // "hide" declines the offer for good (x or del on the button does the same).
+        Row {
+            visible: Updates.pluginOffered
+            leftPadding: Theme.padX
+            spacing: Theme.gap
+            Text {
+                text: "Bar plugin not installed"
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.caption - 1
+            }
+            Text {
+                text: "hide"
+                color: hideMouse.containsMouse ? Theme.foreground : Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.caption - 1
+                font.underline: true
+                MouseArea {
+                    id: hideMouse
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Updates.declinePlugin(true)
+                }
+            }
         }
     }
 }

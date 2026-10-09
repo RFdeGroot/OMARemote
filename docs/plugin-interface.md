@@ -14,7 +14,20 @@ plugin's `AGENTS.md` points back here.
 | Quickshell IPC target `omaremote`: `open(name) -> "ok" \| "unknown connection: …"`, `focus()`. `name` is a connection's id, name or host; failing those, a running session's connection id or session id (so a session whose connection was deleted while it ran still comes forward) | `ui/Body.qml` (`openNamed`, `showRunning`) | through `omaremote open` |
 | `omaremote-session paths` prints JSON `{runtime, changes, connections}` | `bin/omaremote-session` | which files to watch |
 | The `changes` file is rewritten in place on every session event | `bin/omaremote-session` (`touch_changes`) | refresh the session list |
-| `omaremote-session list` prints a JSON array of sessions: `id`, `connection`, `name`, `host`, `protocol`, `state` (`connecting`, `connected`, `failed`, …), `tab` (bool: drawn by OMARemote, in a tab or an own window; false for FreeRDP's own window), `view` (`tab` or `window`: where it is shown now), `viewer` (process of its own window, or null), `pid` | `bin/omaremote-session` (`list_sessions`) | the ACTIVE rows (`view` says "own window") |
+| `omaremote-session list` prints a JSON array of sessions: `id`, `connection`, `name`, `host`, `protocol`, `state` (`connecting`, `connected`, `failed`, …), `tab` (bool: drawn by OMARemote, in a tab or an own window; false for FreeRDP's own window), `view` (`tab` or `window`: where it is shown now; always `window` when `tab` is false), `viewer` (process of OMARemote's own window, or null, always null for FreeRDP's window), `pid` | `bin/omaremote-session` (`list_sessions`) | the ACTIVE rows (`view` says "own window") |
 | `connections.json`: `{connections: [{id, name, host, protocol, favourite, …}]}` (a bare array is accepted too), written in place | `ui/Store.qml` | the FAVOURITES rows |
 | Window app id / Hyprland class `omaremote` | `ui/boot/shell.qml` (`AppId` pragma) | is OMARemote open? (autohide) |
 | Release assets `omaremote-<pkgver>-<pkgrel>-<arch>.pkg.tar.zst` on GitHub releases, x86_64 and aarch64 | `.github/workflows/release.yml` | the Install/Update button |
+
+## What OMARemote relies on from the plugin
+
+OMARemote's sidebar offers to install the plugin when it is missing and to update it when it has a
+newer release (`omaremote-session plugin-check`, `ui/Updates.qml`). For that it relies on:
+
+| What | Used for |
+| --- | --- |
+| The plugin id `rfdegroot.omaremote`, installed by Omarchy as a git checkout in `~/.config/omarchy/plugins/rfdegroot.omaremote` | installed? (`manifest.json` there) |
+| `manifest.json` `version` is the released version (`0.3.0`, no `v`) | the installed version |
+| Releases on GitHub tagged `v<version>`, matching that manifest version | the newest version (drafts are ignored) |
+| **`main` only moves at a release** (work happens on a `dev` branch and is merged into `main` when it is released) | `omarchy plugin add` and `omarchy plugin update` take `main`'s latest commit, so the update button installs exactly the newest release |
+| Installing: `omarchy plugin add https://github.com/RFdeGroot/omarchy-omaremote.git --enable`; updating: `omarchy plugin update rfdegroot.omaremote` | the two buttons, run in a floating terminal |

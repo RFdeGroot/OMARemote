@@ -17,6 +17,8 @@ so closing the window never closes a remote desktop.
   omaremote-session monitor-scale        the focused Hyprland monitor scale, in percent
   omaremote-session focus class|pid <v>  bring a window forward, switching workspace if needed
   omaremote-session update-check <ver>   the newest release on GitHub for this machine, JSON
+  omaremote-session plugin-check [--offline] [--latest <ver>]   the Omarchy bar plugin: installed,
+                                         newer release (--latest: compare with a release already known)
   omaremote-session view <id> tab|window [pid]   where a session is shown (window: its process)
   omaremote-session fullscreen           toggle fullscreen for the focused window
   omaremote-session float pid <pid> [%]  float a window at % (90) of its monitor, centred
@@ -320,6 +322,50 @@ def newest_release(releases, arch):
             if pattern.match(asset.get("name", "")):
                 return release.get("tag_name", "").lstrip("v"), asset.get("browser_download_url")
     return None, None
+
+
+PLUGIN_ID = "rfdegroot.omaremote"
+PLUGIN_REPO = "https://github.com/RFdeGroot/omarchy-omaremote.git"
+PLUGIN_RELEASES_API = "https://api.github.com/repos/RFdeGroot/omarchy-omaremote/releases"
+
+
+def newest_tag(releases):
+    """The version of the newest published (not draft) release, '' when there is none."""
+    for release in releases or []:
+        if not release.get("draft") and release.get("tag_name"):
+            return release["tag_name"].lstrip("v")
+    return ""
+
+
+def plugin_check(offline=False, plugins_dir=None, latest=""):
+    """The bar plugin as the sidebar footer needs it. Omarchy's plugin add/update follow the plugin's
+    main branch, which only moves at a release, so a newer release means an update is waiting."""
+    import shutil
+    plugins_dir = plugins_dir or os.path.expanduser("~/.config/omarchy/plugins")
+    folder = os.path.join(plugins_dir, PLUGIN_ID)
+    result = {"supported": bool(shutil.which("omarchy-plugin-add")), "installed": False,
+              "version": "", "git": os.path.isdir(os.path.join(folder, ".git")), "latest": latest, "newer": False}
+    try:
+        with open(os.path.join(folder, "manifest.json"), encoding="utf-8") as f:
+            result["version"] = str(json.load(f).get("version") or "")
+        result["installed"] = True
+    except (OSError, ValueError):
+        pass
+    if offline or not result["supported"]:
+        result["newer"] = (result["installed"] and result["git"] and bool(latest)
+                           and compare_versions(latest, result["version"]) > 0)
+        return result
+    import urllib.request
+    try:
+        request = urllib.request.Request(PLUGIN_RELEASES_API, headers={"Accept": "application/vnd.github+json",
+                                                                       "User-Agent": "omaremote"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            result["latest"] = newest_tag(json.load(response))
+    except (OSError, ValueError):
+        return result
+    result["newer"] = (result["installed"] and result["git"] and bool(result["latest"])
+                       and compare_versions(result["latest"], result["version"]) > 0)
+    return result
 
 
 def update_check(current):
@@ -1142,6 +1188,19 @@ def main(argv):
         return open_window(" ".join(rest))
     if cmd == "fullscreen":
         toggle_fullscreen()
+        return 0
+    if cmd == "plugin-check":
+        offline, latest, args = False, "", list(rest)
+        while args:
+            arg = args.pop(0)
+            if arg == "--offline":
+                offline = True
+            elif arg == "--latest" and args:
+                latest = args.pop(0)
+            else:
+                print(__doc__.strip(), file=sys.stderr)
+                return 2
+        print(json.dumps(plugin_check(offline=offline, latest=latest)))
         return 0
     if cmd == "update-check" and len(rest) == 1:
         try:

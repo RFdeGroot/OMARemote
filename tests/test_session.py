@@ -347,3 +347,25 @@ class FloatSize(unittest.TestCase):
 
     def test_unknown_monitor_falls_back(self):
         self.assertEqual(session.float_size({}, 90), (1728, 972))
+
+
+class PluginCheck(unittest.TestCase):
+    def test_newest_tag_skips_drafts(self):
+        self.assertEqual(session.newest_tag([{"tag_name": "v0.4.0", "draft": True}, {"tag_name": "v0.3.0"}]), "0.3.0")
+        self.assertEqual(session.newest_tag([]), "")
+
+    def test_not_installed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as plugins:
+            result = session.plugin_check(offline=True, plugins_dir=plugins)
+        self.assertEqual((result["installed"], result["version"], result["newer"]), (False, "", False))
+
+    def test_installed_version_from_its_manifest(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as plugins:
+            folder = os.path.join(plugins, session.PLUGIN_ID)
+            os.makedirs(os.path.join(folder, ".git"))
+            with open(os.path.join(folder, "manifest.json"), "w") as f:
+                json.dump({"id": session.PLUGIN_ID, "version": "0.2.0"}, f)
+            result = session.plugin_check(offline=True, plugins_dir=plugins)
+        self.assertEqual((result["installed"], result["version"], result["git"]), (True, "0.2.0", True))
