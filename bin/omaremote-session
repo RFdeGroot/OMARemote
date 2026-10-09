@@ -412,7 +412,9 @@ def merge(local, incoming, now=None, allow_deletions=()):
                     report["restored"].append(new.get("name") or new.get("host"))
                 continue
             new = portable_connection(ic)
-            new["credential"] = "inherit" if (groups.get(new.get("group") or "") or {}).get("credential") else "custom"
+            # A group's credential set signs desktops in; SSH signs in with keys, never with a set.
+            grouped = (groups.get(new.get("group") or "") or {}).get("credential")
+            new["credential"] = "inherit" if grouped and new.get("protocol") != "ssh" else "custom"
             conns.append(new)
             report["added"].append(new.get("name") or new.get("host"))
 

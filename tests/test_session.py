@@ -480,6 +480,11 @@ class Sync(unittest.TestCase):
         data, _ = session.merge(local, [self.remote(self.c(group="Servers"))], self.NOW)
         self.assertEqual(data["connections"][0]["credential"], "inherit")
 
+    def test_an_added_ssh_connection_never_takes_a_credential_set(self):
+        local = self.local(groups={"Servers": {"credential": "k1", "settings": {}}})
+        data, _ = session.merge(local, [self.remote(self.c(group="Servers", protocol="ssh", port=22))], self.NOW)
+        self.assertEqual(data["connections"][0]["credential"], "custom")
+
     def test_newer_change_wins_and_local_fields_stay(self):
         local = self.local(self.c(name="old", modified=100, username="alice", credential="custom"))
         data, report = session.merge(local, [self.remote(self.c(name="new", modified=200))], self.NOW)
