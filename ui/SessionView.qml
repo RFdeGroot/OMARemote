@@ -11,6 +11,8 @@ Item {
     // The backend's record of this session (Sessions.sessions entry).
     property var session: null
     property bool current: false
+    // Shown in an own window (SessionWindow) instead of a tab.
+    property bool inWindow: false
     readonly property var connection: { Store.connections; return session ? Store.get(session.connection) : null }
     readonly property bool live: !!session && Sessions.isActive(session)
     readonly property bool showDesktop: view.state === "connected" && live
@@ -19,7 +21,7 @@ Item {
 
     signal reconnectRequested()
     signal closeRequested()
-    signal navigate(string where) // home, next, previous
+    signal navigate(string where) // home, next, previous, keys, window (out of the tab), tab (into one)
     signal toggleFullscreen()
     signal togglePinned()
 
@@ -63,6 +65,8 @@ Item {
             else if (event.key === Qt.Key_End) view.sendCtrlAltDel()
             else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.toggleFullscreen()
             else if (event.key === Qt.Key_K) root.navigate("keys")
+            else if (event.key === Qt.Key_O && !root.inWindow) root.navigate("window")
+            else if (event.key === Qt.Key_T && root.inWindow) root.navigate("tab")
             else if (event.key === Qt.Key_P) root.togglePinned()
             else return
             view.releaseAllKeys()
@@ -145,7 +149,7 @@ Item {
             spacing: Theme.gap
             ActionButton { primary: true; icon: ""; text: "Reconnect"; hint: "⏎"; onClicked: root.reconnectRequested() }
             ActionButton { text: "Log"; hint: "l"; onClicked: Sessions.openLog(root.session) }
-            ActionButton { text: "Close tab"; hint: "w"; onClicked: root.closeRequested() }
+            ActionButton { text: root.inWindow ? "Close" : "Close tab"; hint: "w"; onClicked: root.closeRequested() }
         }
         focus: visible && root.current
         Keys.onPressed: function (event) {

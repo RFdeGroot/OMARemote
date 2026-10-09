@@ -166,6 +166,7 @@ Inside a session every key goes to the remote desktop, except these:
 | `ctrl+alt+pgup` / `pgdn` | previous / next tab |
 | `ctrl+alt+end` | send ctrl+alt+del |
 | `ctrl+alt+⏎` | fullscreen, chrome hidden |
+| `ctrl+alt+o` | move the session to its own window (`ctrl+alt+t` there: back into a tab) |
 | `ctrl+alt+p` | pin or unpin the connections list |
 | `ctrl+alt+k` | keymap sheet |
 
@@ -214,7 +215,13 @@ running sessions and favourite connections, a click away
   to Windows as the desktop scale plus the nearest device scale (100/140/180). Pinning a value
   (100–200) overrides it.
 - **Fixed** asks for a set resolution and scales the picture to fit.
-- **Open in: Own window** runs `sdl-freerdp3` instead of a tab, which also covers *All monitors*.
+- **Open in: Own window** shows the session in a window of its own, with its name on top and its
+  keys at the bottom. It opens floating at 90% of the screen, centred, on the current workspace;
+  from there it is an ordinary window (Omarchy's keys resize it, tile it, move it). `ctrl+alt+t`
+  there moves it into a tab of the manager, `ctrl+alt+home` too while the manager comes forward on
+  its connections; `ctrl+alt+o` in a tab sends it out to its own window. The connection stays up
+  either way. `omaremote open --window <name>` does the same from a script or keybinding. With *All monitors* on, the
+  session opens in FreeRDP's own window (`sdl-freerdp3`) instead, spanning every screen.
 
 ### Kerberos
 
@@ -270,8 +277,8 @@ Each session is its own process, so one crashing never takes the window or other
 - certificate and credential questions are asked inside the tab.
 
 **Sessions** run under a detached supervisor, so closing the window keeps them open. State and logs
-live in `$XDG_RUNTIME_DIR/omaremote/sessions/`; RDP sessions in their own window have the Wayland
-app id `omaremote-session`, for Hyprland window rules.
+live in `$XDG_RUNTIME_DIR/omaremote/sessions/`; sessions in their own window (OMARemote's or FreeRDP's) have the
+Wayland app id `omaremote-session`, for Hyprland window rules.
 
 **Data.** Connections, credential sets, group settings and whether the list is pinned live in
 `~/.config/omaremote/connections.json`. Passwords are optional and live in the keyring

@@ -17,6 +17,11 @@ so closing the window never closes a remote desktop.
   omaremote-session monitor-scale        the focused Hyprland monitor scale, in percent
   omaremote-session focus class|pid <v>  bring a window forward, switching workspace if needed
   omaremote-session update-check <ver>   the newest release on GitHub for this machine, JSON
+  omaremote-session view <id> tab|window [pid]   where a session is shown (window: its process)
+  omaremote-session fullscreen           toggle fullscreen for the focused window
+  omaremote-session float pid <pid> [%]  float a window at % (90) of its monitor, centred
+  omaremote-session summon pid <pid>     move a window to the current workspace and focus it
+  omaremote-session open-window <name>   a connection in a floating window of its own, here
 """
 
 import json
@@ -218,6 +223,10 @@ def find_connection(key, connections):
     for c in connections:
         if c.get("name", "").lower() == lowered:
             return c
+    # By host last, as the window's open() does.
+    for c in connections:
+        if c.get("host", "").lower() == lowered:
+            return c
     return None
 
 
@@ -326,27 +335,156 @@ def update_check(current):
             "newer": bool(latest) and compare_versions(latest, current) > 0}
 
 
-def focus_window(kind, value):
-    """Brings the first window whose class is exactly value (or whose pid is) forward; True if found."""
+def set_view(sid, view, viewer=None):
+    """Records where a session is shown; False when there is no such session."""
     try:
-        clients = json.loads(subprocess.run(["hyprctl", "clients", "-j"], capture_output=True,
-                                            text=True, timeout=5).stdout or "[]")
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+        with open(_session_path(sid), encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
         return False
+    state["view"] = view
+    state["viewer"] = int(viewer) if view == "window" and viewer else None
+    write_session(state, keep=())
+    return True
+
+
+def toggle_fullscreen():
+    """Fullscreen on or off for the focused window (hl.dsp first, as for focus_window)."""
+    new = subprocess.run(["hyprctl", "dispatch", 'hl.dsp.window.fullscreen({ mode = "fullscreen" })'],
+                         capture_output=True, text=True)
+    if new.returncode == 0 and "error" not in new.stdout.lower():
+        return
+    subprocess.run(["hyprctl", "dispatch", "fullscreen", "0"], capture_output=True)
+
+
+def _hyprctl_json(*args):
+    try:
+        return json.loads(subprocess.run(["hyprctl", *args, "-j"], capture_output=True, text=True,
+                                         timeout=5).stdout or "null")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def find_window(kind, value, wait=0.0):
+    """The Hyprland client whose class is exactly value (or whose pid is), waiting up to wait seconds
+    for it to appear (a window just started is not mapped yet)."""
     key = "pid" if kind == "pid" else "class"
     want = int(value) if key == "pid" and str(value).isdigit() else value
-    window = next((c for c in clients if c.get(key) == want), None)
+    deadline = time.time() + wait
+    while True:
+        window = next((c for c in _hyprctl_json("clients") or [] if c.get(key) == want), None)
+        if window or time.time() >= deadline:
+            return window
+        time.sleep(0.1)
+
+
+def hypr_dispatch(lua, *old):
+    """Hyprland with a Lua config takes hl.dsp.*; older ones only the classic dispatcher (old)."""
+    new = subprocess.run(["hyprctl", "dispatch", lua], capture_output=True, text=True)
+    if new.returncode == 0 and "error" not in new.stdout.lower():
+        return
+    if old:
+        subprocess.run(["hyprctl", "dispatch", *old], capture_output=True)
+
+
+def focus_window(kind, value):
+    """Brings the first window whose class is exactly value (or whose pid is) forward; True if found.
+    Both dispatchers switch to the window's workspace."""
+    window = find_window(kind, value)
     if not window:
         return False
     target = "address:" + window["address"]
-    # Hyprland with a Lua config takes hl.dsp.focus and rejects the old dispatcher (exit 7);
-    # older ones only know focuswindow. Both switch to the window's workspace.
-    new = subprocess.run(["hyprctl", "dispatch", 'hl.dsp.focus({ window = "%s" })' % target],
-                         capture_output=True, text=True)
-    if new.returncode == 0 and "error" not in new.stdout.lower():
-        return True
-    subprocess.run(["hyprctl", "dispatch", "focuswindow", target], capture_output=True)
+    hypr_dispatch('hl.dsp.focus({ window = "%s" })' % target, "focuswindow", target)
     return True
+
+
+def float_size(monitor, percent):
+    """percent of a monitor in logical pixels (what Hyprland sizes windows in), rotation included."""
+    scale = float(monitor.get("scale") or 1)
+    width, height = monitor.get("width", 1920) / scale, monitor.get("height", 1080) / scale
+    if monitor.get("transform", 0) % 2:
+        width, height = height, width
+    return int(width * percent / 100), int(height * percent / 100)
+
+
+def float_window(pid, percent=90):
+    """Floats a just-opened window at percent of its monitor, centred; True if the window showed up."""
+    window = find_window("pid", pid, wait=5)
+    if not window:
+        return False
+    monitor = next((m for m in _hyprctl_json("monitors") or [] if m.get("id") == window.get("monitor")), {})
+    width, height = float_size(monitor, percent)
+    target = "address:" + window["address"]
+    if not window.get("floating"):
+        hypr_dispatch('hl.dsp.window.float({ action = "enable", window = "%s" })' % target, "setfloating", target)
+    hypr_dispatch('hl.dsp.window.resize({ x = %d, y = %d, window = "%s" })' % (width, height, target),
+                  "resizewindowpixel", "exact %d %d,%s" % (width, height, target))
+    hypr_dispatch('hl.dsp.window.center({ window = "%s" })' % target, "centerwindow")
+    return True
+
+
+def summon_window(pid):
+    """Moves a window to the current workspace and focuses it; True if found."""
+    window = find_window("pid", pid)
+    if not window:
+        return False
+    workspace = (_hyprctl_json("activeworkspace") or {}).get("id")
+    target = "address:" + window["address"]
+    if workspace is not None and window.get("workspace", {}).get("id") != workspace:
+        hypr_dispatch('hl.dsp.window.move({ workspace = "%s", follow = false, window = "%s" })' % (workspace, target),
+                      "movetoworkspacesilent", "%s,%s" % (workspace, target))
+    hypr_dispatch('hl.dsp.focus({ window = "%s" })' % target, "focuswindow", target)
+    return True
+
+
+def spawn_window(sid):
+    """Opens omaremote window <sid>: a window of its own for a running session, on this workspace."""
+    subprocess.Popen(["uwsm-app", "--", os.path.join(HERE, "omaremote"), "window", sid],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def open_window(name):
+    """omaremote open --window: the connection in a floating window of its own on the current workspace.
+    Running in a tab: it moves out (the manager hands it over). In a window already: that window comes
+    here. Not running: it connects straight into a window, without the manager."""
+    conn = find_connection(name, load_connections())
+    want = conn["id"] if conn else name
+    running = [s for s in list_sessions() if s.get("state") in ("connecting", "connected")
+               and (s.get("connection") == want or s.get("id") == want)]
+    if running:
+        s = running[0]
+        if not s.get("tab"):
+            return 0 if summon_window(s.get("pid")) else 1
+        if s.get("view") == "window" and s.get("viewer"):
+            return 0 if summon_window(s["viewer"]) else 1
+        manager = find_window("class", APP)
+        if manager:
+            subprocess.run(["qs", "ipc", "--pid", str(manager["pid"]), "call", APP, "popout", s["id"]],
+                           capture_output=True, timeout=10)
+        else:
+            spawn_window(s["id"])
+        return 0
+    if not conn:
+        print(f"unknown connection: {name}", file=sys.stderr)
+        return 2
+    scale = monitor_scale()
+    monitor = next((m for m in _hyprctl_json("monitors") or [] if m.get("focused")), {})
+    width, height = float_size(monitor, 90)
+    size = f"{round(width * scale / 100)}x{round(height * scale / 100)}@{scale}"
+    before = {s["id"] for s in list_sessions()}
+    subprocess.Popen([os.path.abspath(__file__), "launch", conn["id"], "--tab", size],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        new = [s for s in list_sessions() if s["id"] not in before and s.get("connection") == conn["id"]]
+        if new:
+            spawn_window(new[0]["id"])
+            return 0
+        time.sleep(0.1)
+    print("the session did not start", file=sys.stderr)
+    return 1
 
 
 def monitor_scale():
@@ -673,8 +811,21 @@ def _session_path(sid):
     return os.path.join(SESSIONS_DIR, sid + ".json")
 
 
-def write_session(state):
+# Where a session is shown belongs to whoever shows it (set_view); the supervisor rewrites the rest
+# of the record on every state change and must not put an old view back.
+VIEW_KEYS = ("view", "viewer")
+
+
+def write_session(state, keep=VIEW_KEYS):
     os.makedirs(SESSIONS_DIR, exist_ok=True)
+    try:
+        with open(_session_path(state["id"]), encoding="utf-8") as f:
+            current = json.load(f)
+        for key in keep:
+            if key in current:
+                state[key] = current[key]
+    except (OSError, ValueError):
+        pass
     tmp = _session_path(state["id"]) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f)
@@ -725,6 +876,11 @@ def list_sessions():
         if s.get("state") in ("connecting", "connected") and not _alive(s.get("supervisor")):
             s["state"] = "failed"
             s["error"] = s.get("error") or "The session supervisor disappeared"
+        s.setdefault("view", "tab" if s.get("tab") else "window")
+        s.setdefault("viewer", None)
+        # An own window that is gone (closed or crashed) leaves its session for the manager's tabs.
+        if s["view"] == "window" and s.get("tab") and not _alive(s.get("viewer")):
+            s["view"], s["viewer"] = "tab", None
         sessions.append(s)
     sessions.sort(key=lambda s: s.get("started", 0), reverse=True)
     return prune(sessions)
@@ -778,6 +934,9 @@ def supervise(conn, sid, tab=None):
         "started": int(time.time()), "ended": 0, "pid": 0, "supervisor": os.getpid(),
         "exitCode": None, "error": None, "log": log_path,
         "tab": bool(tab), "socket": socket_path,
+        # tab: drawn in the manager's tab; window: drawn in an own window (viewer is its process),
+        # or, for a session without a tab renderer, FreeRDP's own window.
+        "view": "tab" if tab else "window", "viewer": None,
     }
     if protocol == "vnc":
         state["stage"] = "Connecting"
@@ -972,6 +1131,17 @@ def main(argv):
     if cmd == "paths":
         ensure_changes()
         print(json.dumps({"runtime": RUNTIME_DIR, "changes": CHANGES, "connections": CONNECTIONS}))
+        return 0
+    if cmd == "view" and len(rest) in (2, 3) and rest[1] in ("tab", "window"):
+        return 0 if set_view(rest[0], rest[1], rest[2] if len(rest) == 3 else None) else 1
+    if cmd == "float" and len(rest) in (2, 3) and rest[0] == "pid":
+        return 0 if float_window(rest[1], int(rest[2]) if len(rest) == 3 else 90) else 1
+    if cmd == "summon" and len(rest) == 2 and rest[0] == "pid":
+        return 0 if summon_window(rest[1]) else 1
+    if cmd == "open-window" and rest:
+        return open_window(" ".join(rest))
+    if cmd == "fullscreen":
+        toggle_fullscreen()
         return 0
     if cmd == "update-check" and len(rest) == 1:
         try:

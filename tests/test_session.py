@@ -1,4 +1,5 @@
 import importlib.machinery
+import json
 import importlib.util
 import os
 import sys
@@ -284,3 +285,65 @@ class Updates(unittest.TestCase):
         self.assertEqual(session.newest_release(releases, "x86_64"), ("0.1.4-alpha", base + "x86"))
         self.assertEqual(session.newest_release(releases, "aarch64"), ("0.1.5-alpha", base + "arm"))
         self.assertEqual(session.newest_release([], "x86_64"), (None, None))
+
+
+class Views(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.saved = (session.RUNTIME_DIR, session.SESSIONS_DIR, session.CHANGES)
+        session.RUNTIME_DIR = self.dir
+        session.SESSIONS_DIR = os.path.join(self.dir, "sessions")
+        session.CHANGES = os.path.join(self.dir, "changes")
+
+    def tearDown(self):
+        import shutil
+        session.RUNTIME_DIR, session.SESSIONS_DIR, session.CHANGES = self.saved
+        shutil.rmtree(self.dir)
+
+    def record(self, **kw):
+        state = dict({"id": "s1", "connection": "c1", "state": "connected", "tab": True,
+                      "supervisor": os.getpid(), "view": "tab", "viewer": None, "started": 1}, **kw)
+        session.write_session(state)
+        return state
+
+    def listed(self):
+        return {s["id"]: s for s in session.list_sessions()}["s1"]
+
+    def test_supervisor_rewrite_keeps_the_window_view(self):
+        state = self.record()
+        self.assertTrue(session.set_view("s1", "window", os.getpid()))
+        state["state"] = "connected"   # the supervisor's copy still says view "tab"
+        session.write_session(state)
+        self.assertEqual((self.listed()["view"], self.listed()["viewer"]), ("window", os.getpid()))
+
+    def test_a_closed_window_hands_its_session_back_to_the_tabs(self):
+        self.record()
+        session.set_view("s1", "window", 2 ** 22 + 12345)   # no such process
+        self.assertEqual(self.listed()["view"], "tab")
+
+    def test_freerdp_window_sessions_stay_windows(self):
+        self.record(tab=False, view="window")
+        self.assertEqual(self.listed()["view"], "window")
+
+    def test_old_records_get_a_view(self):
+        state = self.record()
+        del state["view"], state["viewer"]
+        with open(session._session_path("s1"), "w") as f:
+            json.dump(state, f)
+        self.assertEqual(self.listed()["view"], "tab")
+
+    def test_unknown_session(self):
+        self.assertFalse(session.set_view("nope", "tab"))
+
+
+class FloatSize(unittest.TestCase):
+    def test_ninety_percent_in_logical_pixels(self):
+        self.assertEqual(session.float_size({"width": 2560, "height": 1600, "scale": 1.0}, 90), (2304, 1440))
+        self.assertEqual(session.float_size({"width": 3840, "height": 2160, "scale": 2.0}, 90), (1728, 972))
+
+    def test_rotated_monitor(self):
+        self.assertEqual(session.float_size({"width": 1920, "height": 1080, "scale": 1, "transform": 1}, 50), (540, 960))
+
+    def test_unknown_monitor_falls_back(self):
+        self.assertEqual(session.float_size({}, 90), (1728, 972))

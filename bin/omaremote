@@ -4,7 +4,10 @@
 #   omaremote                  open the connection manager
 #   omaremote open <name>      show a connection in OMARemote: its running session, or connect it
 #                              in a tab (by id, name or host; starts OMARemote when needed)
+#   omaremote open --window <name>  the same in a floating window of its own, on this workspace
 #   omaremote connect <name>   connect straight away, without the window (for keybindings)
+#   omaremote window <session> show a running session in a window of its own
+#   omaremote adopt <session> [--home]  move a running session into a tab of the manager
 #   omaremote list             list saved connections
 #   omaremote --version        print the version
 set -euo pipefail
@@ -57,7 +60,12 @@ for c in cs: print(c.get("name") or c.get("host"))'
     ;;
   open)
     shift
-    [[ -n ${1:-} ]] || { echo "usage: omaremote open <name>" >&2; exit 2; }
+    if [[ ${1:-} == --window ]]; then
+      shift
+      [[ -n ${1:-} ]] || { echo "usage: omaremote open --window <name>" >&2; exit 2; }
+      exec "$OMAREMOTE_BIN" open-window "$*"
+    fi
+    [[ -n ${1:-} ]] || { echo "usage: omaremote open [--window] <name>" >&2; exit 2; }
     # Running: ask that window. Otherwise start one that connects once it is up.
     pid=$(running_pid)
     if [[ -n $pid ]]; then
@@ -66,8 +74,24 @@ for c in cs: print(c.get("name") or c.get("host"))'
     require_omarchy
     OMAREMOTE_OPEN="$*" exec qs -p "$ui/boot"
     ;;
+  window)
+    [[ -n ${2:-} ]] || { echo "usage: omaremote window <session-id>" >&2; exit 2; }
+    require_omarchy
+    OMAREMOTE_SESSION="$2" exec qs -p "$ui/window"
+    ;;
+  adopt)
+    [[ -n ${2:-} ]] || { echo "usage: omaremote adopt <session-id>" >&2; exit 2; }
+    call=adopt; home=0
+    [[ ${3:-} == --home ]] && { call=stash; home=1; }
+    pid=$(running_pid)
+    if [[ -n $pid ]]; then
+      exec qs ipc --pid "$pid" call omaremote "$call" "$2"
+    fi
+    require_omarchy
+    OMAREMOTE_ADOPT="$2" OMAREMOTE_ADOPT_HOME=$home exec qs -p "$ui/boot"
+    ;;
   -h|--help|help)
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   -v|--version|version)
     echo "omaremote $version"

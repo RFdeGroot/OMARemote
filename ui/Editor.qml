@@ -341,7 +341,7 @@ Rectangle {
                     inherited: root.fromGroup("openIn")
                     label: "Open in"
                     visible: !root.isVnc
-                    help: "Window for multi-monitor"
+                    help: "A window of its own"
                     Segment {
                         value: root.d.openIn || "tab"
                         options: [{ value: "tab", label: "Tab" }, { value: "window", label: "Own window" }]
@@ -400,6 +400,7 @@ Rectangle {
                     inherited: root.fromGroup("multimon")
                     label: "All monitors"
                     visible: !root.isVnc
+                    help: "With own window: FreeRDP's window, across every screen"
                     Check {
                         checked: !!root.d.multimon
                         onToggled: root.set("multimon", !checked)

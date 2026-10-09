@@ -29,6 +29,8 @@ FocusScope {
     property var openTabs: []
     // Connection ids launched into a tab whose session has not shown up in the list yet.
     property var pendingTabs: []
+    // Connection ids launched for an own window, waiting for their session like pendingTabs.
+    property var pendingWindows: []
     // Fullscreen with the chrome hidden, for a session tab.
     property bool immersive: false
     // The connections list docked beside session tabs; the desktop resizes to the room left.
@@ -123,7 +125,7 @@ FocusScope {
         // RDP allows one session per user: a second connect would end the first, so go to it instead.
         var running = Sessions.activeFor(c.id)
         if (running.length > 0) {
-            if (running[0].tab)
+            if (running[0].tab && running[0].view !== "window")
                 showTab(running[0].id)
             else
                 Sessions.focus(running[0])
@@ -132,7 +134,14 @@ FocusScope {
         }
         if (c.openIn === "window" && c.protocol !== "vnc") {
             say("Connecting to " + (c.name || c.host) + "…")
-            Sessions.launch(c.id)
+            // All monitors needs FreeRDP's own window; otherwise OMARemote draws the window itself.
+            if (c.multimon) {
+                Sessions.launch(c.id)
+                return
+            }
+            var windowDpr = Sessions.monitorScale / 100
+            Sessions.launchInTab(c.id, Math.round(1280 * windowDpr), Math.round(800 * windowDpr), Math.round(windowDpr * 100))
+            pendingWindows = pendingWindows.concat([c.id])
             return
         }
         // Start the desktop at the size it will be shown at, in device pixels.
@@ -165,6 +174,42 @@ FocusScope {
             showTab(openTabs.length > 0 ? openTabs[Math.min(at, openTabs.length - 1)] : "home")
     }
 
+    // ctrl+alt+o: the session leaves its tab for a window of its own (the window takes over the
+    // connection; nothing reconnects).
+    function popOut(id) {
+        var at = openTabs.indexOf(id)
+        if (at < 0)
+            return
+        openTabs = openTabs.filter(function (t) { return t !== id })
+        if (currentTab === id)
+            showTab(openTabs.length > 0 ? openTabs[Math.min(at, openTabs.length - 1)] : "home")
+        openWindow(id)
+    }
+
+    function openWindow(id) {
+        Quickshell.execDetached(["uwsm-app", "--", Sessions.bin.replace(/omaremote-session$/, "omaremote"), "window", id])
+    }
+
+    // An own window's ctrl+alt+t (or omaremote adopt): the session moves into a tab here, shown, or
+    // with home, kept in its tab while the connections come forward.
+    function adoptSession(id, home) {
+        var list = Sessions.sessions
+        for (var i = 0; i < list.length; i++) {
+            var s = list[i]
+            if (s.id !== id)
+                continue
+            if (!s.tab || !Sessions.isActive(s))
+                return "not a running session: " + id
+            Quickshell.execDetached([Sessions.bin, "view", id, "tab"])
+            if (openTabs.indexOf(id) < 0)
+                openTabs = openTabs.concat([id])
+            showTab(home ? "home" : id)
+            raise()
+            return "ok"
+        }
+        return "unknown session: " + id
+    }
+
     function cycleTab(delta) {
         var all = ["home"].concat(openTabs)
         var at = Math.max(0, all.indexOf(currentTab))
@@ -183,7 +228,7 @@ FocusScope {
 
     function toggleImmersive() {
         immersive = !immersive
-        Quickshell.execDetached(["hyprctl", "dispatch", "fullscreen", "0"])
+        Quickshell.execDetached([Sessions.bin, "fullscreen"])
     }
 
     function startNew() {
@@ -679,6 +724,8 @@ FocusScope {
                             item.closeRequested.connect(function () { root.closeTab(tabLoader.modelData) })
                             item.navigate.connect(function (where) {
                                 if (where === "keys") keymapSheet.open()
+                            else if (where === "window") root.popOut(tabLoader.modelData)
+                            else if (where === "tab") return
                                 else if (where === "home") root.showTab("home")
                                 else root.cycleTab(where === "next" ? 1 : -1)
                             })
@@ -714,7 +761,7 @@ FocusScope {
             notice: root.notice
             noticeIsError: root.noticeIsError
             hints: root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"],
-                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]]
+                                                 ["ctrl+alt+end", "ctrl+alt+del"], ["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]]
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
                  : root.focusArea === "sidebar" ? [["j k", "move"], ["⏎", "open"], ["s", "group settings"], ["tab", "list"], ["?", "keys"]]
@@ -784,14 +831,27 @@ FocusScope {
     }
     property bool ready: false
     // `omaremote open <name>` while the app was not running: connect once sessions are known.
-    onReadyChanged: if (ready && Quickshell.env("OMAREMOTE_OPEN"))
-        Qt.callLater(function () { root.openNamed(Quickshell.env("OMAREMOTE_OPEN")) })
+    onReadyChanged: {
+        if (ready && Quickshell.env("OMAREMOTE_OPEN"))
+            Qt.callLater(function () { root.openNamed(Quickshell.env("OMAREMOTE_OPEN")) })
+        if (ready && Quickshell.env("OMAREMOTE_ADOPT"))
+            Qt.callLater(function () { root.adoptSession(Quickshell.env("OMAREMOTE_ADOPT"), Quickshell.env("OMAREMOTE_ADOPT_HOME") === "1") })
+    }
 
     // For `omaremote open` and the Omarchy bar plugin: qs ipc --pid <pid> call omaremote open <name>.
     IpcHandler {
         target: "omaremote"
         function open(name: string): string { return root.openNamed(name) }
         function focus(): void { root.raise() }
+        function adopt(id: string): string { return root.adoptSession(id, false) }
+        // Into a tab, but the manager comes forward on its connections (an own window's ctrl+alt+home).
+        function stash(id: string): string { return root.adoptSession(id, true) }
+        // Out of its tab into a window of its own (omaremote open --window).
+        function popout(id: string): string {
+            if (root.openTabs.indexOf(id) >= 0) root.popOut(id)
+            else root.openWindow(id)
+            return "ok"
+        }
         // For bin/omaremote-update, which restarts the window on the new version.
         function quit(): void { if (root.host) root.host.quit() }
     }
@@ -820,7 +880,8 @@ FocusScope {
         if (!c)
             return showRunning(name) ? "ok" : "unknown connection: " + name
         var running = Sessions.activeFor(c.id)
-        var ownWindow = running.length > 0 ? !running[0].tab : (c.openIn === "window" && c.protocol !== "vnc")
+        var ownWindow = running.length > 0 ? (!running[0].tab || running[0].view === "window")
+                                           : (c.openIn === "window" && c.protocol !== "vnc")
         selectedId = c.id
         connect(c.id)
         if (!ownWindow)
@@ -838,7 +899,7 @@ FocusScope {
             var s = list[i]
             if (!Sessions.isActive(s) || (s.connection !== want && s.id !== want))
                 continue
-            if (s.tab) {
+            if (s.tab && s.view !== "window") {
                 showTab(s.id)
                 raise()
             } else {
@@ -859,9 +920,20 @@ FocusScope {
         var pending = pendingTabs.slice()
         var add = []
         var focus = ""
+        var windows = pendingWindows.slice()
         for (var i = 0; i < Sessions.sessions.length; i++) {
             var s = Sessions.sessions[i]
             if (!s.tab || openTabs.indexOf(s.id) >= 0 || add.indexOf(s.id) >= 0)
+                continue
+            var forWindow = windows.indexOf(s.connection)
+            if (forWindow >= 0 && s.view !== "window") {
+                windows.splice(forWindow, 1)
+                pendingWindows = windows
+                s.view = "window" // until the window claims it, so this pass does not take it
+                openWindow(s.id)
+                continue
+            }
+            if (s.view === "window")
                 continue
             var waited = pending.indexOf(s.connection)
             if (waited >= 0) {
@@ -908,6 +980,7 @@ FocusScope {
         else if (a === "save") (editingGroup ? groupEditor : editingCredential ? credentialEditor : editor).save()
         else if (parts[0] === "cred") openCredential(parts[1] === "new" ? "" : parts[1])
         else if (a === "pin") togglePinned()
+        else if (a === "popout") popOut(currentTab)
         else if (parts[0] === "run") runAction(parts[1])
         else if (parts[0] === "update") { Updates.latest = parts.slice(1).join(":"); Updates.newer = true }
         else if (a === "focus") {

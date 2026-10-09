@@ -6,6 +6,8 @@ Rectangle {
     property string notice: ""
     property bool noticeIsError: false
     property var hints: []
+    // The connection and session counts on the left; an own session window has no use for them.
+    property bool showCounts: true
 
     height: Math.round(Theme.small * 2.2)
     color: Theme.surface
@@ -13,7 +15,7 @@ Rectangle {
     // The hints that fit beside the counts: the first ones and always the last (the keymap, which
     // lists the rest), so a narrow window drops hints instead of drawing them over the counts.
     readonly property var shownHints: {
-        var room = width - 3 * Theme.padX - countText.implicitWidth
+        var room = width - 3 * Theme.padX - (showCounts ? countText.implicitWidth : 0)
                    - (activeRow.visible ? facts.spacing + activeRow.implicitWidth : 0)
         var widths = hints.map(function (h) { return hintWidth(h) })
         var gap = hintRow.spacing
@@ -46,6 +48,7 @@ Rectangle {
         spacing: Theme.gap * 1.5
         Text {
             id: countText
+            visible: root.showCounts
             text: Store.connections.length + (Store.connections.length === 1 ? " connection" : " connections")
             color: Theme.muted
             font.family: Theme.font
@@ -53,7 +56,7 @@ Rectangle {
         }
         Row {
             id: activeRow
-            visible: Sessions.activeCount > 0
+            visible: root.showCounts && Sessions.activeCount > 0
             spacing: 4
             Glyph { text: ""; size: Theme.caption - 3; color: Theme.success; anchors.verticalCenter: parent.verticalCenter }
             Text {

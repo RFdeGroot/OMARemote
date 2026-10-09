@@ -63,6 +63,9 @@ Singleton {
         { group: "In a session", context: "session", action: "previousTab", keys: ["ctrl+alt+pgup"], label: "Previous tab", run: false },
         { group: "In a session", context: "session", action: "cad", keys: ["ctrl+alt+end"], label: "Send Ctrl+Alt+Del", run: false },
         { group: "In a session", context: "session", action: "fullscreen", keys: ["ctrl+alt+return"], label: "Fullscreen", run: false },
+        { group: "In a session", context: "session", action: "popOut", keys: ["ctrl+alt+o"], label: "Move to its own window", run: false },
+        { group: "In a session", context: "session", action: "toTab", keys: ["ctrl+alt+t"], label: "Own window: back into a tab", run: false },
+        { group: "In a session", context: "session", action: "toConnections", keys: ["ctrl+alt+home"], label: "Own window: into a tab, connections forward", run: false },
         { group: "In a session", context: "session", action: "pin", keys: ["ctrl+alt+p"], label: "Pin or unpin the connections list", run: false },
         { group: "In a session", context: "session", action: "keys", keys: ["ctrl+alt+k"], label: "This keymap", run: false },
 
