@@ -41,10 +41,25 @@ jobs:
           grep -qx "_tag=$TAG" packaging/arch/PKGBUILD || {
             echo "packaging/arch/PKGBUILD does not build $TAG (set _tag and pkgver)"; exit 1; }
 
-      # Arch Linux ARM publishes no container image; its root filesystem becomes one.
+      # Arch Linux ARM publishes no container image; its root filesystem becomes one. It is only
+      # used after its signature checks out against Arch Linux ARM's build key, kept in this repo
+      # (packaging/arch/archlinuxarm-build.gpg, cross-checked against the keyserver and Arch Linux
+      # ARM's keyring repository): the transport is not trusted, the key is. HTTPS on top, from a
+      # mirror with a valid certificate (os.archlinuxarm.org itself has none).
       - name: Arch Linux ARM image
         if: matrix.arch == 'aarch64'
-        run: curl -fsSL http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz | docker import - archlinuxarm:local
+        env:
+          ROOTFS: https://fl.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
+          BUILD_KEY: 68B3537F39A313B3E574D06777193F152BDBE6A6
+        run: |
+          curl -fsSL --proto '=https' -o rootfs.tar.gz "$ROOTFS"
+          curl -fsSL --proto '=https' -o rootfs.tar.gz.sig "$ROOTFS.sig"
+          gpgv --status-fd 1 --keyring "$PWD/packaging/arch/archlinuxarm-build.gpg" rootfs.tar.gz.sig rootfs.tar.gz \
+            | tee gpgv.status
+          grep -q "^\[GNUPG:\] VALIDSIG $BUILD_KEY " gpgv.status || {
+            echo "Arch Linux ARM root filesystem: no valid signature by $BUILD_KEY"; exit 1; }
+          docker import rootfs.tar.gz archlinuxarm:local
+          rm rootfs.tar.gz rootfs.tar.gz.sig gpgv.status
 
       - name: Build the package
         run: |
