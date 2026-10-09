@@ -308,7 +308,9 @@ static UINT clip_server_data_response(CliprdrClientContext* clip, const CLIPRDR_
 	std::string text(utf8, strnlen(utf8, len));
 	free(utf8);
 	// Windows line endings stay as they are: Linux apps cope, and a round trip stays exact.
+	// The remote now holds the clipboard: copying the last local text again must reach it.
 	st->remoteClip = text;
+	st->localClip.clear();
 	send_line(st, "clip " + b64(text));
 	return CHANNEL_RC_OK;
 }
@@ -477,6 +479,7 @@ static void handle_line(rdpContext* ctx, const std::string& line)
 		if (text == st->localClip || text == st->remoteClip)
 			return; // our own echo, or nothing new
 		st->localClip = text;
+		st->remoteClip.clear();
 		if (st->clip && st->clipReady)
 			clip_send_format_list(st);
 	}

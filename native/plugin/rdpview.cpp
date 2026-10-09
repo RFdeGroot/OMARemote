@@ -104,6 +104,8 @@ void RdpView::tryAttach()
 	connect(m_notifier, &QSocketNotifier::activated, this, &RdpView::onReadable);
 	emit attachedChanged();
 	sendSize();
+	if (hasActiveFocus())
+		sendClipboard(true);
 }
 
 void RdpView::detach()
@@ -561,10 +563,14 @@ void RdpView::focusOutEvent(QFocusEvent* e)
 	releaseAllKeys();
 }
 
-void RdpView::sendClipboard()
+// Offers our clipboard to the session. Before it is attached there is no one to tell, so nothing is
+// marked as sent; attaching offers it again (force: a new session has not seen it yet).
+void RdpView::sendClipboard(bool force)
 {
+	if (m_fd < 0)
+		return;
 	const QString text = QGuiApplication::clipboard()->text();
-	if (text.isEmpty() || text == m_lastClip)
+	if (text.isEmpty() || (text == m_lastClip && !force))
 		return;
 	m_lastClip = text;
 	send("clip " + text.toUtf8().toBase64());

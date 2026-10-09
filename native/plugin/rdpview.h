@@ -93,7 +93,7 @@ private:
 	void setState(const QString& state, int code = 0);
 	void scheduleSize();
 	void sendSize();
-	void sendClipboard();
+	void sendClipboard(bool force = false);
 	QRectF imageRect() const;
 	QPoint toRemote(const QPointF& p) const;
 	qreal devicePixelRatio() const;

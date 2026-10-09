@@ -48,6 +48,7 @@ struct Session
 	std::map<uint32_t, uint32_t> pressed; // evdev code -> keysym sent at press, released the same
 	std::string remoteClip;
 	std::string localClip;
+	std::string pendingClip; // offered before the connection was up
 
 	uint32_t cursorId = 0;
 	std::string cursorDef;
@@ -194,6 +195,7 @@ static void got_cursor(rfbClient* client, int xhot, int yhot, int width, int hei
 static void got_cut_text_utf8(rfbClient*, const char* text, int len)
 {
 	g.remoteClip.assign(text, size_t(len));
+	g.localClip.clear(); // the remote holds the clipboard now: the last local text may be sent again
 	g.link.send("clip " + b64(g.remoteClip));
 }
 
@@ -213,14 +215,21 @@ static void got_cut_text(rfbClient*, const char* text, int len)
 		}
 	}
 	g.remoteClip = utf8;
+	g.localClip.clear();
 	g.link.send("clip " + b64(utf8));
 }
 
 static void send_clipboard(const std::string& text)
 {
-	if (!g.client || g.flag("viewOnly") || text == g.remoteClip || text == g.localClip)
+	if (g.flag("viewOnly") || text == g.remoteClip || text == g.localClip)
 		return;
+	if (!g.client)
+	{
+		g.pendingClip = text; // the clipboard the UI had at the start: sent once connected
+		return;
+	}
 	g.localClip = text;
+	g.remoteClip.clear();
 	std::string copy = text;
 	if (!SendClientCutTextUTF8(g.client, copy.data(), int(copy.size())))
 	{
@@ -489,6 +498,8 @@ int main()
 	}
 	g.client = client;
 	g.connected = true;
+	if (!g.pendingClip.empty())
+		send_clipboard(g.pendingClip);
 	// The supervisor reads this line as "connected".
 	log("connected to %s (%dx%d)", client->desktopName ? client->desktopName : "VNC server", client->width,
 	    client->height);
