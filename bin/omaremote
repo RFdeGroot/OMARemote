@@ -11,7 +11,7 @@
 #   omaremote list             list saved connections
 #   omaremote --version        print the version
 set -euo pipefail
-version="0.1.9-alpha"
+version="0.2.0"
 
 here="$(dirname "$(readlink -f "$0")")"
 root="$(dirname "$here")"

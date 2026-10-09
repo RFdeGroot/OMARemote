@@ -30,7 +30,8 @@ The screenshots use made-up sample data and a mock desktop.
 
 ## Install
 
-> **Alpha.** OMARemote is in alpha (0.1.9-alpha): it works day to day, but expect rough edges.
+> **Early development.** OMARemote 0.2.0 works day to day, but it is young: expect rough edges,
+> and please [report what you run into](https://github.com/RFdeGroot/OMARemote/issues).
 
 ### From a release (recommended)
 
@@ -45,7 +46,7 @@ sudo pacman -U "./${url##*/}"
 omaremote                    # or "OMARemote" from the launcher
 ```
 
-(The first line asks GitHub for the newest release, alphas included; you can also download a
+(The first line asks GitHub for the newest release, pre-releases included; you can also download a
 package from the [releases page](https://github.com/RFdeGroot/OMARemote/releases) by hand.)
 
 Release packages are not signed yet. pacman installs an unsigned package from a file on disk, but

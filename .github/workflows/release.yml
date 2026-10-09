@@ -2,7 +2,8 @@
 # PKGBUILD, to the GitHub release of the tag. A clean build keeps the package's metadata free of
 # whatever the maintainer's machine has installed; packaging/arch/ci-build.sh does the build.
 #
-# Releasing: set _tag/pkgver in packaging/arch/PKGBUILD, commit, tag (v0.2-alpha, …), push the tag.
+# Releasing: set _tag/pkgver in packaging/arch/PKGBUILD, commit, tag (v0.2.0, v0.3.0-beta, …), push the tag.
+# A tag with a suffix (-alpha, -beta, -rc) becomes a GitHub pre-release.
 # For a tag pushed before this workflow existed: Actions → Release → Run workflow, with the tag.
 name: Release
 
@@ -96,6 +97,8 @@ jobs:
             pkgrel=$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)
             pkg="omaremote-$pkgver-$pkgrel-\$(uname -m).pkg.tar.zst"
             cat > notes.md <<EOF
+          OMARemote is in early development: it works day to day, but expect rough edges. Please report what you run into: $GITHUB_SERVER_URL/$GH_REPO/issues
+
           Install on Omarchy, on Intel/AMD (x86_64) or Apple Silicon (aarch64); pacman pulls in every dependency:
 
           \`\`\`bash
