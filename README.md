@@ -300,6 +300,16 @@ and it keeps running when you close OMARemote.
 - **Sign in** is plain `ssh`: your keys and ssh-agent (1Password's agent works too), and ssh asks
   in the terminal for anything else (a password, a new host key, a second factor). OMARemote stores
   no SSH passwords.
+- **A key per connection**: pick one under *Key* (private keys in `~/.ssh`, keys that live in an
+  agent such as 1Password by their `.pub`, or *Browse…*). OMARemote passes it to ssh; the key never
+  syncs to other systems.
+- **The same key in a terminal** (Settings › SSH, *Use in a terminal*, off by default): OMARemote
+  keeps `~/.ssh/omaremote.conf`, one entry per connection with a key (`IdentityFile`,
+  `IdentitiesOnly yes`, and the user and port when set), and adds one line at the top of
+  `~/.ssh/config`: `Include omaremote.conf` (after a backup to `~/.ssh/config.omaremote-backup`).
+  Your own entries are never touched, and turning it off takes exactly that line out again. Keeping
+  `~/.ssh/config` to yourself? Add the Include line yourself: OMARemote then only keeps
+  `omaremote.conf` current.
 - **`~/.ssh/config` applies.** The host can be a `Host` alias from it; the port and user name are
   only passed when the connection sets them, so jump hosts, keys and users from your config still
   work. *Extra ssh options* are passed to ssh as-is (for example `-J jump.example.com`).

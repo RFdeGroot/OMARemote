@@ -34,6 +34,26 @@ Rectangle {
     readonly property bool hasStoredPassword: d.credential === "custom" && !!d.id && Sessions.secrets["connection:" + d.id] === true
     readonly property var groupInfo: { Store.groupSettings; Store.credentials; return Store.group(d.group) }
 
+    // The SSH key picker: ssh's own choice, the keys in ~/.ssh, the one set (wherever it is), Browse.
+    readonly property var keyOptions: {
+        var out = [{ value: "", label: "Default (the agent and ~/.ssh)" }]
+        var listed = false
+        for (var i = 0; i < Sessions.sshKeys.length; i++) {
+            var k = Sessions.sshKeys[i]
+            listed = listed || k.path === d.sshKey
+            out.push({ value: k.path, label: k.name + (k.kind === "agent" ? "  (agent)" : "")
+                                              + (k.type ? "  ·  " + k.type : "") + (k.comment ? "  ·  " + k.comment : "") })
+        }
+        if (d.sshKey && !listed)
+            out.push({ value: d.sshKey, label: d.sshKey })
+        out.push({ value: "__browse__", label: "Browse…" })
+        return out
+    }
+    Connections {
+        target: Sync
+        function onKeyPicked(path) { if (root.visible) root.set("sshKey", path) }
+    }
+
     readonly property var credentialOptions: {
         Store.credentials
         var out = []
@@ -83,6 +103,7 @@ Rectangle {
 
     function load(connection) {
         d = JSON.parse(JSON.stringify(connection))
+        Sessions.refreshSshKeys()
         password = ""
         passwordTouched = false
         error = ""
@@ -251,6 +272,27 @@ Rectangle {
                                        : root.d.credential === "new" ? "administrator" : "asks when connecting"
                         text: root.d.username || ""
                         onTextEdited: root.set("username", text)
+                    }
+                }
+                FormRow {
+                    label: "Key"
+                    visible: root.isSsh
+                    help: Sync.sshConfigMode === "off" ? "Used by OMARemote; Settings › SSH can make a terminal use it too"
+                                                       : "Also in ~/.ssh/omaremote.conf: a terminal uses it too"
+                    Kit.Dropdown {
+                        id: keyPicker
+                        width: parent.width
+                        showLabel: false
+                        value: root.d.sshKey || ""
+                        options: root.keyOptions
+                        onChanged: function (v) {
+                            if (v === "__browse__")
+                                Sync.browse("sshKey", "key", "Choose an SSH key", root.d.sshKey || "~/.ssh", "")
+                            else
+                                root.set("sshKey", v)
+                            // The dropdown wrote its pick over the binding: follow the connection again.
+                            keyPicker.value = Qt.binding(function () { return root.d.sshKey || "" })
+                        }
                     }
                 }
                 FormRow {

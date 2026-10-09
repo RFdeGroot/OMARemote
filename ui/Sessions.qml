@@ -15,6 +15,26 @@ Singleton {
     property string changesPath: ""
     // "connection:<id>" or "credential:<id>" -> true when the keyring holds that password.
     property var secrets: ({})
+    // Keys in ~/.ssh for the SSH key picker: [{path, name, kind: file|agent, type, comment}].
+    property var sshKeys: []
+
+    function refreshSshKeys() {
+        if (!sshKeyLister.running)
+            sshKeyLister.running = true
+    }
+
+    Process {
+        id: sshKeyLister
+        command: [root.bin, "ssh-keys"]
+        stdout: StdioCollector { id: sshKeysOut; waitForEnd: true }
+        onExited: {
+            try {
+                root.sshKeys = JSON.parse(sshKeysOut.text)
+            } catch (e) {
+                root.sshKeys = []
+            }
+        }
+    }
 
     // Whether a resolved connection's password is stored: true, false, or undefined (not asked yet).
     function passwordStored(c) {

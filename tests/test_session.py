@@ -339,6 +339,112 @@ class Ssh(unittest.TestCase):
                 session.FONT_SIZE_RES.update(saved)
 
 
+class SshKeys(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ssh = os.path.join(self.tmp.name, ".ssh")
+        os.makedirs(self.ssh)
+        self.conf = os.path.join(self.tmp.name, "connections.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, name, text):
+        with open(os.path.join(self.ssh, name), "w") as f:
+            f.write(text)
+
+    def read(self, name):
+        with open(os.path.join(self.ssh, name)) as f:
+            return f.read()
+
+    def connections(self, *conns, terminal=True):
+        with open(self.conf, "w") as f:
+            json.dump({"ui": {"sshTerminalKeys": terminal}, "connections": list(conns)}, f)
+
+    def test_lists_private_keys_and_agent_keys(self):
+        self.write("id_work", "-----BEGIN OPENSSH PRIVATE KEY-----\nxx\n")
+        self.write("id_work.pub", "ssh-ed25519 AAAA alice@work\n")
+        self.write("onepassword.pub", "ssh-rsa AAAA from 1Password\n")
+        self.write("known_hosts", "host ssh-ed25519 AAAA\n")
+        self.write("notes.pub", "not a key\n")
+        keys = {k["name"]: k for k in session.ssh_keys(self.ssh)}
+        self.assertEqual(sorted(keys), ["id_work", "onepassword.pub"])
+        self.assertEqual((keys["id_work"]["kind"], keys["id_work"]["type"], keys["id_work"]["comment"]),
+                         ("file", "ed25519", "alice@work"))
+        self.assertEqual(keys["onepassword.pub"]["kind"], "agent")
+
+    def test_the_key_goes_along_when_ssh_starts(self):
+        cmd = session.build_ssh_command(conn(protocol="ssh", sshKey="/k/id_work"))
+        self.assertEqual(cmd, ["ssh", "-i", "/k/id_work", "-o", "IdentitiesOnly=yes", "pc.lan"])
+
+    def test_the_key_never_syncs(self):
+        self.assertNotIn("sshKey", session.portable_connection(conn(sshKey="~/.ssh/id_work")))
+
+    def test_managed_file_and_one_include_at_the_top(self):
+        self.write("config", "Host mine\n    User me\n")
+        self.connections(conn(id="c1", name="web", host="web.lan", protocol="ssh", port=2222, username="admin",
+                              credential="custom", sshKey="~/.ssh/id_work"),
+                         conn(id="c2", host="rdp.lan", sshKey="~/.ssh/ignored"))
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh), {"mode": "auto", "keys": 1, "changed": True})
+        managed = self.read("omaremote.conf")
+        self.assertIn("Host web.lan\n    IdentityFile ~/.ssh/id_work\n    IdentitiesOnly yes\n    User admin\n    Port 2222\n", managed)
+        self.assertNotIn("rdp.lan", managed)
+        config = self.read("config")
+        self.assertTrue(config.splitlines()[1] == "Include omaremote.conf")
+        self.assertTrue(config.endswith("Host mine\n    User me\n"))
+        self.assertEqual(self.read("config.omaremote-backup"), "Host mine\n    User me\n")
+        # Again: nothing to change, and never a second Include.
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh), {"mode": "auto", "keys": 1, "changed": False})
+        self.assertEqual(self.read("config").count("Include omaremote.conf"), 1)
+
+    def test_removing_the_key_empties_the_managed_file_but_leaves_config_alone(self):
+        self.write("config", "Include omaremote.conf\nHost mine\n")
+        self.connections(conn(id="c1", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"))
+        session.ssh_config_sync(self.conf, self.ssh)
+        self.connections(conn(id="c1", host="web.lan", protocol="ssh"))
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh)["keys"], 0)
+        self.assertNotIn("web.lan", self.read("omaremote.conf"))
+        self.assertEqual(self.read("config"), "Include omaremote.conf\nHost mine\n")
+        self.assertFalse(os.path.exists(os.path.join(self.ssh, "config.omaremote-backup")))
+
+    def keyed(self, terminal):
+        self.connections(conn(id="c1", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"), terminal=terminal)
+
+    def test_off_by_default_nothing_in_ssh_is_touched(self):
+        self.write("config", "Host mine\n")
+        with open(self.conf, "w") as f:
+            json.dump({"connections": [conn(protocol="ssh", sshKey="~/.ssh/id_work")]}, f)
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh)["mode"], "off")
+        self.assertEqual(sorted(os.listdir(self.ssh)), ["config"])
+        self.assertEqual(self.read("config"), "Host mine\n")
+
+    def test_turning_it_off_takes_out_exactly_what_was_added(self):
+        original = "# my own comment\nHost mine\n    User me\n"
+        self.write("config", original)
+        self.keyed(True)
+        session.ssh_config_sync(self.conf, self.ssh)
+        self.keyed(False)
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh)["mode"], "off")
+        self.assertEqual(self.read("config"), original)
+        self.assertFalse(os.path.exists(os.path.join(self.ssh, "omaremote.conf")))
+
+    def test_an_include_added_by_hand_is_left_alone_and_served(self):
+        self.write("config", "Host mine\n\nInclude ~/.ssh/omaremote.conf\n")
+        self.keyed(False)
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh)["mode"], "manual")
+        self.assertIn("Host web.lan", self.read("omaremote.conf"))
+        self.assertEqual(self.read("config"), "Host mine\n\nInclude ~/.ssh/omaremote.conf\n")
+        self.keyed(True)  # on as well: still no second Include
+        session.ssh_config_sync(self.conf, self.ssh)
+        self.assertEqual(self.read("config").lower().count("include"), 1)
+
+    def test_nothing_is_written_while_no_connection_has_a_key(self):
+        self.connections(conn(protocol="ssh"))
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh), {"mode": "auto", "keys": 0, "changed": False})
+        self.assertEqual(os.listdir(self.ssh), [])
+
+
 class Sync(unittest.TestCase):
     NOW = 1_800_000_000_000
 

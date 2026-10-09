@@ -339,6 +339,7 @@ Rectangle {
                          : Format.displayLabel(root.connection, Sessions.monitorScale)
                 }
                 Fact { label: "Devices"; value: root.connection && !parent.ssh ? Format.devicesLabel(root.connection) : "" }
+                Fact { label: "Key"; value: parent.ssh ? (root.connection.sshKey || "default (agent and ~/.ssh)") : "" }
                 Fact { label: "ssh options"; value: parent.ssh ? (root.connection.sshArgs || "") : "" }
                 Fact { label: "Gateway"; value: root.connection && !parent.ssh ? root.connection.gateway : "" }
                 Fact { label: "Group"; value: root.connection ? root.connection.group : "" }

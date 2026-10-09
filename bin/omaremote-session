@@ -28,6 +28,8 @@ so closing the window never closes a remote desktop.
   omaremote-session import <file>        merge an export: prints the result for the UI, JSON
   omaremote-session sync [--allow-deletions <system,…>]   one round of folder sync, JSON for the UI
   omaremote-session system-name          this system's name in the sync folder
+  omaremote-session ssh-keys             keys in ~/.ssh (files, and agent keys by their .pub), JSON
+  omaremote-session ssh-config           write ~/.ssh/omaremote.conf for SSH connections with a key
   omaremote-session pick folder|open|save [--title T] [--current PATH] [--name NAME]
                                          the desktop's file chooser (portal); prints {"path"}, "" if cancelled
 """
@@ -98,6 +100,7 @@ DEFAULTS = {
     "vncQuality": "auto",    # auto | high | low
     "viewOnly": False,
     "sshArgs": "",           # SSH: extra ssh options, the connection's own (never a group's)
+    "sshKey": "",            # SSH: the key to sign in with (~/.ssh/…); also written to ~/.ssh/omaremote.conf
     "favourite": False,
     "lastConnected": 0,
 }
@@ -267,7 +270,7 @@ def mark_connected(conn_id, path=CONNECTIONS):
 
 # Never leaves this machine (keep in step with localKeys in ui/Store.qml).
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
-              "extraArgs", "sshArgs", "lastConnected")
+              "extraArgs", "sshArgs", "sshKey", "lastConnected")
 GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs")
 SYNC_SUFFIX = ".omaremote.json"
 TRASH_DAYS = 30
@@ -545,6 +548,8 @@ def pick(mode, title="", current="", name=""):
     options = {"handle_token": GLib.Variant("s", token), "modal": GLib.Variant("b", True)}
     if mode == "folder":
         options["directory"] = GLib.Variant("b", True)
+    elif mode == "key":
+        pass  # any file: keys have no common extension
     else:
         options["filters"] = GLib.Variant("a(sa(us))", [("OMARemote connections", [(0, "*.json")]),
                                                          ("All files", [(0, "*")])])
@@ -1050,9 +1055,182 @@ def build_ssh_command(conn):
     user = (conn.get("username") or "").strip()
     if user:
         args += ["-l", user]
+    # Also in ~/.ssh/omaremote.conf; passed here as well, so it holds even without that Include.
+    key = (conn.get("sshKey") or "").strip()
+    if key:
+        args += ["-i", os.path.expanduser(key), "-o", "IdentitiesOnly=yes"]
     args += shlex.split(conn.get("sshArgs") or "")
     return args + [host]
 
+
+# ---------------------------------------------------------------- ssh keys and ~/.ssh/omaremote.conf
+#
+# A key chosen for an SSH connection is passed to ssh by OMARemote. Only when the user allows it
+# (Settings › SSH, off by default) does it also go into ~/.ssh/omaremote.conf, a file OMARemote owns
+# and rewrites whole, so a plain `ssh host` in a terminal signs in the same way. ~/.ssh/config then
+# gets one line, `Include omaremote.conf`, at the very top (an Include below a Host line would belong
+# to that host), after a backup; the user's own entries are never touched, and turning the setting
+# off takes that line out again. Users who keep their config to themselves add the Include by hand.
+
+SSH_DIR = os.path.expanduser("~/.ssh")
+SSH_MANAGED = "omaremote.conf"
+SSH_INCLUDE = "Include " + SSH_MANAGED
+SSH_INCLUDE_RE = re.compile(r"^\s*include\s+(~/\.ssh/)?omaremote\.conf\s*$", re.I | re.M)
+
+
+def _tilde(path):
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+
+
+def ssh_keys(ssh_dir=SSH_DIR):
+    """Keys in ~/.ssh: private key files, and public keys alone (their private half lives in an agent
+    such as 1Password; IdentityFile on the .pub makes ssh use the agent's matching key)."""
+    try:
+        names = sorted(os.listdir(ssh_dir))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        path = os.path.join(ssh_dir, name)
+        if not os.path.isfile(path) or name.startswith("."):
+            continue
+        if name.endswith(".pub"):
+            if os.path.exists(path[:-4]):
+                continue  # listed with its private key
+            kind = "agent"
+            pub = path
+        else:
+            try:
+                with open(path, "rb") as f:
+                    head = f.read(64)
+            except OSError:
+                continue
+            if not (head.startswith(b"-----BEGIN") and b"PRIVATE KEY" in head):
+                continue
+            kind = "file"
+            pub = path + ".pub"
+        key_type, comment = "", ""
+        try:
+            with open(pub, encoding="utf-8") as f:
+                parts = f.read().split(None, 2)
+            if len(parts) >= 2 and parts[0].startswith(("ssh-", "ecdsa-", "sk-")):
+                key_type = parts[0].replace("ssh-", "").replace("sk-", "security key ")
+                comment = parts[2].strip() if len(parts) > 2 else ""
+            elif kind == "agent":
+                continue  # a .pub that is not a public key
+        except OSError:
+            pass
+        out.append({"path": _tilde(path), "name": name, "kind": kind, "type": key_type, "comment": comment})
+    return out
+
+
+def ssh_managed_text(connections):
+    """~/.ssh/omaremote.conf for the SSH connections that have a key; the first per host wins."""
+    lines = ["# Written by OMARemote: the keys chosen for its SSH connections. It rewrites this file",
+             "# whole, so edit the connections in OMARemote, not this file.", ""]
+    seen = set()
+    for c in connections:
+        key = (c.get("sshKey") or "").strip()
+        host = (c.get("host") or "").strip()
+        if c.get("protocol") != "ssh" or not key or not host or host in seen or re.search(r"[\s#]", host):
+            continue
+        seen.add(host)
+        lines.append(f"# {c.get('name') or host} (OMARemote connection {c.get('id', '?')})")
+        lines.append(f"Host {host}")
+        lines.append(f"    IdentityFile {key}")
+        lines.append("    IdentitiesOnly yes")
+        user = (c.get("username") or "").strip()
+        if user and not re.search(r"\s", user):
+            lines.append(f"    User {user}")
+        try:
+            port = int(c.get("port") or 22)
+        except (TypeError, ValueError):
+            port = 22
+        if port != 22:
+            lines.append(f"    Port {port}")
+        lines.append("")
+    return "\n".join(lines), len(seen)
+
+
+SSH_MARKER = "# OMARemote's SSH keys (~/.ssh/omaremote.conf); first, so it applies to every host."
+
+
+def _write_private(path, text, like=None):
+    """Written whole and renamed into place, readable by the user only (or as `like` was)."""
+    tmp = path + ".omaremote.tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+        f.write(text)
+    if like and os.path.exists(like):
+        os.chmod(tmp, os.stat(like).st_mode & 0o777)
+    os.replace(tmp, path)
+
+
+def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
+    """Keeps ssh's own config in step with the keys chosen in OMARemote, as far as the user allows.
+
+    Settings › SSH › "keys in the terminal too" (ui.sshTerminalKeys, off by default):
+      on   ~/.ssh/omaremote.conf is written, and ~/.ssh/config gets OMARemote's Include at the top
+           (backed up first) unless it includes the file already.
+      off  OMARemote's own Include, recognised by its comment, comes out again with the file. An
+           Include the user added by hand stays theirs: then only omaremote.conf is kept current.
+    Returns {"mode": "auto" | "manual" | "off", "keys", "changed"}."""
+    raw = load_raw(path)
+    enabled = bool((raw.get("ui") or {}).get("sshTerminalKeys"))
+    data = load_data(path)
+    text, count = ssh_managed_text([resolve(c, data) for c in data["connections"]])
+    managed = os.path.join(ssh_dir, SSH_MANAGED)
+    config = os.path.join(ssh_dir, "config")
+    try:
+        with open(config, encoding="utf-8") as f:
+            user_config = f.read()
+    except FileNotFoundError:
+        user_config = None
+    ours = user_config is not None and SSH_MARKER in user_config
+    included = user_config is not None and bool(SSH_INCLUDE_RE.search(user_config))
+    changed = False
+
+    if not enabled and ours:
+        # Out again: the marker, the Include under it and the blank line after, nothing else.
+        lines = user_config.split("\n")
+        at = lines.index(SSH_MARKER)
+        cut = 1
+        if at + 1 < len(lines) and SSH_INCLUDE_RE.match(lines[at + 1]):
+            cut = 2
+            if at + 2 < len(lines) and lines[at + 2] == "":
+                cut = 3
+        _write_private(config, "\n".join(lines[:at] + lines[at + cut:]), like=config)
+        user_config = "\n".join(lines[:at] + lines[at + cut:])
+        included = bool(SSH_INCLUDE_RE.search(user_config))
+        changed = True
+
+    mode = "auto" if enabled else "manual" if included else "off"
+    if mode == "off":
+        if os.path.exists(managed):
+            os.remove(managed)
+            changed = True
+        return {"mode": mode, "keys": count, "changed": changed}
+
+    if count == 0 and not os.path.exists(managed) and mode == "auto":
+        return {"mode": mode, "keys": 0, "changed": changed}  # nothing to write yet, config untouched
+    os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+    try:
+        with open(managed, encoding="utf-8") as f:
+            current = f.read()
+    except OSError:
+        current = None
+    if current != text:
+        _write_private(managed, text)
+        changed = True
+    if mode == "auto" and count > 0 and not included:
+        if user_config is not None and not os.path.exists(config + ".omaremote-backup"):
+            with open(os.open(config + ".omaremote-backup", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
+                      "w", encoding="utf-8") as f:
+                f.write(user_config)
+        head = SSH_MARKER + "\n" + SSH_INCLUDE + "\n"
+        _write_private(config, head + ("\n" + user_config if user_config else ""), like=config)
+        changed = True
+    return {"mode": mode, "keys": count, "changed": changed}
 
 def build_ssh_config(conn):
     """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
@@ -1596,12 +1774,22 @@ def main(argv):
             print(json.dumps({"error": str(e)}))
             return 1
         return 0
-    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save"):
+    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save", "key"):
         opt = lambda flag: rest[rest.index(flag) + 1] if flag in rest[1:-1] else ""
         try:
             print(json.dumps({"path": pick(rest[0], opt("--title"), opt("--current"), opt("--name"))}))
         except Exception as e:  # no portal, no D-Bus, no python-gobject: the field still takes a typed path
             print(json.dumps({"error": f"no file chooser: {e}"}))
+            return 1
+        return 0
+    if cmd == "ssh-keys":
+        print(json.dumps(ssh_keys()))
+        return 0
+    if cmd == "ssh-config":
+        try:
+            print(json.dumps(ssh_config_sync()))
+        except OSError as e:
+            print(json.dumps({"error": str(e)}))
             return 1
         return 0
     if cmd == "system-name":

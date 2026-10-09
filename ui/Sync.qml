@@ -29,6 +29,8 @@ Singleton {
     property var pending: null
 
     signal notice(string text, bool isError)
+    // A key file chosen in the file chooser, for the connection editor.
+    signal keyPicked(string path)
 
     function set(key, value) {
         var next = Object.assign({}, settings)
@@ -180,6 +182,11 @@ Singleton {
     }
 
     function chosen(purpose, path) {
+        if (purpose === "sshKey") {
+            var home = Quickshell.env("HOME")
+            keyPicked(path.indexOf(home + "/") === 0 ? "~" + path.slice(home.length) : path)
+            return
+        }
         if (purpose === "folder") {
             set("folder", path)
             return
@@ -205,7 +212,7 @@ Singleton {
             }
             if (result.error) {
                 // No chooser here: a typed path still works.
-                if (picker.purpose !== "folder" && picker.fallback.trim() !== "")
+                if ((picker.purpose === "export" || picker.purpose === "import") && picker.fallback.trim() !== "")
                     root.chosen(picker.purpose, picker.fallback.trim())
                 else
                     root.notice("No file chooser available: type the path in the field", true)
@@ -213,6 +220,40 @@ Singleton {
             }
             if (result.path)
                 root.chosen(picker.purpose, result.path)
+        }
+    }
+
+    // ---------------------------------------------------------------- ~/.ssh/omaremote.conf
+
+    // The keys chosen for SSH connections, also in ssh's own config when the user allows it (see
+    // ssh_config_sync in bin/omaremote-session): brought in step after the connections or the
+    // setting change. auto: OMARemote added the Include; manual: the user did; off: neither.
+    property string sshConfigMode: "off"
+    readonly property bool sshTerminalKeys: !!Store.ui.sshTerminalKeys
+
+    Connections {
+        target: Store
+        function onStoredChanged() { sshConfig.restart() }
+        function onUiChanged() { sshConfig.restart() }
+    }
+    Timer {
+        id: sshConfig
+        interval: 800
+        onTriggered: if (!sshConfigWriter.running) sshConfigWriter.running = true
+    }
+    Process {
+        id: sshConfigWriter
+        command: [Sessions.bin, "ssh-config"]
+        stdout: StdioCollector { id: sshConfigOut; waitForEnd: true }
+        onExited: function (exitCode) {
+            try {
+                var r = JSON.parse(sshConfigOut.text)
+                if (r.error)
+                    root.notice("Could not update ssh's config: " + r.error, true)
+                else
+                    root.sshConfigMode = r.mode
+            } catch (e) {
+            }
         }
     }
 

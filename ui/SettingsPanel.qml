@@ -14,6 +14,7 @@ FocusScope {
 
     readonly property var sections: [
         { id: "sync", label: "Sync", icon: "" },
+        { id: "ssh", label: "SSH", icon: "" },
         { id: "updates", label: "Updates", icon: "" },
         { id: "about", label: "About", icon: "" }
     ]
@@ -238,6 +239,34 @@ FocusScope {
                                 icon: ""
                                 onClicked: Sync.importVia(exportPath.text || "~/omaremote-connections.json")
                             }
+                        }
+
+                        // ------------------------------------------------ SSH
+                        Heading { visible: root.section === "ssh"; text: "KEYS IN THE TERMINAL" }
+                        Note {
+                            visible: root.section === "ssh"
+                            text: "OMARemote always signs in with the key chosen for a connection. To have a plain "
+                                + "`ssh host` in a terminal use it too, OMARemote can keep ~/.ssh/omaremote.conf "
+                                + "(one entry per connection with a key: the key, IdentitiesOnly, user and port) "
+                                + "and include it from ~/.ssh/config."
+                        }
+                        FormRow {
+                            visible: root.section === "ssh"
+                            label: "Use in a terminal"
+                            help: "Adds one line at the top of ~/.ssh/config (backed up first); off takes it out again"
+                            Check {
+                                checked: Sync.sshTerminalKeys
+                                onToggled: Store.setUi("sshTerminalKeys", !checked)
+                            }
+                        }
+                        Note {
+                            visible: root.section === "ssh"
+                            text: Sync.sshConfigMode === "auto" ? "On: ~/.ssh/config includes OMARemote's file."
+                                : Sync.sshConfigMode === "manual" ? "Your ~/.ssh/config includes ~/.ssh/omaremote.conf itself: OMARemote keeps "
+                                                                    + "that file current and leaves your config alone."
+                                : "Off: nothing in ~/.ssh is written. To keep ~/.ssh/config to yourself and still use "
+                                  + "these keys in a terminal, add this line at its top yourself (before any Host line):\n\n    Include omaremote.conf"
+                            color: Theme.foreground
                         }
 
                         // ------------------------------------------------ Updates
