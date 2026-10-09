@@ -39,6 +39,11 @@ need_pkgconfig() { # <what it is for> <pkg-config module> <package>
 # The app itself.
 need_command "app" qs quickshell
 need_command "app" python3 python
+# The desktop's file chooser (Settings › Sync, Browse) is reached over D-Bus through GObject.
+if ! python3 -c "import gi" 2>/dev/null; then
+  problems+=("app: python-gobject not found (package python-gobject)")
+  missing_packages+=("python-gobject")
+fi
 need_command "app" secret-tool libsecret
 need_command "app" hyprctl hyprland
 need_command "app" stdbuf coreutils

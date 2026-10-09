@@ -12,6 +12,9 @@ Rectangle {
     signal editRequested()
     signal duplicateRequested()
     signal deleteRequested()
+    signal restoreRequested()
+    // A connection in Recently deleted: it can come back or go for good, nothing else.
+    readonly property bool inTrash: !!connection && !!connection.trashedAt
     signal favouriteRequested()
     signal newRequested()
 
@@ -134,6 +137,7 @@ Rectangle {
                 // Favourite: hollow until it is one, then filled like the star in the list.
                 Rectangle {
                     id: star
+                    visible: !root.inTrash
                     readonly property bool on: !!root.connection && !!root.connection.favourite
                     Layout.alignment: Qt.AlignTop
                     implicitWidth: starRow.implicitWidth + 2 * Theme.gap
@@ -169,18 +173,44 @@ Rectangle {
                 }
             }
 
+            Text {
+                Layout.fillWidth: true
+                visible: root.inTrash
+                wrapMode: Text.Wrap
+                text: !root.inTrash ? "" : "Deleted " + Format.ago(Math.floor(root.connection.trashedAt / 1000))
+                      + (root.connection.trashedFrom !== "local" ? " on " + root.connection.trashedFrom : "")
+                      + ". Kept for 30 days, with its user name and password, then deleted for good."
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+
             ActionButton {
                 Layout.fillWidth: true
                 implicitHeight: Theme.control * 1.3
                 primary: true
-                icon: root.running ? "\uf2d0" : "\uf04b"
-                text: root.running ? "Show session" : "Connect"
-                hint: "⏎"
-                onClicked: root.connectRequested()
+                icon: root.inTrash ? "" : root.running ? "\uf2d0" : "\uf04b"
+                text: root.inTrash ? "Restore" : root.running ? "Show session" : "Connect"
+                hint: root.inTrash ? "r" : "⏎"
+                onClicked: root.inTrash ? root.restoreRequested() : root.connectRequested()
             }
 
             Flow {
                 Layout.fillWidth: true
+                visible: root.inTrash
+                spacing: Theme.gap
+                ActionButton {
+                    icon: ""
+                    danger: true
+                    text: root.deleteArmed ? "Press again: gone for good" : "Delete now"
+                    hint: "del"
+                    onClicked: root.deleteRequested()
+                }
+            }
+
+            Flow {
+                Layout.fillWidth: true
+                visible: !root.inTrash
                 spacing: Theme.gap
                 ActionButton { icon: ""; text: "Edit"; hint: "e"; onClicked: root.editRequested() }
                 ActionButton { icon: ""; text: "Duplicate"; hint: "d"; onClicked: root.duplicateRequested() }

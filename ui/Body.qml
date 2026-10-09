@@ -46,7 +46,12 @@ FocusScope {
 
     focus: true
 
+    readonly property bool inTrash: filter === "trash"
+
     readonly property var shown: {
+        if (root.inTrash)
+            return Store.trashedConnections.filter(function (c) { return Format.matches(c, root.query) })
+                                           .sort(function (a, b) { return b.trashedAt - a.trashedAt })
         var list = Store.connections.filter(function (c) {
             if (!Format.matches(c, root.query))
                 return false
@@ -83,7 +88,13 @@ FocusScope {
         return (a.name || a.host).localeCompare(b.name || b.host)
     }
 
-    readonly property var selected: { Store.connections; return Store.get(root.selectedId) }
+    readonly property var selected: {
+        Store.connections; Store.trashedConnections
+        return root.inTrash ? Store.trashedGet(root.selectedId) : Store.get(root.selectedId)
+    }
+    // An emptied trash has nothing left to show.
+    readonly property int trashCount: Store.trash.length
+    onTrashCountChanged: if (trashCount === 0 && inTrash) filter = "all"
 
     // Keep a selection whenever there is something to select.
     onShownChanged: {
@@ -331,14 +342,29 @@ FocusScope {
         if (!deleteArmed) {
             deleteArmed = true
             disarm.restart()
-            say("Press delete again to remove " + selected.name, true)
+            say(inTrash ? "Press delete again to delete " + (selected.name || selected.host) + " for good, password included"
+                        : "Press delete again to move " + (selected.name || selected.host) + " to Recently deleted", true)
             return
         }
         var c = selected
-        Sessions.clearSecret("connection", c.id)
-        Store.remove(c.id)
         deleteArmed = false
-        say("Removed " + c.name)
+        if (inTrash) {
+            Sessions.clearSecret("connection", c.id)
+            Store.purge(c.id)
+            say("Deleted " + (c.name || c.host) + " for good")
+            return
+        }
+        // The trash keeps it 30 days, keyring password included.
+        Store.trashConnections([c.id], "local")
+        say("Moved " + (c.name || c.host) + " to Recently deleted (5, then r restores it)")
+    }
+
+    function restoreSelected() {
+        if (!selected || !inTrash)
+            return
+        var c = selected
+        Store.restore(c.id)
+        say("Restored " + (c.name || c.host))
     }
 
     function duplicateSelected() {
@@ -404,6 +430,11 @@ FocusScope {
     Keys.onPressed: function (event) {
         if (root.currentTab !== "home")
             return
+        // The settings panel owns the keys while it is open.
+        if (settingsPanel.opened) {
+            event.accepted = true
+            return
+        }
         // Alt+1…9 picks a tab by number: one row in the table, nine keys.
         if ((event.modifiers & Qt.AltModifier) && event.key >= Qt.Key_1 && event.key <= Qt.Key_9) {
             var tabs = ["home"].concat(root.openTabs)
@@ -428,7 +459,21 @@ FocusScope {
 
     function runAction(action) {
         var sidebarEntry = sidebar.entries[sidebarCursor]
+        // In the trash a connection can only come back or go for good.
+        if (inTrash && ["connect", "edit", "duplicate", "favourite", "log", "groupSettings"].indexOf(action) >= 0) {
+            if (action === "connect")
+                restoreSelected()
+            else if (selected)
+                say("In Recently deleted: press r to restore it first")
+            return
+        }
         switch (action) {
+        case "settings": settingsPanel.open(); break
+        case "restore": if (inTrash) restoreSelected(); else say("Restore works in Recently deleted (5)"); break
+        case "filterTrash":
+            if (trashCount > 0) filter = "trash"
+            else say("Recently deleted is empty")
+            break
         case "connect": connect(); break
         case "down": move(1); break
         case "up": move(-1); break
@@ -585,6 +630,31 @@ FocusScope {
                     hint: "n"
                     onClicked: root.startNew()
                 }
+                // Settings, as in Flea: after a short divider, at the far right.
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.preferredHeight: Theme.chrome - 12
+                    color: Theme.foreground
+                    opacity: 0.12
+                }
+                Rectangle {
+                    Layout.preferredWidth: Theme.chrome - 6
+                    Layout.preferredHeight: Theme.chrome - 6
+                    radius: Theme.radius
+                    color: settingsPanel.opened ? Theme.selection : settingsMouse.containsMouse ? Theme.hover : "transparent"
+                    SettingsGlyph {
+                        anchors.centerIn: parent
+                        size: Theme.caption + 3
+                        color: settingsPanel.opened ? Theme.accent : settingsMouse.containsMouse ? Theme.foreground : Theme.muted
+                    }
+                    MouseArea {
+                        id: settingsMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: settingsPanel.opened ? settingsPanel.close() : settingsPanel.open()
+                    }
+                }
             }
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.foreground; opacity: 0.12 }
         }
@@ -665,6 +735,7 @@ FocusScope {
                     onEditRequested: root.startEdit()
                     onDuplicateRequested: root.duplicateSelected()
                     onDeleteRequested: root.deleteSelected()
+                    onRestoreRequested: root.restoreSelected()
                     onFavouriteRequested: root.runAction("favourite")
                     onNewRequested: root.startNew()
                 }
@@ -789,7 +860,8 @@ FocusScope {
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
                  : root.focusArea === "sidebar" ? [["j k", "move"], ["⏎", "open"], ["s", "group settings"], ["tab", "list"], ["?", "keys"]]
-                 : [["⏎", "connect"], ["n", "new"], ["e", "edit"], ["s", "group"], ["/", "search"], ["tab", "sidebar"], ["?", "keys"]]
+                 : root.inTrash ? [["r", "restore"], ["del del", "delete for good"], ["1", "all connections"], [",", "settings"], ["?", "keys"]]
+                 : [["⏎", "connect"], ["n", "new"], ["e", "edit"], ["s", "group"], ["/", "search"], ["tab", "sidebar"], [",", "settings"], ["?", "keys"]]
         }
     }
 
@@ -803,6 +875,74 @@ FocusScope {
         width: root.width - x
         height: root.height - header.height - statusBar.height
         onClosed: root.closeLog()
+    }
+
+    // Sync runs beside the window; it waits while an editor is open and speaks in the status bar.
+    Binding { target: Sync; property: "paused"; value: root.busy }
+    Connections {
+        target: Sync
+        function onNotice(text, isError) { root.say(text, isError) }
+    }
+
+    // A synced file that would move many connections to the trash at once: the user decides.
+    Rectangle {
+        id: deletionCard
+        visible: !!Sync.pending
+        z: 95
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.control * 2
+        width: Math.min(560, parent.width - 2 * Theme.panelPad)
+        height: cardBody.implicitHeight + 2 * Theme.panelPad
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.warning
+        ColumnLayout {
+            id: cardBody
+            x: Theme.panelPad
+            y: Theme.panelPad
+            width: parent.width - 2 * Theme.panelPad
+            spacing: Theme.gap
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: Sync.pending ? Sync.pending.ids.length + " connections were deleted on " + Sync.pending.system : ""
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.title
+                font.bold: true
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: Sync.pending ? Sync.pending.names.join(", ")
+                      + ".\n\nThat is a lot at once, so nothing happened yet. Move them to Recently deleted here too "
+                      + "(restorable for 30 days), or keep them: they then go back to " + Sync.pending.system + "." : ""
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.gap
+                Item { Layout.fillWidth: true }
+                ActionButton { text: "Keep them"; onClicked: Sync.confirmPending(false) }
+                ActionButton { danger: true; text: "Move to trash"; onClicked: Sync.confirmPending(true) }
+            }
+        }
+    }
+
+    SettingsPanel {
+        id: settingsPanel
+        anchors.fill: parent
+        z: 90
+        onClosed: {
+            if (root.currentTab === "home" && !root.busy)
+                root.takeKeys()
+            else
+                root.refocus()
+        }
     }
 
     // The keymap sheet covers the whole window.
@@ -987,6 +1127,7 @@ FocusScope {
         else if (a === "delete") deleteSelected()
         else if (a === "log") showLog()
         else if (a === "keys") keymapSheet.open()
+        else if (parts[0] === "settings") settingsPanel.open(parts[1] || "")
         else if (a === "enter") keymapSheet.runPicked()
         else if (parts[0] === "walk") {
             // Walks the focus chain the way Tab does, n steps.

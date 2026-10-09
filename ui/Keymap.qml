@@ -27,8 +27,9 @@ Singleton {
         { group: "Connections", context: "list", action: "new", keys: ["n", "ctrl+n"], label: "New connection" },
         { group: "Connections", context: "list", action: "edit", keys: ["e", "f2"], label: "Edit connection" },
         { group: "Connections", context: "list", action: "duplicate", keys: ["d"], label: "Duplicate connection" },
-        { group: "Connections", context: "list", action: "delete", keys: ["delete", "x"], label: "Delete connection (press twice)" },
+        { group: "Connections", context: "list", action: "delete", keys: ["delete", "x"], label: "Delete: to Recently deleted; there, for good (press twice)" },
         { group: "Connections", context: "list", action: "favourite", keys: ["f"], label: "Toggle favourite" },
+        { group: "Connections", context: "list", action: "restore", keys: ["r"], label: "Restore (in Recently deleted)" },
         { group: "Connections", context: "list", action: "log", keys: ["l"], label: "Log of the last session" },
         { group: "Connections", context: "list", action: "groupSettings", keys: ["s"], label: "Settings of its group" },
         { group: "Connections", context: "list", action: "search", keys: ["/", "ctrl+f"], label: "Search connections" },
@@ -39,6 +40,7 @@ Singleton {
         { group: "Views", context: "list", action: "filterFavourites", keys: ["2"], label: "Favourites" },
         { group: "Views", context: "list", action: "filterRecent", keys: ["3"], label: "Recent" },
         { group: "Views", context: "list", action: "filterActive", keys: ["4"], label: "Active sessions" },
+        { group: "Views", context: "list", action: "filterTrash", keys: ["5"], label: "Recently deleted" },
         { group: "Views", context: "list", action: "focusSidebar", keys: ["tab"], label: "Move to the sidebar" },
         { group: "Views", context: "list", action: "newCredential", keys: ["c"], label: "New credential set" },
 
@@ -57,6 +59,7 @@ Singleton {
         { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list" },
         { group: "Tabs", context: "app", action: "pluginOffer", keys: [], label: "Show the bar plugin offer again" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
+        { group: "Tabs", context: "app", action: "settings", keys: [","], label: "Settings (sync, updates, about)" },
         { group: "Tabs", context: "app", action: "quit", keys: ["ctrl+q"], label: "Quit OMARemote" },
 
         // In a session

@@ -339,6 +339,170 @@ class Ssh(unittest.TestCase):
                 session.FONT_SIZE_RES.update(saved)
 
 
+class Sync(unittest.TestCase):
+    NOW = 1_800_000_000_000
+
+    def local(self, *conns, **extra):
+        return dict({"connections": list(conns), "groups": {}, "trash": [], "deleted": {}}, **extra)
+
+    def remote(self, *conns, deleted=None, groups=None, system="voyager"):
+        return {"format": "omaremote-sync", "version": 1, "system": system, "written": self.NOW,
+                "connections": list(conns), "groups": groups or {}, "deleted": deleted or {}}
+
+    def c(self, cid="c1", host="pc.lan", modified=100, **kw):
+        return dict({"id": cid, "name": cid, "host": host, "protocol": "rdp", "port": 3389, "modified": modified}, **kw)
+
+    def test_nothing_local_travels(self):
+        data = self.local(self.c(username="alice", domain="ACME", credential="k1", savePassword=True,
+                                 gatewayUser="gw", gatewayDomain="ACME", extraArgs="/u:alice", sshArgs="-l alice",
+                                 lastConnected=5, favourite=True),
+                          groups={"Servers": {"credential": "k1", "settings": {"gatewayUser": "gw", "audio": "off"}}})
+        out = json.dumps(session.portable(data, "here"))
+        for secret in ("alice", "ACME", "k1", "savePassword", "gw", "/u:", "-l ", "lastConnected"):
+            self.assertNotIn(secret, out)
+        self.assertIn('"favourite": true', out)
+        self.assertIn('"audio": "off"', out)
+
+    def test_adds_unknown_connections_without_credentials(self):
+        data, report = session.merge(self.local(), [self.remote(self.c())], self.NOW)
+        self.assertEqual(report["added"], ["c1"])
+        self.assertEqual(data["connections"][0]["credential"], "custom")
+
+    def test_added_connection_follows_its_groups_credentials(self):
+        local = self.local(groups={"Servers": {"credential": "k1", "settings": {}}})
+        data, _ = session.merge(local, [self.remote(self.c(group="Servers"))], self.NOW)
+        self.assertEqual(data["connections"][0]["credential"], "inherit")
+
+    def test_newer_change_wins_and_local_fields_stay(self):
+        local = self.local(self.c(name="old", modified=100, username="alice", credential="custom"))
+        data, report = session.merge(local, [self.remote(self.c(name="new", modified=200))], self.NOW)
+        self.assertEqual(report["updated"], ["new"])
+        self.assertEqual(data["connections"][0]["username"], "alice")
+        data, report = session.merge(local, [self.remote(self.c(name="older", modified=50))], self.NOW)
+        self.assertEqual(data["connections"][0]["name"], "old")
+        self.assertEqual(report["updated"], [])
+
+    def test_same_server_with_another_id_is_one_connection(self):
+        local = self.local(self.c("mine", host="PC.lan", modified=100))
+        data, report = session.merge(local, [self.remote(self.c("theirs", modified=200))], self.NOW)
+        self.assertEqual([c["id"] for c in data["connections"]], ["mine"])
+        self.assertEqual(report["updated"], ["theirs"])
+
+    def test_a_server_known_by_another_id_follows_its_deletion(self):
+        local = self.local(self.c("mine", modified=100))
+        data, _ = session.merge(local, [self.remote(self.c("theirs", modified=50))], self.NOW)
+        self.assertEqual(data["connections"][0]["aliases"], ["theirs"])
+        data, report = session.merge(data, [self.remote(deleted={"theirs": 300})], self.NOW)
+        self.assertEqual(report["trashed"], ["mine"])
+
+    def test_deletion_goes_to_the_trash_never_out(self):
+        local = self.local(self.c(modified=100, username="alice"))
+        data, report = session.merge(local, [self.remote(deleted={"c1": 300})], self.NOW)
+        self.assertEqual(data["connections"], [])
+        self.assertEqual(data["trash"][0]["connection"]["username"], "alice")
+        self.assertEqual(data["trash"][0]["from"], "voyager")
+        self.assertEqual(report["trashed"], ["c1"])
+
+    def test_a_later_local_change_survives_an_older_deletion(self):
+        local = self.local(self.c(modified=500))
+        data, _ = session.merge(local, [self.remote(deleted={"c1": 300})], self.NOW)
+        self.assertEqual(len(data["connections"]), 1)
+
+    def test_deleted_here_is_not_brought_back_by_an_older_copy(self):
+        local = self.local(trash=[{"connection": self.c(modified=100), "deleted": 300, "from": "local"}],
+                           deleted={"c1": 300})
+        data, report = session.merge(local, [self.remote(self.c(modified=100))], self.NOW)
+        self.assertEqual(data["connections"], [])
+        self.assertEqual(report["added"] + report["restored"], [])
+
+    def test_a_newer_change_restores_from_the_trash_with_local_fields(self):
+        local = self.local(trash=[{"connection": self.c(modified=100, username="alice"), "deleted": 300, "from": "local"}],
+                           deleted={"c1": 300})
+        data, report = session.merge(local, [self.remote(self.c(name="back", modified=400))], self.NOW)
+        self.assertEqual(report["restored"], ["back"])
+        self.assertEqual(data["connections"][0]["username"], "alice")
+        self.assertEqual(data["trash"], [])
+        self.assertNotIn("c1", data["deleted"])
+
+    def test_many_deletions_at_once_wait_for_the_user(self):
+        conns = [self.c(f"c{i}", host=f"pc{i}.lan") for i in range(6)]
+        doomed = {f"c{i}": 300 for i in range(4)}
+        data, report = session.merge(self.local(*conns), [self.remote(deleted=doomed)], self.NOW)
+        self.assertEqual(len(data["connections"]), 6)
+        self.assertEqual(report["pendingDeletions"][0]["system"], "voyager")
+        self.assertEqual(len(report["pendingDeletions"][0]["ids"]), 4)
+        data, report = session.merge(self.local(*conns), [self.remote(deleted=doomed)], self.NOW,
+                                     allow_deletions=("voyager",))
+        self.assertEqual(len(data["connections"]), 2)
+
+    def test_groups_merge_but_keep_their_local_credentials(self):
+        local = self.local(groups={"Servers": {"credential": "k1", "settings": {"gatewayUser": "gw"}, "modified": 1}})
+        incoming = self.remote(groups={"Servers": {"settings": {"audio": "off"}, "modified": 9}})
+        data, _ = session.merge(local, [incoming], self.NOW)
+        self.assertEqual(data["groups"]["Servers"],
+                         {"credential": "k1", "settings": {"audio": "off", "gatewayUser": "gw"}, "modified": 9})
+
+    def test_old_files_without_change_times_load(self):
+        data, report = session.merge(self.local({"id": "c1", "host": "pc.lan"}),
+                                     [self.remote(self.c(name="new", modified=200))], self.NOW)
+        self.assertEqual(report["updated"], ["new"])
+
+    def test_trash_is_emptied_after_thirty_days(self):
+        old = self.NOW - 31 * session.DAY_MS
+        data = self.local(trash=[{"connection": self.c("old"), "deleted": old},
+                                 {"connection": self.c("new"), "deleted": self.NOW}],
+                          deleted={"old": old, "new": self.NOW})
+        self.assertEqual(session.purge_trash(data, self.NOW), ["old"])
+        self.assertEqual([t["connection"]["id"] for t in data["trash"]], ["new"])
+        self.assertEqual(list(data["deleted"]), ["new"])
+
+    def test_a_manual_import_never_removes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            conf = os.path.join(d, "connections.json")
+            with open(conf, "w") as f:
+                json.dump(self.local(self.c(modified=100)), f)
+            export = os.path.join(d, "export.json")
+            with open(export, "w") as f:
+                json.dump(dict(self.remote(self.c("c2", host="other.lan"), deleted={"c1": 999}),
+                               format="omaremote-export"), f)
+            out = session.import_file(export, conf, self.NOW)
+            self.assertEqual(sorted(c["id"] for c in out["data"]["connections"]), ["c1", "c2"])
+            with open(export) as f:
+                again = session.merge(out["data"], [json.load(f)], self.NOW)[1]
+            self.assertEqual(again["added"], [])
+
+    def test_folder_sync_writes_its_own_file_only_when_it_changed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder = os.path.join(d, "Nextcloud")
+            os.makedirs(folder)
+            conf = os.path.join(d, "connections.json")
+            with open(conf, "w") as f:
+                json.dump(dict(self.local(self.c(username="alice")),
+                               ui={"sync": {"folder": folder, "system": "here"}}), f)
+            with open(os.path.join(folder, "voyager.omaremote.json"), "w") as f:
+                json.dump(self.remote(self.c("c2", host="other.lan")), f)
+            out = session.sync_folder(conf, self.NOW)
+            own = os.path.join(folder, "here.omaremote.json")
+            with open(own) as f:
+                self.assertNotIn("alice", f.read())
+            self.assertEqual(out["report"]["added"], ["c2"])
+            before = os.stat(own).st_mtime_ns
+            session.sync_folder(conf, self.NOW + 5000)
+            self.assertEqual(os.stat(own).st_mtime_ns, before)
+
+    def test_a_missing_sync_folder_is_an_error_not_a_new_folder(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            conf = os.path.join(d, "connections.json")
+            with open(conf, "w") as f:
+                json.dump({"ui": {"sync": {"folder": os.path.join(d, "not-mounted")}}}, f)
+            with self.assertRaises(ValueError):
+                session.sync_folder(conf, self.NOW)
+            self.assertFalse(os.path.exists(os.path.join(d, "not-mounted")))
+
+
 class Views(unittest.TestCase):
     def setUp(self):
         import tempfile

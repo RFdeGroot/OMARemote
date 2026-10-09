@@ -118,7 +118,9 @@ Rectangle {
         spacing: 2
         Text {
             anchors.right: parent.right
-            text: root.state_ === "connected" ? "connected" : root.state_ === "connecting" ? root.stage + "…"
+            text: root.modelData.trashedAt ? "deleted " + Format.ago(Math.floor(root.modelData.trashedAt / 1000), root.now)
+                                             + (root.modelData.trashedFrom !== "local" ? " on " + root.modelData.trashedFrom : "")
+                : root.state_ === "connected" ? "connected" : root.state_ === "connecting" ? root.stage + "…"
                 : root.state_ === "failed" ? "failed" : Format.ago(root.modelData.lastConnected, root.now)
             color: root.state_ ? root.stateColor : Theme.muted
             font.family: Theme.font

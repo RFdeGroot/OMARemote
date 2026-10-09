@@ -156,13 +156,14 @@ The most used:
 | `⏎` | connect, or switch to the connection's running session |
 | `j` `k` / arrows | move through the list |
 | `n` / `e` / `d` | new / edit / duplicate connection |
-| `del` `del` | delete (press twice) |
+| `del` `del` | delete (press twice): to *Recently deleted*, restorable for 30 days |
 | `f` | toggle favourite |
 | `s` | settings of the connection's group |
 | `c` | new credential set |
 | `l` | log of the last session (`w` warnings only, `esc` close) |
 | `/` | search |
-| `1`–`4` | All, Favourites, Recent, Active |
+| `1`–`5` | All, Favourites, Recent, Active, Recently deleted (`r` restores there) |
+| `,` | settings: sync, updates, about |
 | `tab` | move to the sidebar (`j` `k`, `⏎` open, `s` group settings, `esc` back) |
 | `ctrl+tab`, `alt+1`–`9` | switch tabs |
 | `p` | pin the connections list beside session tabs |
@@ -197,6 +198,31 @@ connects without the window. Both take a connection's id, name or host.
 **In the Omarchy bar:** the [OMARemote plugin](https://github.com/RFdeGroot/omarchy-omaremote) lists
 running sessions and favourite connections, a click away
 (`omarchy plugin add https://github.com/RFdeGroot/omarchy-omaremote.git --enable`).
+
+## Sync and backup
+
+Open **settings** with `,` (or the sliders at the top right). Two ways to get your connections onto
+another system:
+
+- **Export and import** (Settings › Sync): one file with your connections and groups. Import it on
+  the other system; importing again later adds new connections and updates changed ones, and never
+  removes any. A connection that already exists there (same protocol, host and port) is updated,
+  not added twice.
+- **Folder sync**: point *Folder* at a folder something already keeps in step between your systems,
+  such as Nextcloud, Syncthing or Dropbox (`~/Nextcloud/OMARemote`). Each system writes its own
+  `<system>.omaremote.json` there and merges the others' at start, after every change and every few
+  minutes; per connection the newest change wins. No system ever writes another's file, so none
+  overwrites another.
+
+**What never leaves the system:** user names, domains, credential sets, passwords (they stay in the
+keyring), gateway users, extra FreeRDP arguments and extra ssh options. A connection that arrives
+from elsewhere asks for its credentials, or takes its group's credential set where that group has
+one here.
+
+**Deleting is safe.** A deleted connection goes to *Recently deleted* (`5`) for 30 days, with its user
+name and password, and `r` brings it back; a deletion on another system arrives there too, never
+straight out. When one system's file would delete many connections at once, OMARemote asks before
+anything happens: *Move to trash* or *Keep them* (they then go back to that system).
 
 ## Credentials and groups
 

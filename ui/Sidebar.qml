@@ -11,6 +11,8 @@ Rectangle {
     readonly property var entries: {
         var out = [{ kind: "filter", value: "all" }, { kind: "filter", value: "favourites" },
                    { kind: "filter", value: "recent" }, { kind: "filter", value: "active" }]
+        if (Store.trash.length > 0)
+            out.push({ kind: "filter", value: "trash" })
         for (var i = 0; i < Store.groups.length; i++)
             out.push({ kind: "group", value: Store.groups[i] })
         for (var j = 0; j < Store.credentials.length; j++)
@@ -43,6 +45,8 @@ Rectangle {
     color: Theme.surface
 
     function countOf(f) {
+        if (f === "trash")
+            return Store.trash.length
         var list = Store.connections
         var n = 0
         for (var i = 0; i < list.length; i++) {
@@ -90,13 +94,15 @@ Rectangle {
                     { f: "all", icon: "", label: "All connections" },
                     { f: "favourites", icon: "", label: "Favourites" },
                     { f: "recent", icon: "", label: "Recent" },
-                    { f: "active", icon: "", label: "Active" }
+                    { f: "active", icon: "", label: "Active" },
+                    { f: "trash", icon: "", label: "Recently deleted" }
                 ]
                 delegate: SidebarRow {
                     required property var modelData
+                    visible: modelData.f !== "trash" || Store.trash.length > 0
                     icon: modelData.icon
                     label: modelData.label
-                    count: { Store.connections; Sessions.sessions; return root.countOf(modelData.f) }
+                    count: { Store.connections; Store.trash; Sessions.sessions; return root.countOf(modelData.f) }
                     current: root.filter === modelData.f
                     cursor: root.hasCursor("filter", modelData.f)
                     iconColor: modelData.f === "active" && count > 0 ? Theme.success : (current ? Theme.accent : Theme.muted)

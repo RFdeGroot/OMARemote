@@ -32,16 +32,26 @@ Singleton {
         Store.setUi("pluginDeclined", declined)
     }
 
-    readonly property bool offline: Quickshell.env("OMAREMOTE_NO_UPDATE_CHECK") === "1"
+    // OMAREMOTE_NO_UPDATE_CHECK=1 always wins; otherwise Settings › Updates decides.
+    readonly property bool forcedOffline: Quickshell.env("OMAREMOTE_NO_UPDATE_CHECK") === "1"
+    readonly property bool offline: forcedOffline || Store.ui.updateCheck === false
 
-    function check() {
+    // force: asked for (Check now), so it runs even with the check at start turned off.
+    function check(force) {
         if (Quickshell.env("OMAREMOTE_SNAPSHOT"))
             return
+        if (!Store.loaded && !force)
+            return // the setting is not read yet; Store's load calls back
         checkPlugin()
-        if (version === "" || offline)
+        if (version === "" || forcedOffline || (offline && !force))
             return
         if (!checker.running)
             checker.running = true
+    }
+
+    Connections {
+        target: Store
+        function onLoadedChanged() { if (Store.loaded) root.check() }
     }
 
     function checkPlugin() {

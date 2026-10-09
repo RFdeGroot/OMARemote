@@ -24,6 +24,12 @@ so closing the window never closes a remote desktop.
   omaremote-session float pid <pid> [%]  float a window at % (90) of its monitor, centred
   omaremote-session summon pid <pid>     move a window to the current workspace and focus it
   omaremote-session open-window <name>   a connection in a floating window of its own, here
+  omaremote-session export <file|folder> connections and groups to a file (no user names or passwords)
+  omaremote-session import <file>        merge an export: prints the result for the UI, JSON
+  omaremote-session sync [--allow-deletions <system,…>]   one round of folder sync, JSON for the UI
+  omaremote-session system-name          this system's name in the sync folder
+  omaremote-session pick folder|open|save [--title T] [--current PATH] [--name NAME]
+                                         the desktop's file chooser (portal); prints {"path"}, "" if cancelled
 """
 
 import json
@@ -247,6 +253,325 @@ def mark_connected(conn_id, path=CONNECTIONS):
             f.truncate()
     except (OSError, ValueError):
         pass
+
+
+# ---------------------------------------------------------------- export, import and sync
+#
+# Connections and groups travel between systems; who signs in does not. A manual export is one
+# file; folder sync is one file per system in a folder something else keeps in step (Nextcloud,
+# Syncthing, …): each system writes only its own file, so none overwrites another, and merges the
+# rest. Per connection and group the newest change wins (`modified`, ms). Deletions travel as
+# tombstones and land in the trash, never straight out; a file that would trash many at once is
+# held back for the UI to confirm. The UI stays the only writer of connections.json: the commands
+# below print what to apply.
+
+# Never leaves this machine (keep in step with localKeys in ui/Store.qml).
+LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
+              "extraArgs", "sshArgs", "lastConnected")
+GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs")
+SYNC_SUFFIX = ".omaremote.json"
+TRASH_DAYS = 30
+DAY_MS = 24 * 3600 * 1000
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def load_raw(path=CONNECTIONS):
+    """connections.json as stored, every key kept."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {}
+    if isinstance(data, list):
+        data = {"connections": data}
+    return data
+
+
+def portable_connection(conn):
+    return {k: v for k, v in conn.items() if k not in LOCAL_KEYS}
+
+
+def portable_group(group):
+    settings = {k: v for k, v in (group.get("settings") or {}).items() if k not in GROUP_LOCAL_SETTINGS}
+    return {"settings": settings, "modified": group.get("modified", 0)}
+
+
+def portable(data, system, kind="sync", now=None):
+    """What other systems read. A manual export carries no deletions: importing one never removes."""
+    return {
+        "format": "omaremote-" + kind, "version": 1, "system": system,
+        "written": now if now is not None else now_ms(),
+        "connections": [portable_connection(c) for c in data.get("connections", [])
+                        if isinstance(c, dict) and c.get("id")],
+        "groups": {name: portable_group(g) for name, g in (data.get("groups") or {}).items() if isinstance(g, dict)},
+        "deleted": dict(data.get("deleted") or {}) if kind == "sync" else {},
+    }
+
+
+def connection_key(conn):
+    """The same server, whatever id each system gave it."""
+    protocol = conn.get("protocol") or "rdp"
+    try:
+        port = int(conn.get("port") or DEFAULT_PORTS.get(protocol, 0))
+    except (TypeError, ValueError):
+        port = DEFAULT_PORTS.get(protocol, 0)
+    return (protocol, (conn.get("host") or "").strip().lower(), port)
+
+
+def _local_part(conn):
+    return {k: v for k, v in conn.items() if k in LOCAL_KEYS}
+
+
+def ids_of(conn):
+    """A connection's id plus the ids other systems know it by (matched by host, see merge)."""
+    return {conn.get("id")} | set(conn.get("aliases") or [])
+
+
+def _with_aliases(new, *others):
+    """new keeps its own id; every other id the same server goes by becomes an alias."""
+    aliases = set()
+    for c in others:
+        aliases |= ids_of(c)
+    aliases.discard(new.get("id"))
+    aliases.discard(None)
+    if aliases:
+        new["aliases"] = sorted(aliases)
+    return new
+
+
+def merge(local, incoming, now=None, allow_deletions=()):
+    """Merges other systems' files into connections.json's data. Returns (data, report).
+
+    allow_deletions names systems whose mass deletion the user confirmed."""
+    now = now if now is not None else now_ms()
+    data = json.loads(json.dumps(local))
+    conns = data.setdefault("connections", [])
+    trash = data.setdefault("trash", [])
+    deleted = data.setdefault("deleted", {})
+    groups = data.setdefault("groups", {})
+    report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [], "errors": []}
+
+    for inc in incoming:
+        if not isinstance(inc, dict) or inc.get("format") not in ("omaremote-sync", "omaremote-export"):
+            report["errors"].append("not an OMARemote file: " + str((inc or {}).get("_path", "?")))
+            continue
+        if int(inc.get("version") or 0) > 1:
+            report["errors"].append(f"{inc.get('system') or '?'}: written by a newer OMARemote")
+            continue
+        system = inc.get("system") or "another system"
+
+        for name, g in (inc.get("groups") or {}).items():
+            if not isinstance(g, dict):
+                continue
+            mine = groups.get(name)
+            if mine is not None and g.get("modified", 0) <= mine.get("modified", 0):
+                continue
+            mine = dict(mine or {})
+            kept = {k: v for k, v in (mine.get("settings") or {}).items() if k in GROUP_LOCAL_SETTINGS}
+            mine["settings"] = dict({k: v for k, v in (g.get("settings") or {}).items()
+                                     if k not in GROUP_LOCAL_SETTINGS}, **kept)
+            mine["modified"] = g.get("modified", 0)
+            mine.setdefault("credential", "")
+            groups[name] = mine
+
+        for ic in inc.get("connections") or []:
+            if not isinstance(ic, dict) or not ic.get("id") or not (ic.get("host") or "").strip():
+                continue
+            changed = ic.get("modified", 0)
+            theirs = ids_of(ic)
+            if any(deleted.get(i, -1) >= changed for i in theirs):
+                continue  # deleted here after that change
+            key = connection_key(ic)
+            match = next((c for c in conns if ids_of(c) & theirs), None) \
+                or next((c for c in conns if connection_key(c) == key), None)
+            if match is not None:
+                if changed > match.get("modified", 0):
+                    new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
+                    conns[conns.index(match)] = new
+                    report["updated"].append(new.get("name") or new.get("host"))
+                elif not theirs <= ids_of(match):
+                    # The same server under another id: remember it, so its deletion finds this one.
+                    conns[conns.index(match)] = _with_aliases(dict(match), match, ic)
+                continue
+            binned = next((t for t in trash if ids_of(t.get("connection") or {}) & theirs), None) \
+                or next((t for t in trash if connection_key(t.get("connection") or {}) == key), None)
+            if binned is not None:
+                if changed > binned.get("deleted", 0):
+                    old = binned["connection"]
+                    new = _with_aliases(dict(portable_connection(ic), **_local_part(old), id=old["id"]), old, ic)
+                    trash.remove(binned)
+                    deleted.pop(old["id"], None)
+                    conns.append(new)
+                    report["restored"].append(new.get("name") or new.get("host"))
+                continue
+            new = portable_connection(ic)
+            new["credential"] = "inherit" if (groups.get(new.get("group") or "") or {}).get("credential") else "custom"
+            conns.append(new)
+            report["added"].append(new.get("name") or new.get("host"))
+
+        doomed = []
+        for cid, when in (inc.get("deleted") or {}).items():
+            if not isinstance(when, (int, float)):
+                continue
+            c = next((c for c in conns if cid in ids_of(c)), None)
+            if c is not None and when > c.get("modified", 0):
+                doomed.append((c, when))
+            elif c is None:
+                deleted[cid] = max(deleted.get(cid, 0), when)  # passes the deletion on to others
+        if doomed and len(doomed) > max(3, len(conns) // 4) and system not in allow_deletions:
+            report["pendingDeletions"].append({"system": system, "ids": [c["id"] for c, _ in doomed],
+                                               "names": [c.get("name") or c.get("host") for c, _ in doomed]})
+            continue
+        for c, when in doomed:
+            conns.remove(c)
+            trash.append({"connection": c, "deleted": when, "from": system})
+            deleted[c["id"]] = max(deleted.get(c["id"], 0), when)
+            report["trashed"].append(c.get("name") or c.get("host"))
+    return data, report
+
+
+def purge_trash(data, now=None):
+    """Drops what was deleted more than TRASH_DAYS ago. Returns the ids whose keyring passwords go too."""
+    now = now if now is not None else now_ms()
+    cutoff = now - TRASH_DAYS * DAY_MS
+    gone = [t["connection"]["id"] for t in data.get("trash", [])
+            if t.get("deleted", 0) < cutoff and (t.get("connection") or {}).get("id")]
+    data["trash"] = [t for t in data.get("trash", []) if t.get("deleted", 0) >= cutoff]
+    data["deleted"] = {k: v for k, v in (data.get("deleted") or {}).items() if v >= cutoff}
+    return gone
+
+
+def system_name(raw=None):
+    """This system's name in the sync folder: the one set, else the host name."""
+    name = ((raw or {}).get("ui") or {}).get("sync", {}).get("system") or ""
+    if not name:
+        try:
+            with open("/etc/hostname", encoding="utf-8") as f:
+                name = f.read().strip()
+        except OSError:
+            name = os.uname().nodename
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.") or "omarchy"
+
+
+def write_json_atomic(path, data):
+    """Written whole, then renamed into place: a syncing client never picks up half a file."""
+    tmp = os.path.join(os.path.dirname(path) or ".", "." + os.path.basename(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def _same_content(a, b):
+    strip = lambda d: {k: v for k, v in d.items() if k != "written"}
+    return strip(a) == strip(b)
+
+
+def sync_folder(path=CONNECTIONS, now=None, allow_deletions=()):
+    """One sync round: refreshes this system's file in the folder, merges everyone else's.
+    Returns {"data", "report", "purged", "system", "folder"} for the UI to apply."""
+    now = now if now is not None else now_ms()
+    raw = load_raw(path)
+    settings = (raw.get("ui") or {}).get("sync") or {}
+    folder = os.path.expanduser((settings.get("folder") or "").strip())
+    if not folder:
+        raise ValueError("no sync folder set")
+    if not os.path.isdir(folder):
+        raise ValueError(f"the sync folder does not exist: {folder}")
+    system = system_name(raw)
+    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted") if raw.get(k) is not None}
+    purged = purge_trash(data, now)
+    mine = portable(data, system, "sync", now)
+    own = os.path.join(folder, system + SYNC_SUFFIX)
+    try:
+        with open(own, encoding="utf-8") as f:
+            unchanged = _same_content(json.load(f), mine)
+    except (OSError, ValueError):
+        unchanged = False
+    if not unchanged:
+        write_json_atomic(own, mine)
+    incoming, errors = [], []
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(SYNC_SUFFIX) or name == system + SYNC_SUFFIX or name.startswith("."):
+            continue
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                other = json.load(f)
+            other["_path"] = name
+            incoming.append(other)
+        except (OSError, ValueError) as e:
+            errors.append(f"{name}: {e}")
+    merged, report = merge(data, incoming, now, allow_deletions)
+    report["errors"] = errors + report["errors"]
+    return {"data": merged, "report": report, "purged": purged, "system": system, "folder": folder}
+
+
+def import_file(file_path, path=CONNECTIONS, now=None):
+    """A manual import: adds and updates, never removes. Returns {"data", "report"}."""
+    with open(os.path.expanduser(file_path), encoding="utf-8") as f:
+        incoming = json.load(f)
+    if isinstance(incoming, dict):
+        incoming["deleted"] = {}
+    raw = load_raw(path)
+    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted") if raw.get(k) is not None}
+    merged, report = merge(data, [incoming], now)
+    return {"data": merged, "report": report}
+
+
+def pick(mode, title="", current="", name=""):
+    """The desktop's own file chooser (xdg-desktop-portal: Flea, GTK, …). mode: folder, open or save.
+    Returns the chosen path, or "" when cancelled."""
+    from urllib.parse import unquote, urlparse
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+    token = "omaremote" + uuid.uuid4().hex[:8]
+    sender = bus.get_unique_name()[1:].replace(".", "_")
+    handle = f"/org/freedesktop/portal/desktop/request/{sender}/{token}"
+    loop = GLib.MainLoop()
+    chosen = []
+
+    def on_response(_conn, _sender, _path, _iface, _signal, params):
+        code, results = params.unpack()
+        uris = (results.get("uris") or []) if code == 0 else []
+        chosen.extend(unquote(urlparse(u).path) for u in uris[:1])
+        loop.quit()
+
+    # Subscribed before the call, on the handle the token makes predictable: no response is missed.
+    bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response",
+                         handle, None, Gio.DBusSignalFlags.NONE, on_response)
+    options = {"handle_token": GLib.Variant("s", token), "modal": GLib.Variant("b", True)}
+    if mode == "folder":
+        options["directory"] = GLib.Variant("b", True)
+    else:
+        options["filters"] = GLib.Variant("a(sa(us))", [("OMARemote connections", [(0, "*.json")]),
+                                                         ("All files", [(0, "*")])])
+    folder = os.path.expanduser(current or "")
+    if folder and not os.path.isdir(folder):
+        folder = os.path.dirname(folder)
+    if folder and os.path.isdir(folder):
+        options["current_folder"] = GLib.Variant("ay", os.fsencode(folder) + b"\0")
+    if mode == "save" and name:
+        options["current_name"] = GLib.Variant("s", name)
+    method = "SaveFile" if mode == "save" else "OpenFile"
+    bus.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                  "org.freedesktop.portal.FileChooser", method,
+                  GLib.Variant("(ssa{sv})", ("", title or "OMARemote", options)), GLib.VariantType("(o)"),
+                  Gio.DBusCallFlags.NONE, -1, None)
+    loop.run()
+    return chosen[0] if chosen else ""
+
+
+def export_file(file_path, path=CONNECTIONS, now=None):
+    raw = load_raw(path)
+    out = portable(raw, system_name(raw), "export", now)
+    target = os.path.expanduser(file_path)
+    if os.path.isdir(target):
+        target = os.path.join(target, "omaremote-connections.json")
+    write_json_atomic(target, out)
+    return {"file": target, "connections": len(out["connections"]), "groups": len(out["groups"])}
 
 
 # ---------------------------------------------------------------- keyring
@@ -1252,6 +1577,35 @@ def main(argv):
             return 0
         print(" ".join(shlex.quote(a) for a in redact(build_args(conn, "x" if conn["savePassword"] else None,
                                                                     monitor_scale()))))
+        return 0
+    if cmd == "export" and rest:
+        print(json.dumps(export_file(rest[0])))
+        return 0
+    if cmd == "import" and rest:
+        try:
+            print(json.dumps(import_file(rest[0])))
+        except (OSError, ValueError) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        return 0
+    if cmd == "sync":
+        allow = rest[rest.index("--allow-deletions") + 1].split(",") if "--allow-deletions" in rest[:-1] else ()
+        try:
+            print(json.dumps(sync_folder(allow_deletions=allow)))
+        except (OSError, ValueError) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        return 0
+    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save"):
+        opt = lambda flag: rest[rest.index(flag) + 1] if flag in rest[1:-1] else ""
+        try:
+            print(json.dumps({"path": pick(rest[0], opt("--title"), opt("--current"), opt("--name"))}))
+        except Exception as e:  # no portal, no D-Bus, no python-gobject: the field still takes a typed path
+            print(json.dumps({"error": f"no file chooser: {e}"}))
+            return 1
+        return 0
+    if cmd == "system-name":
+        print(system_name(load_raw()))
         return 0
     if cmd == "paths":
         ensure_changes()

@@ -25,3 +25,6 @@ FollowFocus 1.0 FollowFocus.qml
 KeymapSheet 1.0 KeymapSheet.qml
 singleton Keymap 1.0 Keymap.qml
 singleton Updates 1.0 Updates.qml
+singleton Sync 1.0 Sync.qml
+SettingsPanel 1.0 SettingsPanel.qml
+SettingsGlyph 1.0 SettingsGlyph.qml
