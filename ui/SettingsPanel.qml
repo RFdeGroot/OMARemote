@@ -175,8 +175,17 @@ FocusScope {
                         }
                         FormRow {
                             visible: root.section === "sync"
+                            label: "Watch the folder"
+                            help: "Another system's changes show within seconds of arriving"
+                            Check {
+                                checked: Sync.watch
+                                onToggled: Sync.set("watch", !checked)
+                            }
+                        }
+                        FormRow {
+                            visible: root.section === "sync"
                             label: "Sync every"
-                            help: "And after every change here"
+                            help: Sync.watch ? "A fallback: arriving files and changes here sync at once" : "And after every change here"
                             Segment {
                                 value: String(Sync.interval)
                                 options: [{ value: "0", label: "Off" }, { value: "5", label: "5 min" },

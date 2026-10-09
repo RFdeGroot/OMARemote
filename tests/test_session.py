@@ -3,6 +3,7 @@ import json
 import importlib.util
 import os
 import sys
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -597,6 +598,21 @@ class Sync(unittest.TestCase):
             before = os.stat(own).st_mtime_ns
             session.sync_folder(conf, self.NOW + 5000)
             self.assertEqual(os.stat(own).st_mtime_ns, before)
+
+    def test_the_folder_watch_reports_arrived_files_only(self):
+        import io, tempfile, threading
+        with tempfile.TemporaryDirectory() as d:
+            out, done = io.StringIO(), threading.Event()
+            t = threading.Thread(target=session.watch_folder, args=(d, out, 0.05, done.is_set))
+            t.start()
+            time.sleep(0.3)
+            session.write_json_atomic(os.path.join(d, "macbook.omaremote.json"), {"a": 1})  # tmp file, then rename
+            with open(os.path.join(d, "notes.txt"), "w") as f:
+                f.write("not ours")
+            time.sleep(0.3)
+            done.set()
+            t.join(3)
+            self.assertEqual(out.getvalue().split(), ["macbook.omaremote.json"])
 
     def test_a_missing_sync_folder_is_an_error_not_a_new_folder(self):
         import tempfile

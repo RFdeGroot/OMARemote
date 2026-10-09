@@ -16,6 +16,8 @@ Singleton {
     readonly property string folder: settings.folder || ""
     readonly property int interval: settings.interval !== undefined ? settings.interval : 5
     readonly property bool enabled: folder.trim() !== ""
+    // Settings › Sync › "Sync when a file arrives": watch the folder (off unless switched on).
+    readonly property bool watch: settings.watch === true
     // This system's file in the folder is <system>.omaremote.json.
     property string systemName: ""
 
@@ -154,8 +156,37 @@ Singleton {
         onExited: root.systemName = nameOut.text.trim()
     }
 
-    // A new or changed folder syncs straight away.
-    onFolderChanged: if (enabled) again.restart()
+    // A new or changed folder syncs straight away, and is watched from then on.
+    onFolderChanged: {
+        if (enabled)
+            again.restart()
+        watcher.running = false
+        rewatch.restart()
+    }
+    onWatchChanged: {
+        watcher.running = false
+        rewatch.restart()
+    }
+
+    // Another system's file arriving (Nextcloud delivering it) syncs within seconds, not at the
+    // next interval; the interval stays as the fallback. Our own file's writes are not news.
+    readonly property string ownFile: (settings.system || systemName) + ".omaremote.json"
+    Process {
+        id: watcher
+        command: [Sessions.bin, "watch-folder", root.folder]
+        running: root.enabled && root.watch && Store.loaded
+        stdout: SplitParser {
+            onRead: function (name) {
+                if (name.trim() !== "" && name.trim() !== root.ownFile)
+                    arrived.restart()
+            }
+        }
+        // Ended (the folder setting changed, or something failed): watch again shortly.
+        onExited: rewatch.restart()
+    }
+    Timer { id: rewatch; interval: 2000; onTriggered: watcher.running = root.enabled && root.watch && Store.loaded }
+    // A burst of writes (a client syncing several files) becomes one round.
+    Timer { id: arrived; interval: 2000; onTriggered: root.syncNow() }
 
     // ---------------------------------------------------------------- the desktop's file chooser
 

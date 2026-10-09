@@ -28,6 +28,7 @@ so closing the window never closes a remote desktop.
   omaremote-session import <file>        merge an export: prints the result for the UI, JSON
   omaremote-session sync [--allow-deletions <system,…>]   one round of folder sync, JSON for the UI
   omaremote-session system-name          this system's name in the sync folder
+  omaremote-session watch-folder <dir>   print each *.omaremote.json that arrives or changes there
   omaremote-session ssh-keys             keys in ~/.ssh (files, and agent keys by their .pub), JSON
   omaremote-session ssh-config           write ~/.ssh/omaremote.conf for SSH connections with a key
   omaremote-session pick folder|open|save [--title T] [--current PATH] [--name NAME]
@@ -510,6 +511,49 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=()):
     merged, report = merge(data, incoming, now, allow_deletions)
     report["errors"] = errors + report["errors"]
     return {"data": merged, "report": report, "purged": purged, "system": system, "folder": folder}
+
+
+def watch_folder(folder, out=sys.stdout, wait=30.0, stop=None):
+    """Prints the name of every *.omaremote.json that arrives or changes in the sync folder, one per
+    line, until stopped: what lets the window sync as soon as another system's file lands, instead
+    of at the next interval. inotify through libc, no extra package. Temporary files (written, then
+    renamed into place by Nextcloud and by write_json_atomic) are skipped; the final rename counts.
+    A folder that is not there yet (a share not mounted) is waited for, every `wait` seconds."""
+    import ctypes
+    import select
+    import struct
+    libc = ctypes.CDLL(None, use_errno=True)
+    IN_CLOSE_WRITE, IN_MOVED_TO, IN_DELETE_SELF, IN_MOVE_SELF, IN_IGNORED = 0x8, 0x80, 0x400, 0x800, 0x8000
+    folder = os.path.expanduser(folder)
+    while not (stop and stop()):
+        if not os.path.isdir(folder):
+            time.sleep(wait)
+            continue
+        fd = libc.inotify_init1(os.O_CLOEXEC)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+        try:
+            wd = libc.inotify_add_watch(fd, os.fsencode(folder),
+                                        IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF)
+            if wd < 0:
+                raise OSError(ctypes.get_errno(), f"cannot watch {folder}")
+            gone = False
+            while not gone and not (stop and stop()):
+                ready, _, _ = select.select([fd], [], [], 1.0)
+                if not ready:
+                    continue
+                data = os.read(fd, 65536)
+                at = 0
+                while at + 16 <= len(data):
+                    _wd, mask, _cookie, size = struct.unpack_from("iIII", data, at)
+                    name = data[at + 16:at + 16 + size].split(b"\0", 1)[0].decode(errors="replace")
+                    at += 16 + size
+                    if mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED):
+                        gone = True  # the folder went (unmounted, moved): wait for it again
+                    elif name.endswith(SYNC_SUFFIX) and not name.startswith("."):
+                        print(name, file=out, flush=True)
+        finally:
+            os.close(fd)
 
 
 def import_file(file_path, path=CONNECTIONS, now=None):
@@ -1790,6 +1834,12 @@ def main(argv):
             print(json.dumps(ssh_config_sync()))
         except OSError as e:
             print(json.dumps({"error": str(e)}))
+            return 1
+        return 0
+    if cmd == "watch-folder" and rest:
+        try:
+            watch_folder(rest[0])
+        except (OSError, KeyboardInterrupt, BrokenPipeError):
             return 1
         return 0
     if cmd == "system-name":

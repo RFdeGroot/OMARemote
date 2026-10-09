@@ -210,8 +210,9 @@ another system:
   not added twice.
 - **Folder sync**: point *Folder* at a folder something already keeps in step between your systems,
   such as Nextcloud, Syncthing or Dropbox (`~/Nextcloud/OMARemote`). Each system writes its own
-  `<system>.omaremote.json` there and merges the others' at start, after every change and every few
-  minutes; per connection the newest change wins. No system ever writes another's file, so none
+  `<system>.omaremote.json` there and merges the others': at start, after every change here and
+  every few minutes, and, with *Watch the folder* on, within seconds of another system's
+  file arriving (OMARemote then watches the folder); per connection the newest change wins. No system ever writes another's file, so none
   overwrites another.
 
 **What never leaves the system:** user names, domains, credential sets, passwords (they stay in the
