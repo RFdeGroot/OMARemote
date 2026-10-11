@@ -28,3 +28,6 @@ singleton Updates 1.0 Updates.qml
 singleton Sync 1.0 Sync.qml
 SettingsPanel 1.0 SettingsPanel.qml
 SettingsGlyph 1.0 SettingsGlyph.qml
+OmaremoteMark 1.0 OmaremoteMark.qml
+Wordmark 1.0 Wordmark.qml
+AboutCard 1.0 AboutCard.qml

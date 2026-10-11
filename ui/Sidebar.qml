@@ -41,6 +41,7 @@ Rectangle {
     signal picked(string filter)
     signal groupSettingsRequested(string name)
     signal credentialRequested(string id) // "" for a new set
+    signal aboutRequested()
 
     color: Theme.surface
 
@@ -154,7 +155,7 @@ Rectangle {
         }
     }
 
-    // The version, small at the bottom; above it the update button when GitHub has a newer release.
+    // The mark at the bottom; above it the update button when GitHub has a newer release.
     Column {
         id: footer
         anchors.left: parent.left
@@ -183,16 +184,6 @@ Rectangle {
                 border.width: 2
                 border.color: Theme.foreground
             }
-        }
-        Text {
-            width: parent.width
-            leftPadding: Theme.padX
-            elide: Text.ElideRight
-            visible: Updates.version !== ""
-            text: "OMARemote " + Updates.version + (Updates.checkout ? " (dev)" : "")
-            color: Theme.muted
-            font.family: Theme.font
-            font.pixelSize: Theme.caption - 1
         }
         Text {
             width: parent.width
@@ -250,6 +241,34 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: Updates.declinePlugin(true)
                 }
+            }
+        }
+        // OMARemote's mark and name; a click opens the About card, which has the version.
+        Item {
+            width: parent.width
+            height: brand.height + Theme.gap * 0.5
+            Row {
+                id: brand
+                anchors.bottom: parent.bottom
+                x: Theme.padX
+                spacing: 8
+                OmaremoteMark {
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                Wordmark {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "OMAREMOTE"
+                    split: 3
+                    secondColor: Theme.muted
+                }
+            }
+            MouseArea {
+                id: brandMouse
+                anchors.fill: brand
+                anchors.margins: -4
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.aboutRequested()
             }
         }
     }

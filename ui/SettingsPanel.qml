@@ -16,12 +16,12 @@ FocusScope {
         { id: "sync", label: "Sync", icon: "" },
         { id: "ssh", label: "SSH", icon: "" },
         { id: "updates", label: "Updates", icon: "" },
-        { id: "about", label: "About", icon: "" }
+        { id: "files", label: "Files", icon: "\uf07b" }
     ]
 
+    // Opens on the section asked for, else on the first one: never where it was last left.
     function open(which) {
-        if (which)
-            section = which
+        section = which || sections[0].id
         opened = true
         rail.forceActiveFocus()
     }
@@ -314,18 +314,17 @@ FocusScope {
                             }
                         }
 
-                        // ------------------------------------------------ About
-                        Heading { visible: root.section === "about"; text: "OMAREMOTE" }
-                        Fact { visible: root.section === "about"; label: "Version"; value: (Updates.version || "dev") + (Updates.checkout ? " (a checkout)" : " (package)") }
-                        Fact { visible: root.section === "about"; label: "Connections"; value: Store.path }
-                        Fact { visible: root.section === "about"; label: "Sessions and logs"; value: (Quickshell.env("XDG_RUNTIME_DIR") || "/run/user/…") + "/omaremote/sessions" }
+                        // ------------------------------------------------ Files (About itself is AboutCard)
+                        Heading { visible: root.section === "files"; text: "WHERE OMAREMOTE KEEPS THINGS" }
+                        Fact { visible: root.section === "files"; label: "Connections"; value: Store.path }
+                        Fact { visible: root.section === "files"; label: "Sessions and logs"; value: (Quickshell.env("XDG_RUNTIME_DIR") || "/run/user/…") + "/omaremote/sessions" }
                         Fact {
-                            visible: root.section === "about"
+                            visible: root.section === "files"
                             label: "Sync file"
                             value: Sync.enabled ? Sync.folder + "/" + (Store.ui.sync && Store.ui.sync.system || Sync.systemName) + ".omaremote.json" : "no sync folder set"
                         }
                         RowLayout {
-                            visible: root.section === "about"
+                            visible: root.section === "files"
                             spacing: Theme.gap
                             ActionButton { text: "GitHub"; icon: ""; onClicked: Quickshell.execDetached(["xdg-open", "https://github.com/RFdeGroot/OMARemote"]) }
                             ActionButton { text: "Report a problem"; icon: ""; onClicked: Quickshell.execDetached(["xdg-open", "https://github.com/RFdeGroot/OMARemote/issues"]) }

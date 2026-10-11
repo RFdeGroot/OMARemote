@@ -59,7 +59,7 @@ Singleton {
         { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list" },
         { group: "Tabs", context: "app", action: "pluginOffer", keys: [], label: "Show the bar plugin offer again" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
-        { group: "Tabs", context: "app", action: "settings", keys: [","], label: "Settings (sync, updates, about)" },
+        { group: "Tabs", context: "app", action: "settings", keys: [","], label: "Settings (sync, SSH, updates, files)" },
         { group: "Tabs", context: "app", action: "quit", keys: ["ctrl+q"], label: "Quit OMARemote" },
 
         // In a session

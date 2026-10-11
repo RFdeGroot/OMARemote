@@ -431,7 +431,7 @@ FocusScope {
         if (root.currentTab !== "home")
             return
         // The settings panel owns the keys while it is open.
-        if (settingsPanel.opened) {
+        if (settingsPanel.opened || aboutCard.opened) {
             event.accepted = true
             return
         }
@@ -681,6 +681,7 @@ FocusScope {
                 onPicked: function (f) { if (root.busy) root.finishEdit(); root.filter = f; root.takeKeys() }
                 onGroupSettingsRequested: function (name) { root.openGroup(name) }
                 onCredentialRequested: function (id) { root.openCredential(id) }
+                onAboutRequested: aboutCard.open()
             }
             Rectangle { Layout.fillHeight: true; width: 1; color: Theme.hairline }
 
@@ -945,6 +946,18 @@ FocusScope {
         }
     }
 
+    AboutCard {
+        id: aboutCard
+        anchors.fill: parent
+        z: 90
+        onClosed: {
+            if (root.currentTab === "home" && !root.busy)
+                root.takeKeys()
+            else
+                root.refocus()
+        }
+    }
+
     // The keymap sheet covers the whole window.
     KeymapSheet {
         id: keymapSheet
@@ -1128,6 +1141,7 @@ FocusScope {
         else if (a === "log") showLog()
         else if (a === "keys") keymapSheet.open()
         else if (parts[0] === "settings") settingsPanel.open(parts[1] || "")
+        else if (a === "about") aboutCard.open()
         else if (a === "enter") keymapSheet.runPicked()
         else if (parts[0] === "walk") {
             // Walks the focus chain the way Tab does, n steps.

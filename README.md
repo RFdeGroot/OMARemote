@@ -57,8 +57,9 @@ refuses one straight from a URL (`failed retrieving file '….pkg.tar.zst.sig'`)
 From 0.1.5-alpha on, OMARemote updates itself:
 
 1. At startup it asks GitHub once whether there is a newer release with a package for your machine.
-2. If there is, an **Update to …** button appears at the bottom of the sidebar, above the version
-   you run (also reachable with the keyboard: `tab` to the sidebar, then down to the button).
+2. If there is, an **Update to …** button appears at the bottom of the sidebar, above the OMARemote
+   logo (also reachable with the keyboard: `tab` to the sidebar, then down to the button). The
+   version you run is in the About card: click the logo.
 3. Clicking it opens a floating terminal that downloads the package and installs it with
    `sudo pacman -U` (type your password there), then restarts OMARemote on the new version.
    Running sessions keep going and come back as tabs.
@@ -163,7 +164,7 @@ The most used:
 | `l` | log of the last session (`w` warnings only, `esc` close) |
 | `/` | search |
 | `1`–`5` | All, Favourites, Recent, Active, Recently deleted (`r` restores there) |
-| `,` | settings: sync, updates, about |
+| `,` | settings: sync, SSH, updates, files |
 | `tab` | move to the sidebar (`j` `k`, `⏎` open, `s` group settings, `esc` back) |
 | `ctrl+tab`, `alt+1`–`9` | switch tabs |
 | `p` | pin the connections list beside session tabs |
