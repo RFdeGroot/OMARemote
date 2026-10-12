@@ -132,7 +132,7 @@ jobs:
           sudo pacman -U ./$pkg
           \`\`\`
 
-          The package is signed with OMARemote's release key; OMARemote's Update button checks that before installing. To check it by hand: download \`$pkg.sig\` too and run \`gpgv --keyring ./omaremote-release.gpg $pkg.sig $pkg\` with the key from \`packaging/arch/omaremote-release.gpg\` in the repository.
+          The package is signed with OMARemote's release key; OMARemote's Update button checks that before installing. To check it by hand, with the key from \`packaging/arch/omaremote-release.gpg\` in the repository: \`curl -L -o omaremote.sig $GITHUB_SERVER_URL/$GH_REPO/releases/download/$TAG/$pkg.sig\`, then \`gpgv --keyring ./omaremote-release.gpg omaremote.sig $pkg\`. Keep the signature under that other name: pacman checks a \`.sig\` it finds beside the package against its own keyring, which does not have OMARemote's key, and refuses the install.
 
           Updating from an earlier release works the same way: pacman upgrades in place. Restart OMARemote afterwards.
 

@@ -30,13 +30,16 @@ keyring=/usr/share/omaremote/omaremote-release.gpg
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 package="$work/${url##*/}"
+# Not <package>.sig: pacman -U checks a signature it finds beside a package against its own
+# keyring, which does not hold OMARemote's key, and refuses. Ours is checked here, with gpgv.
+signature="$work/signature"
 echo "Updating OMARemote $current to $latest…"
 curl -fL --proto '=https' --progress-bar -o "$package" "$url" || exit 1
-curl -fsSL --proto '=https' -o "$package.sig" "$url.sig" || {
+curl -fsSL --proto '=https' -o "$signature" "$url.sig" || {
   echo "The release has no signature ($url.sig): not installing it."
   exit 1
 }
-if ! gpgv --status-fd 1 --keyring "$keyring" "$package.sig" "$package" 2>/dev/null | grep -q '^\[GNUPG:\] VALIDSIG '; then
+if ! gpgv --status-fd 1 --keyring "$keyring" "$signature" "$package" 2>/dev/null | grep -q '^\[GNUPG:\] VALIDSIG '; then
   echo "The package's signature does not check out against OMARemote's release key: not installing it."
   exit 1
 fi
