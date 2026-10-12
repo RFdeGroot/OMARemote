@@ -13,7 +13,7 @@ so closing the window never closes a remote desktop.
   omaremote-session stop <session-id>    disconnect a session
   omaremote-session forget <session-id>  drop a finished session from the list
   omaremote-session args <id|name>       the FreeRDP arguments, password redacted
-  omaremote-session secret set|clear|has [credential] <id>   keyring password (set reads stdin)
+  omaremote-session secret set|clear|has [credential|gateway] <id>   keyring password (set reads stdin)
   omaremote-session monitor-scale        the focused Hyprland monitor scale, in percent
   omaremote-session focus class|pid <v>  bring a window forward, switching workspace if needed
   omaremote-session update-check <ver>   the newest release on GitHub for this machine, JSON
@@ -103,6 +103,7 @@ DEFAULTS = {
     "gateway": "",
     "gatewayUser": "",
     "gatewayDomain": "",
+    "gatewaySavePassword": False,   # the gateway's own password, in the keyring under the connection's id
     "kdc": "",               # Kerberos KDCs, comma separated; empty discovers them
     "extraArgs": "",
     "openIn": "tab",         # tab | window (OMARemote's own window; RDP with all monitors: FreeRDP's)
@@ -284,7 +285,8 @@ def mark_connected(conn_id, path=CONNECTIONS):
 # "Ignore certificate" and the security level are local too: a sync file must never be able to turn
 # off the server checks of a connection that signs in here.
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
-              "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert", "security")
+              "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert",
+              "security")
 GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security")
 # Where a connection signs in. A synced change to these, on a connection or group that signs in here
 # with a saved password or a credential set, waits for the user: it would send those credentials to
@@ -778,7 +780,8 @@ def secret_get(conn_id, kind="connection"):
 def secret_label(conn_id, kind="connection"):
     """The keyring entry's label: OMARemote's opaque id, never a name, host or user (secret-tool
     takes the label on its command line, which other accounts can read)."""
-    return f"OMARemote password ({'credential set' if kind == 'credential' else 'connection'} {conn_id})"
+    what = {"credential": "credential set", "gateway": "gateway of connection"}.get(kind, "connection")
+    return f"OMARemote password ({what} {conn_id})"
 
 
 def secret_set(conn_id, password, label, kind="connection"):
@@ -1499,11 +1502,13 @@ def check_lines(args):
     return args
 
 
-def build_args(conn, password=None, auto_scale=100, tab=None):
+def build_args(conn, password=None, auto_scale=100, tab=None, gateway_password=None):
     """FreeRDP arguments for one connection, one argument per entry (fed to /args-from:stdin).
 
     tab is {"width", "height", "scale"} in device pixels when the session is drawn in a tab: the
     desktop then starts at the tab's size and the window-only options are left out.
+    gateway_password is the gateway's own; without one, a gateway that signs in as the connection's
+    user gets the connection's password.
     """
     c = dict(DEFAULTS, **conn)
     if not c["host"].strip():
@@ -1581,7 +1586,9 @@ def build_args(conn, password=None, auto_scale=100, tab=None):
             gw.append(f"u:{user}")
         if domain:
             gw.append(f"d:{domain}")
-        if password and not c["gatewayUser"]:
+        if gateway_password:
+            gw.append(f"p:{gateway_password}")
+        elif password and not c["gatewayUser"]:
             gw.append(f"p:{password}")
         args.append("/gateway:" + ",".join(gw))
 
@@ -2212,7 +2219,11 @@ def supervise(conn, sid, tab=None):
         elif protocol == "ssh":
             args = build_ssh_config(conn)
         else:
-            args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
+            gateway_password = None
+            if conn.get("gatewaySavePassword") and conn.get("gateway", "").strip() and conn.get("id"):
+                gateway_password = secret_get(conn["id"], "gateway")
+            args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab,
+                              gateway_password=gateway_password)
     except ValueError as e:
         state.update(state="failed", error=f"Not connected: {e}", ended=int(time.time()))
         write_session(state)
@@ -2415,8 +2426,9 @@ def main(argv):
         if conn.get("protocol") == "ssh":
             print(" ".join(shlex.quote(a) for a in build_ssh_command(conn)))
             return 0
-        print(" ".join(shlex.quote(a) for a in redact(build_args(conn, "x" if conn["savePassword"] else None,
-                                                                    monitor_scale()))))
+        print(" ".join(shlex.quote(a) for a in redact(build_args(
+            conn, "x" if conn["savePassword"] else None, monitor_scale(),
+            gateway_password="x" if conn.get("gatewaySavePassword") else None))))
         return 0
     if cmd == "export" and rest:
         print(json.dumps(export_file(rest[0])))
@@ -2534,8 +2546,9 @@ def main(argv):
         return 0
     if cmd == "secret" and len(rest) in (2, 3):
         # secret <set|clear|has> <connection-id>   or   secret <set|clear|has> credential <set-id>
+        # or   secret <set|clear|has> gateway <connection-id>
         action, kind, key = (rest[0], "connection", rest[1]) if len(rest) == 2 else rest
-        if kind not in ("connection", "credential"):
+        if kind not in ("connection", "credential", "gateway"):
             return 2
         if action == "set":
             return 0 if secret_set(key, sys.stdin.read().rstrip("\n"), secret_label(key, kind), kind) else 1

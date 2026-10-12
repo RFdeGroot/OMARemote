@@ -283,6 +283,8 @@ FocusScope {
         editor.load(selected)
         if (selected.savePassword)
             Sessions.checkSecret(selected.secretKind, selected.secretId)
+        if (selected.gatewaySavePassword)
+            Sessions.checkSecret("gateway", selected.id)
     }
 
     function finishEdit() {
@@ -425,7 +427,7 @@ FocusScope {
         finishEdit()
     }
 
-    function saveEdit(c, password, passwordTouched) {
+    function saveEdit(c, password, passwordTouched, gatewayPassword, gatewayPasswordTouched) {
         if (c.credential === "new")
             c.credential = createCredential(c.username.trim(), String(c.domain || "").trim(), !!c.savePassword, password)
         var id = Store.upsert(c)
@@ -433,6 +435,10 @@ FocusScope {
             Sessions.clearSecret("connection", id) // no password of its own any more
         else if (passwordTouched && password !== "")
             Sessions.setSecret("connection", id, password)
+        if (!c.gatewaySavePassword || !String(c.gateway || "").trim())
+            Sessions.clearSecret("gateway", id)
+        else if (gatewayPasswordTouched && gatewayPassword !== "")
+            Sessions.setSecret("gateway", id, gatewayPassword)
         if (query !== "" && !Format.matches(c, query))
             query = ""
         if (filter !== "all" && filter !== "favourites" && filter !== "group:" + c.group)
@@ -456,6 +462,7 @@ FocusScope {
         deleteArmed = false
         if (inTrash) {
             Sessions.clearSecret("connection", c.id)
+            Sessions.clearSecret("gateway", c.id)
             Store.purge(c.id)
             say("Deleted " + (c.name || c.host) + " for good")
             return
@@ -876,7 +883,9 @@ FocusScope {
                     anchors.fill: parent
                     visible: root.editing
                     focus: root.editing
-                    onSaved: function (c, password, touched) { root.saveEdit(c, password, touched) }
+                    onSaved: function (c, password, touched, gatewayPassword, gatewayTouched) {
+                        root.saveEdit(c, password, touched, gatewayPassword, gatewayTouched)
+                    }
                     onCancelled: root.finishEdit()
                 }
                 GroupEditor {

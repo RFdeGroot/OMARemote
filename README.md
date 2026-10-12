@@ -231,7 +231,7 @@ another system:
   overwrites another.
 
 **What never leaves the system:** user names, domains, credential sets, passwords (they stay in the
-keyring), gateway users, extra FreeRDP arguments and extra ssh options, and the certificate checks
+keyring), gateway users and domains, extra FreeRDP arguments and extra ssh options, and the certificate checks
 (*Ignore certificate* and the security level): another system can never switch those off here. A connection that arrives
 from elsewhere asks for its credentials, or takes its group's credential set where that group has
 one here.

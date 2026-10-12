@@ -111,7 +111,7 @@ Singleton {
             logRequested(s)
     }
 
-    // kind is "connection" or "credential".
+    // kind is "connection", "credential" or "gateway" (a connection's gateway password, by connection id).
     function setSecret(kind, id, password) {
         writer.queue = writer.queue.concat([{ kind: kind, id: id, password: password }])
         writer.next()

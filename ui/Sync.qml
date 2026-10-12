@@ -133,8 +133,10 @@ Singleton {
             root.allowAddress = []
             root.systemName = result.system || root.systemName
             Store.applyMerged(result.data)
-            for (var i = 0; i < (result.purged || []).length; i++)
+            for (var i = 0; i < (result.purged || []).length; i++) {
                 Sessions.clearSecret("connection", result.purged[i])
+                Sessions.clearSecret("gateway", result.purged[i])
+            }
             var report = result.report
             root.lastReport = report
             root.lastSync = Date.now()
@@ -170,8 +172,10 @@ Singleton {
             return
         // The trash empties itself after 30 days, sync or not.
         var old = Store.purgeOld()
-        for (var i = 0; i < old.length; i++)
+        for (var i = 0; i < old.length; i++) {
             Sessions.clearSecret("connection", old[i])
+            Sessions.clearSecret("gateway", old[i])
+        }
         if (enabled)
             syncNow()
     }
