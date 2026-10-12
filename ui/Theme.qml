@@ -4,6 +4,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+// Omarchy's palette by its module name: Qt 6.12 brings a `Color` type of its own, which a bare
+// `Color` resolves to there (Omarchy did the same, omacom/omarchy#14553).
+import qs.Commons as Commons
 import "js/Contrast.js" as Contrast
 
 // The app is its own process, so it feeds Omarchy's Color and Style the way the bar's shell.qml does,
@@ -13,10 +16,10 @@ Singleton {
 
     readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy/current"
 
-    readonly property color background: Color.background
-    readonly property color foreground: Color.foreground
-    readonly property color accent: Color.accent
-    readonly property color urgent: Color.urgent
+    readonly property color background: Commons.Color.background
+    readonly property color foreground: Commons.Color.foreground
+    readonly property color accent: Commons.Color.accent
+    readonly property color urgent: Commons.Color.urgent
     // Secondary text (hosts, times, hints, labels), Flea's dimmed foreground: the theme's own
     // text colour stepped a third of the way toward its background, so it is a quieter grey on
     // dark and light themes alike, held to WCAG AA (4.5:1) on the panel colour.
@@ -68,7 +71,7 @@ Singleton {
     }
 
     function applyColors(body) {
-        Color.loadColors(body)
+        Commons.Color.loadColors(body)
         root.success = pick(body, ["green", "color2"], root.success)
         root.warning = pick(body, ["yellow", "color3"], root.warning)
     }
@@ -87,8 +90,8 @@ Singleton {
         path: root.stateDir + "/theme/shell.toml"
         blockLoading: true
         printErrors: false
-        onLoaded: Color.loadShell(text())
-        onLoadFailed: Color.loadShell("")
+        onLoaded: Commons.Color.loadShell(text())
+        onLoadFailed: Commons.Color.loadShell("")
     }
 
     // omarchy-theme-set replaces the theme directory, killing any watch inside it; theme.name is
