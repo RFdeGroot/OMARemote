@@ -15,6 +15,7 @@ Rectangle {
             out.push({ kind: "filter", value: "trash" })
         for (var i = 0; i < Store.groups.length; i++)
             out.push({ kind: "group", value: Store.groups[i] })
+        out.push({ kind: "newGroup", value: "" })
         for (var j = 0; j < Store.credentials.length; j++)
             out.push({ kind: "credential", value: Store.credentials[j].id })
         out.push({ kind: "newCredential", value: "" })
@@ -37,9 +38,14 @@ Rectangle {
     }
 
     property string editingGroup: ""
+    property bool creatingGroup: false
+    // A connection being dragged, and the group it is in: the groups take it, and "No group" shows.
+    property bool dragging: false
+    property string dragGroup: ""
     property string editingCredential: ""
     signal picked(string filter)
-    signal groupSettingsRequested(string name)
+    signal groupSettingsRequested(string name) // "" for a new group
+    signal droppedOnGroup(string name) // "" for none, "\n" for a new one
     signal credentialRequested(string id) // "" for a new set
     signal aboutRequested()
 
@@ -111,7 +117,7 @@ Rectangle {
                 }
             }
 
-            Heading { text: "GROUPS"; visible: Store.groups.length > 0 }
+            Heading { text: "GROUPS" }
             Repeater {
                 model: Store.groups
                 delegate: SidebarRow {
@@ -128,7 +134,26 @@ Rectangle {
                     onClicked: root.picked("group:" + modelData)
                     onRightClicked: root.groupSettingsRequested(modelData)
                     onActionClicked: root.groupSettingsRequested(modelData)
+                    dropTarget: root.dragging && root.dragGroup !== modelData
+                    onDropped: root.droppedOnGroup(modelData)
                 }
+            }
+            // While dragging a grouped connection: out of its group.
+            SidebarRow {
+                visible: root.dragging && root.dragGroup !== ""
+                icon: "\uf05e"
+                label: "No group"
+                dropTarget: visible
+                onDropped: root.droppedOnGroup("")
+            }
+            SidebarRow {
+                icon: "\uf067"
+                label: root.dragging ? "Into a new group" : "New group"
+                current: root.creatingGroup
+                cursor: root.hasCursor("newGroup", "")
+                dropTarget: root.dragging
+                onClicked: root.groupSettingsRequested("")
+                onDropped: root.droppedOnGroup("\n")
             }
 
             Heading { text: "CREDENTIALS" }

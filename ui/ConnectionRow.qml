@@ -8,8 +8,13 @@ Rectangle {
     required property int index
     property bool current: false
     property real now: 0
+    // Drag it onto a group (the list in the window; Body.qml draws what follows the pointer).
+    property bool draggable: false
     signal clicked()
     signal activated()
+    signal dragStarted()
+    signal dragMoved(real sceneX, real sceneY)
+    signal dragEnded()
 
     readonly property string state_: { Sessions.sessions; return Sessions.stateFor(modelData.id) }
     readonly property string stage: {
@@ -151,5 +156,12 @@ Rectangle {
         hoverEnabled: true
         onClicked: root.clicked()
         onDoubleClicked: root.activated()
+    }
+    DragHandler {
+        enabled: root.draggable
+        target: null
+        dragThreshold: 8
+        onActiveChanged: active ? root.dragStarted() : root.dragEnded()
+        onCentroidChanged: if (active) root.dragMoved(centroid.scenePosition.x, centroid.scenePosition.y)
     }
 }

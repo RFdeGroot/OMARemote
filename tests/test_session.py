@@ -452,7 +452,7 @@ class Sync(unittest.TestCase):
     def local(self, *conns, **extra):
         return dict({"connections": list(conns), "groups": {}, "trash": [], "deleted": {}}, **extra)
 
-    def remote(self, *conns, deleted=None, groups=None, system="voyager"):
+    def remote(self, *conns, deleted=None, groups=None, system="laptop"):
         return {"format": "omaremote-sync", "version": 1, "system": system, "written": self.NOW,
                 "connections": list(conns), "groups": groups or {}, "deleted": deleted or {}}
 
@@ -512,7 +512,7 @@ class Sync(unittest.TestCase):
         data, report = session.merge(local, [self.remote(deleted={"c1": 300})], self.NOW)
         self.assertEqual(data["connections"], [])
         self.assertEqual(data["trash"][0]["connection"]["username"], "alice")
-        self.assertEqual(data["trash"][0]["from"], "voyager")
+        self.assertEqual(data["trash"][0]["from"], "laptop")
         self.assertEqual(report["trashed"], ["c1"])
 
     def test_a_later_local_change_survives_an_older_deletion(self):
@@ -541,10 +541,10 @@ class Sync(unittest.TestCase):
         doomed = {f"c{i}": 300 for i in range(4)}
         data, report = session.merge(self.local(*conns), [self.remote(deleted=doomed)], self.NOW)
         self.assertEqual(len(data["connections"]), 6)
-        self.assertEqual(report["pendingDeletions"][0]["system"], "voyager")
+        self.assertEqual(report["pendingDeletions"][0]["system"], "laptop")
         self.assertEqual(len(report["pendingDeletions"][0]["ids"]), 4)
         data, report = session.merge(self.local(*conns), [self.remote(deleted=doomed)], self.NOW,
-                                     allow_deletions=("voyager",))
+                                     allow_deletions=("laptop",))
         self.assertEqual(len(data["connections"]), 2)
 
     def test_groups_merge_but_keep_their_local_credentials(self):
@@ -553,6 +553,48 @@ class Sync(unittest.TestCase):
         data, _ = session.merge(local, [incoming], self.NOW)
         self.assertEqual(data["groups"]["Servers"],
                          {"credential": "k1", "settings": {"audio": "off", "gatewayUser": "gw"}, "modified": 9})
+
+    def test_a_group_deleted_elsewhere_goes_here_too(self):
+        local = self.local(groups={"Lab": {"credential": "k1", "settings": {"audio": "off"}, "modified": 100}})
+        incoming = dict(self.remote(), deletedGroups={"Lab": 300})
+        data, _ = session.merge(local, [incoming], self.NOW)
+        self.assertNotIn("Lab", data["groups"])
+        self.assertEqual(data["deletedGroups"], {"Lab": 300})
+        self.assertIn("deletedGroups", session.portable(data, "here"))
+
+    def test_a_group_changed_here_after_its_deletion_stays(self):
+        local = self.local(groups={"Lab": {"credential": "", "settings": {}, "modified": 500}})
+        data, _ = session.merge(local, [dict(self.remote(), deletedGroups={"Lab": 300})], self.NOW)
+        self.assertIn("Lab", data["groups"])
+
+    def test_a_deleted_group_is_not_brought_back_by_an_older_copy(self):
+        local = self.local(deletedGroups={"Lab": 300})
+        incoming = self.remote(groups={"Lab": {"settings": {}, "modified": 200}})
+        data, _ = session.merge(local, [incoming], self.NOW)
+        self.assertNotIn("Lab", data["groups"])
+        incoming = self.remote(groups={"Lab": {"settings": {}, "modified": 400}})
+        data, _ = session.merge(local, [incoming], self.NOW)
+        self.assertIn("Lab", data["groups"])
+
+    def test_a_rename_elsewhere_arrives_as_the_new_group_with_its_connections(self):
+        local = self.local(self.c(group="Lab", modified=100),
+                           groups={"Lab": {"credential": "", "settings": {"audio": "off"}, "modified": 100}})
+        incoming = dict(self.remote(self.c(group="Test", modified=300),
+                                    groups={"Test": {"settings": {"audio": "off"}, "modified": 300}}),
+                        deletedGroups={"Lab": 300})
+        data, _ = session.merge(local, [incoming], self.NOW)
+        self.assertEqual(list(data["groups"]), ["Test"])
+        self.assertEqual(data["connections"][0]["group"], "Test")
+
+    def test_group_deletions_are_forgotten_with_the_trash(self):
+        old = self.NOW - 31 * session.DAY_MS
+        data = self.local(deletedGroups={"Old": old, "New": self.NOW})
+        session.purge_trash(data, self.NOW)
+        self.assertEqual(data["deletedGroups"], {"New": self.NOW})
+
+    def test_a_manual_export_carries_no_group_deletions(self):
+        data = self.local(deletedGroups={"Lab": 300})
+        self.assertEqual(session.portable(data, "here", "export")["deletedGroups"], {})
 
     def test_old_files_without_change_times_load(self):
         data, report = session.merge(self.local({"id": "c1", "host": "pc.lan"}),
@@ -593,7 +635,7 @@ class Sync(unittest.TestCase):
             with open(conf, "w") as f:
                 json.dump(dict(self.local(self.c(username="alice")),
                                ui={"sync": {"folder": folder, "system": "here"}}), f)
-            with open(os.path.join(folder, "voyager.omaremote.json"), "w") as f:
+            with open(os.path.join(folder, "laptop.omaremote.json"), "w") as f:
                 json.dump(self.remote(self.c("c2", host="other.lan")), f)
             out = session.sync_folder(conf, self.NOW)
             own = os.path.join(folder, "here.omaremote.json")

@@ -17,6 +17,13 @@ FocusScope {
     property bool editing: false
     // The group whose settings are open, and the credential set being edited ("new" for a new one).
     property string editingGroup: ""
+    // editingGroup while making a new group (no group name can be a line break).
+    readonly property string newGroup: "\n"
+    // Connections dropped on "New group" (or sent there with m): they move in once it is saved.
+    property var pendingGroupMove: []
+    // The connection being dragged onto a group, if any.
+    property string draggingId: ""
+    readonly property var dragging: { Store.stored; return draggingId ? Store.get(draggingId) : null }
     property string editingCredential: ""
     readonly property bool busy: editing || editingGroup !== "" || editingCredential !== ""
     property string notice: ""
@@ -274,8 +281,8 @@ FocusScope {
 
     function openGroup(name) {
         closePanels()
-        editingGroup = name
-        groupEditor.load(name)
+        editingGroup = name || newGroup
+        groupEditor.load(name || "")
     }
 
     function openCredential(id) {
@@ -292,13 +299,95 @@ FocusScope {
         return id
     }
 
-    function saveGroup(name, credential, newCredential, settings, apply) {
+    // from: the name it had ("" for a new group); a different name renames it.
+    function saveGroup(from, name, credential, newCredential, settings, apply) {
         if (credential === "new")
             credential = createCredential(newCredential.username, newCredential.domain,
                                           newCredential.savePassword, newCredential.password)
-        Store.setGroup(name, credential, settings, apply)
-        say("Saved group " + name + (apply ? ", applied to " + Store.membersOf(name) + " connections" : ""))
+        if (from === "")
+            Store.createGroup(name)
+        else
+            Store.renameGroup(from, name)
+        Store.setGroup(name, credential, settings, apply && from !== "")
+        var moving = pendingGroupMove
+        pendingGroupMove = []
         finishEdit()
+        if (moving.length > 0) {
+            moveToGroup(moving, name)
+            return
+        }
+        say(from === "" ? "Made group " + name
+            : (from !== name ? "Renamed " + from + " to " + name : "Saved group " + name)
+              + (apply && Store.membersOf(name) > 0 ? ", applied to " + Store.membersOf(name) + " connections" : ""))
+    }
+
+    function deleteGroup(name) {
+        var n = Store.deleteGroup(name)
+        if (filter === "group:" + name)
+            filter = "all"
+        finishEdit()
+        say("Deleted group " + name + (n > 0 ? "; its " + n + (n === 1 ? " connection is" : " connections are") + " in no group now" : ""))
+    }
+
+    function dragFrom(id) {
+        if (busy || inTrash)
+            return
+        selectedId = id
+        draggingId = id
+    }
+    function dragTo(sceneX, sceneY) {
+        var p = root.mapFromItem(null, sceneX, sceneY)
+        dragProxy.x = p.x
+        dragProxy.y = p.y
+    }
+    function dragDone() {
+        if (draggingId)
+            dragProxy.Drag.drop()
+        draggingId = ""
+    }
+    // A drop on a group (from the sidebar or a heading in the list): "" out of its group, "\n" a new one.
+    function dropOnGroup(name) {
+        var id = draggingId
+        if (!id)
+            return
+        if (name === newGroup) {
+            pendingGroupMove = [id]
+            openGroup("")
+        } else {
+            moveToGroup([id], name)
+        }
+    }
+    function chooseGroup(value) {
+        if (value === newGroup) {
+            pendingGroupMove = [selectedId]
+            openGroup("")
+        } else {
+            moveToGroup([selectedId], value)
+            takeKeys()
+        }
+    }
+
+    // Drag and drop and m: into a group, "" for none. Says what happened to signing in.
+    function moveToGroup(ids, name) {
+        var before = {}
+        for (var i = 0; i < ids.length; i++) {
+            var c = Store.get(ids[i])
+            if (c)
+                before[c.id] = c.credentialSource || ""
+        }
+        var moved = Store.moveToGroup(ids, name)
+        if (moved.length === 0)
+            return
+        var what = moved.length === 1 ? (moved[0].name || moved[0].host) : moved.length + " connections"
+        var after = Store.get(moved[0].id)
+        var signIn = ""
+        if (moved.length === 1 && after && after.protocol !== "ssh") {
+            if (moved[0].credential === "inherit" && after.username)
+                signIn = "; signs in as " + (after.domain ? after.domain + "\\" : "") + after.username
+            else if (before[moved[0].id] === "group" && moved[0].credential === "custom")
+                signIn = "; asks for credentials when connecting"
+        }
+        say((name ? "Moved " + what + " to " + name : "Took " + what + " out of its group") + signIn)
     }
 
     function saveCredential(cred, password, passwordTouched) {
@@ -431,7 +520,7 @@ FocusScope {
         if (root.currentTab !== "home")
             return
         // The settings panel owns the keys while it is open.
-        if (settingsPanel.opened || aboutCard.opened) {
+        if (settingsPanel.opened || aboutCard.opened || groupPicker.opened) {
             event.accepted = true
             return
         }
@@ -485,6 +574,10 @@ FocusScope {
         case "delete": deleteSelected(); break
         case "favourite": if (selected) Store.toggleFavourite(selected.id); break
         case "log": showLog(); break
+        case "moveGroup":
+            if (selected && !inTrash)
+                groupPicker.open(selected.name || selected.host, selected.group)
+            break
         case "groupSettings":
             if (selected && selected.group)
                 openGroup(selected.group)
@@ -519,6 +612,7 @@ FocusScope {
             if (sidebarEntry.kind === "filter") { filter = sidebarEntry.value; focusList() }
             else if (sidebarEntry.kind === "group") { filter = "group:" + sidebarEntry.value; focusList() }
             else if (sidebarEntry.kind === "credential") openCredential(sidebarEntry.value)
+            else if (sidebarEntry.kind === "newGroup") openGroup("")
             else if (sidebarEntry.kind === "update") Updates.install()
             else if (sidebarEntry.kind === "pluginInstall") Updates.installPlugin()
             else if (sidebarEntry.kind === "pluginUpdate") Updates.updatePlugin()
@@ -677,9 +771,13 @@ FocusScope {
                 Layout.fillHeight: true
                 filter: root.filter
                 editingGroup: root.editingGroup
+                creatingGroup: root.editingGroup === root.newGroup
                 editingCredential: root.editingCredential
                 onPicked: function (f) { if (root.busy) root.finishEdit(); root.filter = f; root.takeKeys() }
                 onGroupSettingsRequested: function (name) { root.openGroup(name) }
+                dragging: root.dragging !== null
+                dragGroup: root.dragging ? root.dragging.group || "" : ""
+                onDroppedOnGroup: function (name) { root.dropOnGroup(name) }
                 onCredentialRequested: function (id) { root.openCredential(id) }
                 onAboutRequested: aboutCard.open()
             }
@@ -697,6 +795,12 @@ FocusScope {
                     selectedId: root.selectedId
                     onPicked: function (id) { if (!root.busy) { root.selectedId = id; root.focusList() } }
                     onActivated: function (id) { if (!root.busy) { root.selectedId = id; root.connect(id) } }
+                    dragging: root.dragging !== null
+                    dragGroup: root.dragging ? root.dragging.group || "" : ""
+                    onDragStarted: function (id) { root.dragFrom(id) }
+                    onDragMoved: function (x, y) { root.dragTo(x, y) }
+                    onDragEnded: root.dragDone()
+                    onDroppedOnGroup: function (name) { root.dropOnGroup(name) }
                 }
 
                 Column {
@@ -753,10 +857,11 @@ FocusScope {
                     anchors.fill: parent
                     visible: root.editingGroup !== ""
                     focus: visible
-                    onSaved: function (name, credential, newCredential, settings, apply) {
-                        root.saveGroup(name, credential, newCredential, settings, apply)
+                    onSaved: function (from, name, credential, newCredential, settings, apply) {
+                        root.saveGroup(from, name, credential, newCredential, settings, apply)
                     }
-                    onCancelled: root.finishEdit()
+                    onDeleted: function (name) { root.deleteGroup(name) }
+                    onCancelled: { root.pendingGroupMove = []; root.finishEdit() }
                 }
                 CredentialEditor {
                     id: credentialEditor
@@ -943,6 +1048,42 @@ FocusScope {
                 root.takeKeys()
             else
                 root.refocus()
+        }
+    }
+
+    GroupPicker {
+        id: groupPicker
+        anchors.fill: parent
+        z: 90
+        onChosen: function (value) { root.chooseGroup(value) }
+        onClosed: root.takeKeys()
+    }
+
+    // What follows the pointer while a connection is dragged onto a group. Its corner is the
+    // pointer: that is where the groups look for it.
+    Item {
+        id: dragProxy
+        z: 200
+        visible: root.dragging !== null
+        Drag.active: root.dragging !== null
+        Drag.keys: ["connection"]
+        Rectangle {
+            x: 14
+            y: 6
+            width: dragLabel.implicitWidth + 2 * Theme.padX
+            height: dragLabel.implicitHeight + Theme.gap
+            radius: Theme.radius
+            color: Theme.surface
+            border.width: 1
+            border.color: Theme.accent
+            Text {
+                id: dragLabel
+                anchors.centerIn: parent
+                text: root.dragging ? (root.dragging.name || root.dragging.host) : ""
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
         }
     }
 
@@ -1142,6 +1283,12 @@ FocusScope {
         else if (a === "keys") keymapSheet.open()
         else if (parts[0] === "settings") settingsPanel.open(parts[1] || "")
         else if (a === "about") aboutCard.open()
+        else if (a === "drag") { draggingId = selectedId; dragProxy.x = 140; dragProxy.y = 250 }
+        else if (parts[0] === "move") moveToGroup([selectedId], parts.slice(1).join(":"))
+        else if (parts[0] === "renamegroup") Store.renameGroup(parts[1], parts[2])
+        else if (parts[0] === "deletegroup") deleteGroup(parts[1])
+        else if (parts[0] === "gname") groupEditor.name = parts.slice(1).join(":")
+        else if (a === "movenew") chooseGroup(newGroup)
         else if (a === "enter") keymapSheet.runPicked()
         else if (parts[0] === "walk") {
             // Walks the focus chain the way Tab does, n steps.

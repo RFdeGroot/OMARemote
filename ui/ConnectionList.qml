@@ -7,8 +7,17 @@ ListView {
     property real now: Date.now() / 1000
     signal picked(string id)
     signal activated(string id)
+    // Dragging a row: the group headings take it (see the drag in Body.qml).
+    property bool dragging: false
+    property string dragGroup: ""
+    signal dragStarted(string id)
+    signal dragMoved(real sceneX, real sceneY)
+    signal dragEnded()
+    signal droppedOnGroup(string name)
 
     clip: true
+    // The wheel and touchpad scroll; a pressed button drags a connection instead of the list.
+    acceptedButtons: Qt.NoButton
     boundsBehavior: Flickable.StopAtBounds
     currentIndex: {
         for (var i = 0; i < count; i++)
@@ -31,17 +40,35 @@ ListView {
         width: ListView.view.width
 
         Text {
+            id: heading
             visible: entry.opensGroup
             width: parent.width
             leftPadding: Theme.padX + 2
             topPadding: entry.index === 0 ? Theme.gap * 1.5 : Theme.gap * 2.5
             bottomPadding: Theme.gap * 0.5
             text: entry.group !== "" ? entry.group.toUpperCase() : "OTHER"
-            color: Theme.muted
+            color: headingDrop.containsDrag ? Theme.accent : Theme.muted
             font.family: Theme.font
             font.pixelSize: Theme.caption
             font.bold: true
             font.letterSpacing: 1
+
+            Rectangle {
+                visible: headingDrop.containsDrag
+                anchors.fill: parent
+                anchors.topMargin: parent.topPadding - Theme.gap * 0.5
+                radius: Theme.radius
+                color: "transparent"
+                border.width: 2
+                border.color: Theme.accent
+            }
+            DropArea {
+                id: headingDrop
+                anchors.fill: parent
+                enabled: root.dragging && entry.group !== root.dragGroup
+                keys: ["connection"]
+                onDropped: root.droppedOnGroup(entry.group)
+            }
         }
 
         ConnectionRow {
@@ -52,6 +79,10 @@ ListView {
             now: root.now
             onClicked: root.picked(modelData.id)
             onActivated: root.activated(modelData.id)
+            draggable: true
+            onDragStarted: root.dragStarted(modelData.id)
+            onDragMoved: function (x, y) { root.dragMoved(x, y) }
+            onDragEnded: root.dragEnded()
         }
     }
 

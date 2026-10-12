@@ -24,6 +24,8 @@ Singleton {
     property var trash: []
     // When each connection was deleted ({id: ms}): how deletions reach other systems through sync.
     property var deleted: ({})
+    // When each group was deleted or renamed away ({name: ms}): the same, for groups.
+    property var deletedGroups: ({})
     // Counts this window's own edits (not what sync brings in): sync runs after them, and drops a
     // merge computed before the latest one.
     property int localRevision: 0
@@ -208,6 +210,7 @@ Singleton {
             root.ui = data.ui || {}
             root.trash = (data.trash || []).filter(function (t) { return t && t.connection && t.connection.id })
             root.deleted = data.deleted || {}
+            root.deletedGroups = data.deletedGroups || {}
         } catch (e) {
             console.warn("connections.json is not valid JSON, leaving it untouched: " + e)
         }
@@ -216,7 +219,8 @@ Singleton {
 
     function write() {
         file.setText(JSON.stringify({ version: 3, ui: ui, credentials: credentials, groups: groupSettings,
-                                      connections: stored, trash: trash, deleted: deleted }, null, 2) + "\n")
+                                      connections: stored, trash: trash, deleted: deleted,
+                                      deletedGroups: deletedGroups }, null, 2) + "\n")
     }
 
     function setUi(key, value) {
@@ -339,6 +343,7 @@ Singleton {
         root.groupSettings = data.groups || {}
         root.trash = data.trash || []
         root.deleted = data.deleted || {}
+        root.deletedGroups = data.deletedGroups || {}
         write()
     }
 
@@ -447,6 +452,102 @@ Singleton {
             })
         }
         edited()
+    }
+
+    // The credentials a connection uses after moving into a group (or "" for none): a desktop
+    // without its own user name follows the group's set; one that followed the old group's set
+    // asks when connecting if the new group has none. SSH signs in with keys, never with a set.
+    function credentialAfterMove(c, name) {
+        var mode = c.credential || "custom"
+        if (c.protocol === "ssh")
+            return mode
+        var groupSet = group(name).credential
+        if (groupSet && mode === "custom" && !c.username)
+            return "inherit"
+        if (!groupSet && mode === "inherit")
+            return "custom"
+        return mode
+    }
+
+    // A group of that name, other than `except`, whatever its case.
+    function groupExists(name, except) {
+        var want = name.trim().toLowerCase()
+        return groups.some(function (g) { return g !== except && g.toLowerCase() === want })
+    }
+
+    // Moves connections into a group ("" for none). Returns the ones that moved.
+    function moveToGroup(ids, name) {
+        var now = Date.now()
+        var moved = []
+        root.stored = stored.map(function (c) {
+            if (ids.indexOf(c.id) < 0 || (c.group || "") === name)
+                return c
+            var copy = JSON.parse(JSON.stringify(c))
+            copy.credential = credentialAfterMove(copy, name)
+            copy.group = name
+            copy.modified = now
+            moved.push(copy)
+            return copy
+        })
+        if (moved.length > 0)
+            edited()
+        return moved
+    }
+
+    // An empty group, there before any connection is in it.
+    function createGroup(name) {
+        if (groupSettings[name])
+            return
+        var groupsCopy = JSON.parse(JSON.stringify(groupSettings))
+        groupsCopy[name] = { credential: "", settings: {}, modified: Date.now() }
+        root.groupSettings = groupsCopy
+        edited()
+    }
+
+    // The group under a new name, settings and connections with it. On other systems it arrives
+    // as the old group deleted and the new one made.
+    function renameGroup(from, to) {
+        if (from === to)
+            return
+        var now = Date.now()
+        var groupsCopy = JSON.parse(JSON.stringify(groupSettings))
+        var g = groupsCopy[from] || { credential: "", settings: {} }
+        g.modified = now
+        delete groupsCopy[from]
+        groupsCopy[to] = g
+        root.groupSettings = groupsCopy
+        root.deletedGroups = Object.assign({}, deletedGroups, { [from]: now })
+        root.stored = stored.map(function (c) {
+            if (c.group !== from)
+                return c
+            var copy = JSON.parse(JSON.stringify(c))
+            copy.group = to
+            copy.modified = now
+            return copy
+        })
+        edited()
+    }
+
+    // The group goes; its connections stay, without a group (and without its credentials).
+    // Returns how many moved out.
+    function deleteGroup(name) {
+        var members = stored.filter(function (c) { return c.group === name }).map(function (c) { return c.id })
+        var now = Date.now()
+        root.stored = stored.map(function (c) {
+            if (c.group !== name)
+                return c
+            var copy = JSON.parse(JSON.stringify(c))
+            copy.credential = credentialAfterMove(copy, "")
+            copy.group = ""
+            copy.modified = now
+            return copy
+        })
+        var groupsCopy = JSON.parse(JSON.stringify(groupSettings))
+        delete groupsCopy[name]
+        root.groupSettings = groupsCopy
+        root.deletedGroups = Object.assign({}, deletedGroups, { [name]: now })
+        edited()
+        return members.length
     }
 
     function membersOf(name) {

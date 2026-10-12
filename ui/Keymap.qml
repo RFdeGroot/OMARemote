@@ -31,6 +31,7 @@ Singleton {
         { group: "Connections", context: "list", action: "favourite", keys: ["f"], label: "Toggle favourite" },
         { group: "Connections", context: "list", action: "restore", keys: ["r"], label: "Restore (in Recently deleted)" },
         { group: "Connections", context: "list", action: "log", keys: ["l"], label: "Log of the last session" },
+        { group: "Connections", context: "list", action: "moveGroup", keys: ["m"], label: "Move to group (or drag it onto one)" },
         { group: "Connections", context: "list", action: "groupSettings", keys: ["s"], label: "Settings of its group" },
         { group: "Connections", context: "list", action: "search", keys: ["/", "ctrl+f"], label: "Search connections" },
         { group: "Connections", context: "list", action: "clear", keys: ["escape"], label: "Clear search, then filter" },

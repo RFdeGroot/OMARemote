@@ -31,3 +31,4 @@ SettingsGlyph 1.0 SettingsGlyph.qml
 OmaremoteMark 1.0 OmaremoteMark.qml
 Wordmark 1.0 Wordmark.qml
 AboutCard 1.0 AboutCard.qml
+GroupPicker 1.0 GroupPicker.qml

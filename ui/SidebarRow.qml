@@ -15,17 +15,29 @@ Rectangle {
     // A glyph shown on hover (and always when actionPinned) that runs actionClicked.
     property string action: ""
     property bool actionPinned: false
+    // Takes a dragged connection (see the drag in Body.qml): lit while one hovers over it.
+    property bool dropTarget: false
+    readonly property bool dropHover: drop.containsDrag
     signal clicked()
     signal rightClicked()
     signal doubleClicked()
     signal actionClicked()
+    signal dropped()
 
     width: parent ? parent.width : 0
     height: Math.round(Theme.body * 2.1)
     radius: Theme.radius
-    color: current ? Theme.selection : (mouse.containsMouse ? Theme.hover : "transparent")
-    border.width: cursor ? 1 : 0
+    color: dropHover || current ? Theme.selection : (mouse.containsMouse ? Theme.hover : "transparent")
+    border.width: dropHover ? 2 : cursor ? 1 : 0
     border.color: Theme.accent
+
+    DropArea {
+        id: drop
+        anchors.fill: parent
+        enabled: root.dropTarget
+        keys: ["connection"]
+        onDropped: root.dropped()
+    }
 
     Glyph {
         id: glyph

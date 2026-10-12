@@ -159,6 +159,7 @@ The most used:
 | `n` / `e` / `d` | new / edit / duplicate connection |
 | `del` `del` | delete (press twice): to *Recently deleted*, restorable for 30 days |
 | `f` | toggle favourite |
+| `m` | move to a group, out of one, or into a new one (or drag it onto a group) |
 | `s` | settings of the connection's group |
 | `c` | new credential set |
 | `l` | log of the last session (`w` warnings only, `esc` close) |
@@ -233,6 +234,13 @@ anything happens: *Move to trash* or *Keep them* (they then go back to that syst
   them flat.
 - **Credential sets** (sidebar, CREDENTIALS) hold a user name, domain and optionally a password
   (in the keyring) that any number of connections can use.
+- **Moving between groups**: drag a connection onto a group in the sidebar or onto a group heading
+  in the list, onto *No group* to take it out, or onto *Into a new group*. Or press `m`. A
+  connection without its own user name takes the credential set of the group it lands in, and the
+  status bar says so.
+- **New group** (sidebar, under GROUPS) makes an empty group. Its settings (`s`, the gear, or a
+  right-click) also rename it, taking its connections along, and delete it: its connections stay,
+  without a group. Renames and deletions reach other systems through sync.
 - **Group settings**: right-click a group, click its gear, or press `s`. A group can name a
   credential set and set any connection setting; a setting left at — is up to each connection.
   *Apply* makes the group's connections follow it now (their own values for those settings go, and

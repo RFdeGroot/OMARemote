@@ -3,11 +3,16 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui as Kit
 
-// Settings for a group of connections: a credential set and any connection setting. A setting
-// left at "—" is not set by the group; its connections decide it themselves.
+// A group of connections: its name, a credential set and any connection setting. A setting left at
+// "—" is not set by the group; its connections decide it themselves. Also makes new groups (load
+// with "") and deletes them: their connections stay, without a group.
 Rectangle {
     id: root
+    // The group as saved ("" while making a new one) and the name in the field.
+    property string originalName: ""
     property string name: ""
+    readonly property bool isNew: originalName === ""
+    property bool deleteArmed: false
     property string credential: ""          // set id, "" for none, "new" while creating one
     property var settings: ({})             // only the keys the group sets
     property bool apply: true
@@ -17,15 +22,18 @@ Rectangle {
     property string newPassword: ""
     property bool newSave: true
     property string error: ""
-    signal saved(string name, string credential, var newCredential, var settings, bool apply)
+    signal saved(string from, string name, string credential, var newCredential, var settings, bool apply)
+    signal deleted(string name)
     signal cancelled()
 
     color: Theme.surface
 
-    readonly property int members: { Store.stored; return Store.membersOf(name) }
+    readonly property int members: { Store.stored; return isNew ? 0 : Store.membersOf(originalName) }
 
     function load(groupName) {
+        originalName = groupName
         name = groupName
+        deleteArmed = false
         var g = Store.group(groupName)
         credential = g.credential
         settings = JSON.parse(JSON.stringify(g.settings))
@@ -34,7 +42,10 @@ Rectangle {
         newSave = true
         error = ""
         flick.contentY = 0
-        forceActiveFocus()
+        if (isNew)
+            nameField.forceActiveFocus()
+        else
+            forceActiveFocus()
     }
 
     function value(key) {
@@ -60,6 +71,15 @@ Rectangle {
     }
 
     function save() {
+        var clean = name.trim()
+        if (!clean) {
+            error = "A group needs a name."
+            return
+        }
+        if (Store.groupExists(clean, originalName)) {
+            error = "There is a group named " + clean + " already."
+            return
+        }
         if (credential === "new" && !newUser.trim()) {
             error = "A credential set needs a user name."
             return
@@ -72,10 +92,12 @@ Rectangle {
             delete s.width
             delete s.height
         }
-        saved(name, credential, credential === "new"
+        saved(originalName, clean, credential, credential === "new"
               ? { username: newUser.trim(), domain: newDomain.trim(), savePassword: newSave, password: newPassword } : null,
               s, apply)
     }
+
+    Timer { id: disarm; interval: 3000; onTriggered: root.deleteArmed = false }
 
     Keys.onPressed: function (event) {
         if (event.key === Qt.Key_Escape) {
@@ -112,7 +134,7 @@ Rectangle {
             Text {
                 width: parent.width
                 elide: Text.ElideRight
-                text: "Group " + root.name
+                text: root.isNew ? "New group" : "Group " + root.originalName
                 color: Theme.foreground
                 font.family: Theme.font
                 font.pixelSize: Theme.heading
@@ -121,8 +143,9 @@ Rectangle {
             Text {
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: root.members + (root.members === 1 ? " connection" : " connections")
-                      + ". Settings left at — are up to each connection."
+                text: root.isNew ? "Then drag connections onto it in the sidebar, or press m on one."
+                      : root.members + (root.members === 1 ? " connection" : " connections")
+                        + ". Settings left at — are up to each connection."
                 color: Theme.muted
                 font.family: Theme.font
                 font.pixelSize: Theme.small
@@ -145,7 +168,19 @@ Rectangle {
                 width: flick.width - 2 * Theme.panelPad
                 spacing: Theme.gap
 
-                Section { text: "CREDENTIALS"; Layout.topMargin: 0 }
+                Section { text: "GROUP"; Layout.topMargin: 0 }
+                FormRow {
+                    label: "Name"
+                    help: root.isNew || root.name.trim() === root.originalName ? "" : "Renames it for its connections too"
+                    Input {
+                        id: nameField
+                        placeholderText: "Servers"
+                        text: root.name
+                        onTextEdited: { root.name = text; root.error = "" }
+                    }
+                }
+
+                Section { text: "CREDENTIALS" }
                 FormRow {
                     label: "Credentials"
                     help: "Used by connections set to inherit"
@@ -328,6 +363,7 @@ Rectangle {
         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline }
 
         RowLayout {
+            visible: root.members > 0
             Layout.fillWidth: true
             Layout.leftMargin: Theme.panelPad
             Layout.rightMargin: Theme.panelPad
@@ -352,9 +388,25 @@ Rectangle {
             Layout.leftMargin: Theme.panelPad
             Layout.rightMargin: Theme.panelPad
             spacing: Theme.gap
+            ActionButton {
+                visible: !root.isNew
+                danger: true
+                icon: "\uf1f8"
+                text: root.deleteArmed ? "Press again to delete" : "Delete"
+                onClicked: {
+                    if (root.deleteArmed) {
+                        root.deleted(root.originalName)
+                    } else {
+                        root.deleteArmed = true
+                        disarm.restart()
+                    }
+                }
+            }
             Text {
                 Layout.fillWidth: true
-                text: root.error
+                text: root.error || (root.deleteArmed ? (root.members > 0
+                      ? "Its " + root.members + (root.members === 1 ? " connection stays" : " connections stay") + ", without a group"
+                      : "") : "")
                 wrapMode: Text.WordWrap
                 color: Theme.urgent
                 font.family: Theme.font

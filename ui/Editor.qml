@@ -91,13 +91,11 @@ Rectangle {
         d = next
     }
 
-    // Moving into a group that has credentials follows them, unless this connection has its own.
+    // Moving into a group follows its credentials, as dragging does (Store.credentialAfterMove).
     function changeGroup(name) {
         var next = Object.assign({}, d)
+        next.credential = Store.credentialAfterMove(d, name)
         next.group = name
-        var g = Store.group(name)
-        if (g.credential && d.credential === "custom" && !d.username)
-            next.credential = "inherit"
         d = next
     }
 

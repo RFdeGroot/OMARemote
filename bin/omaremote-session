@@ -312,6 +312,7 @@ def portable(data, system, kind="sync", now=None):
                         if isinstance(c, dict) and c.get("id")],
         "groups": {name: portable_group(g) for name, g in (data.get("groups") or {}).items() if isinstance(g, dict)},
         "deleted": dict(data.get("deleted") or {}) if kind == "sync" else {},
+        "deletedGroups": dict(data.get("deletedGroups") or {}) if kind == "sync" else {},
     }
 
 
@@ -356,6 +357,7 @@ def merge(local, incoming, now=None, allow_deletions=()):
     trash = data.setdefault("trash", [])
     deleted = data.setdefault("deleted", {})
     groups = data.setdefault("groups", {})
+    gone_groups = data.setdefault("deletedGroups", {})
     report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [], "errors": []}
 
     for inc in incoming:
@@ -373,6 +375,8 @@ def merge(local, incoming, now=None, allow_deletions=()):
             mine = groups.get(name)
             if mine is not None and g.get("modified", 0) <= mine.get("modified", 0):
                 continue
+            if g.get("modified", 0) <= gone_groups.get(name, -1):
+                continue  # deleted or renamed here after that change
             mine = dict(mine or {})
             kept = {k: v for k, v in (mine.get("settings") or {}).items() if k in GROUP_LOCAL_SETTINGS}
             mine["settings"] = dict({k: v for k, v in (g.get("settings") or {}).items()
@@ -380,6 +384,16 @@ def merge(local, incoming, now=None, allow_deletions=()):
             mine["modified"] = g.get("modified", 0)
             mine.setdefault("credential", "")
             groups[name] = mine
+
+        # A group deleted or renamed there. Its connections moved out with newer changes of their
+        # own, which travel like any other edit; only the group's settings go here.
+        for name, when in (inc.get("deletedGroups") or {}).items():
+            if not isinstance(when, (int, float)):
+                continue
+            mine = groups.get(name)
+            if mine is not None and when > mine.get("modified", 0):
+                del groups[name]
+            gone_groups[name] = max(gone_groups.get(name, 0), when)
 
         for ic in inc.get("connections") or []:
             if not isinstance(ic, dict) or not ic.get("id") or not (ic.get("host") or "").strip():
@@ -447,6 +461,7 @@ def purge_trash(data, now=None):
             if t.get("deleted", 0) < cutoff and (t.get("connection") or {}).get("id")]
     data["trash"] = [t for t in data.get("trash", []) if t.get("deleted", 0) >= cutoff]
     data["deleted"] = {k: v for k, v in (data.get("deleted") or {}).items() if v >= cutoff}
+    data["deletedGroups"] = {k: v for k, v in (data.get("deletedGroups") or {}).items() if v >= cutoff}
     return gone
 
 
@@ -488,7 +503,7 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=()):
     if not os.path.isdir(folder):
         raise ValueError(f"the sync folder does not exist: {folder}")
     system = system_name(raw)
-    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted") if raw.get(k) is not None}
+    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted", "deletedGroups") if raw.get(k) is not None}
     purged = purge_trash(data, now)
     mine = portable(data, system, "sync", now)
     own = os.path.join(folder, system + SYNC_SUFFIX)
@@ -565,7 +580,7 @@ def import_file(file_path, path=CONNECTIONS, now=None):
     if isinstance(incoming, dict):
         incoming["deleted"] = {}
     raw = load_raw(path)
-    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted") if raw.get(k) is not None}
+    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted", "deletedGroups") if raw.get(k) is not None}
     merged, report = merge(data, [incoming], now)
     return {"data": merged, "report": report}
 
