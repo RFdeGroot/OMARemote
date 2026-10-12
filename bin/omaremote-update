@@ -41,6 +41,18 @@ if ! gpgv --status-fd 1 --keyring "$keyring" "$package.sig" "$package" 2>/dev/nu
   exit 1
 fi
 echo "Signature checked: signed with OMARemote's release key."
+
+# The tab renderer is a Qt plugin: it loads only on the Qt it was built against or newer. A
+# package built on a newer Qt than this system has (Arch Linux ARM can be ahead of an Omarchy
+# that has not updated yet) waits for a system update; pacman would otherwise upgrade Qt's base
+# alone and leave the rest of Qt behind, which breaks more than OMARemote.
+built=$(bsdtar -xOf "$package" .BUILDINFO 2>/dev/null | sed -n 's/^installed = qt6-base-\([0-9]*\.[0-9]*\)\..*/\1/p')
+have=$(pacman -Q qt6-base 2>/dev/null | awk '{ split($2, v, "."); print v[1] "." v[2] }')
+if [[ -n $built && -n $have ]] && (( $(vercmp "$built" "$have") > 0 )); then
+  echo "OMARemote $latest needs Qt $built; this system has Qt $have."
+  echo "Update the system first (omarchy update), then update OMARemote again."
+  exit 1
+fi
 sudo pacman -U "$package" || exit 1
 
 # The open window still runs the old version from memory: close it and start the new one.
