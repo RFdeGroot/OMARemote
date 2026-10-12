@@ -368,9 +368,10 @@ They reach the session process over stdin, never on the command line.
 
 **Command lines stay anonymous.** Any account on the machine can read the command line of a
 running program, so OMARemote never puts a connection's name, host, user name or an error text on
-one: sessions read their settings from stdin, keyring entries are labelled by id, notifications go
-over D-Bus, the Kerberos DNS lookup runs in-process, and the Omarchy bar plugin names connections by
-id. One exception: an SSH session runs `ssh` itself, whose command line holds the host (and the
+one: sessions read their settings from stdin, keyring entries are labelled by id, a failure
+notification says only that a connection failed (which one, and why, is in OMARemote), the
+Kerberos DNS lookup runs in-process, and the Omarchy bar plugin names connections by id. One
+exception: an SSH session runs `ssh` itself, whose command line holds the host (and the
 user name, port and key when set), the same as typing `ssh` in a terminal. To keep other accounts
 out of `/proc` altogether, mount it with `hidepid=invisible`.
 

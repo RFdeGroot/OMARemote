@@ -780,13 +780,20 @@ class NothingPrivateInArgv(unittest.TestCase):
             self.assertNotIn(word, text)
 
     def test_a_failure_notification_names_nothing_on_a_command_line(self):
-        # No session bus here: the fallback path, which must name nothing either. (With a bus the
-        # text goes over D-Bus from this process; a test must not put notifications on the desktop.)
+        # No session bus here: the fallback path. (With a bus the same text goes over D-Bus; a test
+        # must not put notifications on the desktop.)
         from unittest import mock
         with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent"}):
-            session.notify("Secret Office PC: connection failed", "pc.secret.lan refused alice")
+            session.notify()
         self.assertEqual(self.argvs[0][0], "notify-send")
         self.assertClean()
+
+    def test_the_notification_text_itself_names_nothing(self):
+        # Whatever shows the notification may put its text on a command line (Omarchy's does).
+        self.assertEqual((session.NOTIFY_SUMMARY, session.NOTIFY_BODY),
+                         ("OMARemote", "A connection failed: open OMARemote for details"))
+        import inspect
+        self.assertEqual(list(inspect.signature(session.notify).parameters), [])
 
     def test_keyring_labels_carry_only_the_id(self):
         session.secret_set("c-1", "hunter2", session.secret_label("c-1"))

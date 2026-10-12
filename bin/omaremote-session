@@ -1732,26 +1732,32 @@ def supervise(conn, sid, tab=None):
     state.update(state="failed" if error else "ended", exitCode=code, error=error, ended=int(time.time()))
     write_session(state)
     if error and os.environ.get("OMAREMOTE_NOTIFY", "1") == "1":
-        notify(f"{state['name']}: connection failed", error)
+        notify()
     return 0
 
 
-def notify(summary, body):
-    """A desktop notification, sent over D-Bus from this process: its text (a connection's name,
-    an error with its host) never goes on another program's command line. Without python-gobject,
-    notify-send gets a text that names nothing."""
+# The same words for every failure: a notification's text is not private once it leaves (Omarchy's
+# notification service, for one, hands it to a shell on the command line). Which connection failed
+# and why stay in OMARemote: the session's state, its tab and the Active list.
+NOTIFY_SUMMARY = "OMARemote"
+NOTIFY_BODY = "A connection failed: open OMARemote for details"
+
+
+def notify():
+    """The desktop notification for a failed session, sent over D-Bus from this process (notify-send
+    without python-gobject). It names no connection, host or user, and carries no error text."""
     try:
         from gi.repository import Gio, GLib
         bus = Gio.bus_get_sync(Gio.BusType.SESSION)
         bus.call_sync("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
                       "org.freedesktop.Notifications", "Notify",
-                      GLib.Variant("(susssasa{sv}i)", ("OMARemote", 0, "omaremote", summary, body, [],
-                                                       {"urgency": GLib.Variant("y", 1)}, -1)),
+                      GLib.Variant("(susssasa{sv}i)", ("OMARemote", 0, "omaremote", NOTIFY_SUMMARY, NOTIFY_BODY,
+                                                       [], {"urgency": GLib.Variant("y", 1)}, -1)),
                       None, Gio.DBusCallFlags.NONE, 5000, None)
     except Exception:
         try:
-            subprocess.run(["notify-send", "-a", "OMARemote", "-u", "normal", "OMARemote",
-                            "A connection failed: open OMARemote for details"], capture_output=True, timeout=5)
+            subprocess.run(["notify-send", "-a", "OMARemote", "-u", "normal", NOTIFY_SUMMARY, NOTIFY_BODY],
+                           capture_output=True, timeout=5)
         except (OSError, subprocess.TimeoutExpired):
             pass
 
