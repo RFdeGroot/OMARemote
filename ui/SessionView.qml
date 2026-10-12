@@ -25,15 +25,20 @@ Item {
     signal toggleFullscreen()
     signal togglePinned()
 
+    // The keyboard goes to what is on screen: a prompt, the remote desktop, or (once the session has
+    // ended or failed) its panel, whose ⏎, l and w would otherwise never arrive.
     function focusDesktop() {
         if (hasPrompt)
             promptLoader.forceActiveFocus()
+        else if (!live && session)
+            ended.forceActiveFocus()
         else
             view.forceActiveFocus()
     }
 
     onCurrentChanged: if (current) Qt.callLater(focusDesktop)
     onHasPromptChanged: if (current) Qt.callLater(focusDesktop)
+    onLiveChanged: if (current) Qt.callLater(focusDesktop)
 
     Rectangle {
         anchors.fill: parent
@@ -58,22 +63,30 @@ Item {
 
         // App chords, all on Ctrl+Alt so nothing a Windows user types is taken.
         Keys.onPressed: function (event) {
-            var chord = (event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.AltModifier)
-            if (!chord)
-                return
-            if (event.key === Qt.Key_Home) root.navigate("home")
-            else if (event.key === Qt.Key_PageDown) root.navigate("next")
-            else if (event.key === Qt.Key_PageUp) root.navigate("previous")
-            else if (event.key === Qt.Key_End) view.sendCtrlAltDel()
-            else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.toggleFullscreen()
-            else if (event.key === Qt.Key_K) root.navigate("keys")
-            else if (event.key === Qt.Key_O && !root.inWindow) root.navigate("window")
-            else if (event.key === Qt.Key_T && root.inWindow) root.navigate("tab")
-            else if (event.key === Qt.Key_P) root.togglePinned()
-            else return
-            view.releaseAllKeys()
-            event.accepted = true
+            if (root.chord(event)) {
+                view.releaseAllKeys()
+                event.accepted = true
+            }
         }
+    }
+
+    // The Ctrl+Alt chords, for the desktop and for the panel of an ended session alike. True when
+    // the key was one of them.
+    function chord(event) {
+        if (!((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.AltModifier)))
+            return false
+        if (event.key === Qt.Key_Home) root.navigate("home")
+        else if (event.key === Qt.Key_PageDown) root.navigate("next")
+        else if (event.key === Qt.Key_PageUp) root.navigate("previous")
+        else if (event.key === Qt.Key_End && live) view.sendCtrlAltDel()
+        else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && live) root.toggleFullscreen()
+        else if (event.key === Qt.Key_K) root.navigate("keys")
+        else if (event.key === Qt.Key_O && !root.inWindow && live) root.navigate("window")
+        else if (event.key === Qt.Key_T && root.inWindow) root.navigate("tab")
+        else if (event.key === Qt.Key_H && root.inWindow) root.navigate("hide")
+        else if (event.key === Qt.Key_P) root.togglePinned()
+        else return false
+        return true
     }
 
     // ---------------------------------------------------------------- connecting
@@ -118,6 +131,7 @@ Item {
     // ---------------------------------------------------------------- ended or failed
 
     Column {
+        id: ended
         anchors.centerIn: parent
         width: Math.min(parent.width - 2 * Theme.panelPad, 520)
         visible: !root.live && !!root.session
@@ -155,6 +169,10 @@ Item {
         }
         focus: visible && root.current
         Keys.onPressed: function (event) {
+            if (root.chord(event)) {
+                event.accepted = true
+                return
+            }
             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.reconnectRequested()
             else if (event.key === Qt.Key_L) Sessions.openLog(root.session)
             else if (event.key === Qt.Key_W || event.key === Qt.Key_Escape) root.closeRequested()

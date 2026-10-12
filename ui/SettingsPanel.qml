@@ -15,6 +15,7 @@ FocusScope {
     readonly property var sections: [
         { id: "sync", label: "Sync", icon: "" },
         { id: "ssh", label: "SSH", icon: "" },
+        { id: "hotkeys", label: "Hotkeys", icon: "\uf11c" },
         { id: "updates", label: "Updates", icon: "" },
         { id: "files", label: "Files", icon: "\uf07b" }
     ]
@@ -270,12 +271,53 @@ FocusScope {
                         }
                         Note {
                             visible: root.section === "ssh"
-                            text: Sync.sshConfigMode === "auto" ? "On: ~/.ssh/config includes OMARemote's file."
+                            text: Sync.sshConfigMode === "readonly" ? "~/.ssh/config is read-only (generated or managed elsewhere), so OMARemote "
+                                                                      + "leaves it alone. Add this line at its top yourself (before any Host line):\n\n    Include omaremote.conf"
+                                : Sync.sshConfigMode === "auto" ? "On: ~/.ssh/config includes OMARemote's file."
                                 : Sync.sshConfigMode === "manual" ? "Your ~/.ssh/config includes ~/.ssh/omaremote.conf itself: OMARemote keeps "
                                                                     + "that file current and leaves your config alone."
                                 : "Off: nothing in ~/.ssh is written. To keep ~/.ssh/config to yourself and still use "
                                   + "these keys in a terminal, add this line at its top yourself (before any Host line):\n\n    Include omaremote.conf"
                             color: Theme.foreground
+                        }
+
+                        // ------------------------------------------------ Hotkeys
+                        Heading { visible: root.section === "hotkeys"; text: "HOTKEY WINDOWS" }
+                        Note {
+                            visible: root.section === "hotkeys"
+                            text: "A connection that opens in a Hotkey window (Open in, in its editor) slides in on its "
+                                + "shortcut, on the screen you are on, and out again on the same shortcut or ctrl+alt+h. "
+                                + "It stays connected in between. Up to " + Hotkeys.limit + " connections."
+                        }
+                        Repeater {
+                            model: root.section === "hotkeys" ? Hotkeys.hotkeyConnections : []
+                            delegate: Fact {
+                                required property var modelData
+                                label: modelData.name || modelData.host
+                                value: (modelData.hotkey || "no shortcut") + "   ·   omaremote toggle " + modelData.id
+                            }
+                        }
+                        FormRow {
+                            visible: root.section === "hotkeys"
+                            label: "Write into Hyprland"
+                            help: "Its own file, loaded from hyprland.lua (backed up first); off removes both"
+                            Check {
+                                checked: Hotkeys.writeConfig
+                                onToggled: Store.setUi("hyprHotkeys", !checked)
+                            }
+                        }
+                        Note {
+                            visible: root.section === "hotkeys"
+                            color: Theme.foreground
+                            text: (Hotkeys.mode === "readonly"
+                                   ? "hyprland.lua is read-only (generated or managed elsewhere), so OMARemote leaves it alone. "
+                                     + "To use OMARemote's shortcuts file, add this line at its end yourself:\n\n    " + Hotkeys.loaderLine + "\n\n"
+                                   : Hotkeys.mode === "unsupported"
+                                   ? "There is no ~/.config/hypr/hyprland.lua here (an older Hyprland config), so OMARemote cannot add them. "
+                                   : Hotkeys.writeConfig ? "On: Hyprland's config loads OMARemote's shortcuts. " : "Off: Hyprland's config is not touched. ")
+                                + "To bind a shortcut yourself, add a line like this to ~/.config/hypr/bindings.lua, with the "
+                                + "command shown above (by id: a name would show up in the list of running programs):\n\n"
+                                + "    o.bind(\"SUPER + ALT + W\", \"Work PC\", \"omaremote toggle c-…\")"
                         }
 
                         // ------------------------------------------------ Updates

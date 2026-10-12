@@ -142,6 +142,12 @@ FocusScope {
             return
         // RDP allows one session per user: a second connect would end the first, so go to it instead.
         var running = Sessions.activeFor(c.id)
+        var hotkey = c.openIn === "hotkey" && c.protocol !== "vnc"
+        // A hotkey window lives on its own special workspace: shown there, wherever that is.
+        if (hotkey && running.length > 0 && (!running[0].tab || running[0].view === "window")) {
+            Quickshell.execDetached([Sessions.bin, "toggle", "--show", c.id])
+            return
+        }
         if (running.length > 0) {
             if (running[0].tab && running[0].view !== "window")
                 showTab(running[0].id)
@@ -150,7 +156,7 @@ FocusScope {
             say("Switched to " + (c.name || c.host))
             return
         }
-        if (c.openIn === "window" && c.protocol !== "vnc") {
+        if ((c.openIn === "window" || hotkey) && c.protocol !== "vnc") {
             say("Connecting to " + (c.name || c.host) + "…")
             // All monitors needs FreeRDP's own window; otherwise OMARemote draws the window itself.
             if (c.multimon && (c.protocol || "rdp") === "rdp") {
@@ -194,6 +200,17 @@ FocusScope {
 
     // ctrl+alt+o: the session leaves its tab for a window of its own (the window takes over the
     // connection; nothing reconnects).
+    // The window is closing (Hyprland's close key, super+w by default): the sessions shown in its tabs end
+    // with it. Sessions in own windows, hotkey windows and FreeRDP's window are theirs, not ours.
+    function closing() {
+        var list = Sessions.sessions
+        for (var i = 0; i < list.length; i++) {
+            var s = list[i]
+            if (s.tab && s.view !== "window" && Sessions.isActive(s))
+                Sessions.stop(s.id)
+        }
+    }
+
     function popOut(id) {
         var at = openTabs.indexOf(id)
         if (at < 0)
@@ -511,6 +528,15 @@ FocusScope {
         return false
     }
 
+    // The tab shown holds a session that has ended or failed: its hints are the panel's keys.
+    readonly property bool currentEnded: {
+        var list = Sessions.sessions
+        for (var i = 0; i < list.length; i++)
+            if (list[i].id === currentTab)
+                return !Sessions.isActive(list[i])
+        return false
+    }
+
     // Where list-or-sidebar keys go on the connections tab.
     property string focusArea: "list"
     property int sidebarCursor: 0
@@ -636,7 +662,6 @@ FocusScope {
         case "nextTab": cycleTab(1); break
         case "previousTab": cycleTab(-1); break
         case "keys": keymapSheet.open(); break
-        case "quit": if (root.host) root.host.quit(); break
         }
     }
 
@@ -960,7 +985,10 @@ FocusScope {
             visible: !root.immersive
             notice: root.notice
             noticeIsError: root.noticeIsError
-            hints: root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"]]
+            hints: root.currentTab !== "home" && root.currentEnded
+                       ? [["⏎", "reconnect"], ["l", "log"], ["w", "close tab"], ["ctrl+alt+home", "connections"],
+                          ["ctrl+alt+pgup/pgdn", "tabs"], ["ctrl+alt+k", "keys"]]
+                 : root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"]]
                                                 .concat(root.currentIsSsh ? [["ctrl+shift+c/v", "copy/paste"]] : [["ctrl+alt+end", "ctrl+alt+del"]])
                                                 .concat([["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]])
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
@@ -1171,6 +1199,7 @@ FocusScope {
             return "ok"
         }
         // For bin/omaremote-update, which restarts the window on the new version.
+        // For bin/omaremote-update: a restart, so the tabs' sessions run on and come back.
         function quit(): void { if (root.host) root.host.quit() }
     }
 
@@ -1199,7 +1228,7 @@ FocusScope {
             return showRunning(name) ? "ok" : "unknown connection: " + name
         var running = Sessions.activeFor(c.id)
         var ownWindow = running.length > 0 ? (!running[0].tab || running[0].view === "window")
-                                           : (c.openIn === "window" && c.protocol !== "vnc")
+                                           : ((c.openIn === "window" || c.openIn === "hotkey") && c.protocol !== "vnc")
         selectedId = c.id
         connect(c.id)
         if (!ownWindow)

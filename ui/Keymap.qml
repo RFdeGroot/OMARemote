@@ -54,14 +54,16 @@ Singleton {
         { group: "Sidebar", context: "sidebar", action: "focusList", keys: ["tab", "escape", "h", "left"], label: "Back to the list" },
 
         // Tabs
-        { group: "Tabs", context: "app", action: "nextTab", keys: ["ctrl+tab", "ctrl+pgdown"], label: "Next tab" },
-        { group: "Tabs", context: "app", action: "previousTab", keys: ["ctrl+shift+tab", "ctrl+pgup"], label: "Previous tab" },
+        { group: "Tabs", context: "app", action: "nextTab", keys: ["ctrl+alt+pgdown", "ctrl+tab"], label: "Next tab" },
+        { group: "Tabs", context: "app", action: "previousTab", keys: ["ctrl+alt+pgup", "ctrl+shift+tab"], label: "Previous tab" },
         { group: "Tabs", context: "app", action: "tabN", keys: ["alt+1…9"], label: "Go to tab 1–9", run: false },
         { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list" },
         { group: "Tabs", context: "app", action: "pluginOffer", keys: [], label: "Show the bar plugin offer again" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
         { group: "Tabs", context: "app", action: "settings", keys: [","], label: "Settings (sync, SSH, updates, files)" },
-        { group: "Tabs", context: "app", action: "quit", keys: ["ctrl+q"], label: "Quit OMARemote" },
+        // Hyprland's own close key (Omarchy's super+w, or what the user bound instead) closes the
+        // window; listed here, never caught here.
+        { group: "Tabs", context: "app", action: "close", keys: [Sessions.closeKey], label: "Close OMARemote (disconnects its tabs)", run: false },
 
         // In a session
         { group: "In a session", context: "session", action: "home", keys: ["ctrl+alt+home"], label: "Back to connections", run: false },
@@ -74,6 +76,7 @@ Singleton {
         { group: "In a session", context: "session", action: "fullscreen", keys: ["ctrl+alt+return"], label: "Fullscreen", run: false },
         { group: "In a session", context: "session", action: "popOut", keys: ["ctrl+alt+o"], label: "Move to its own window", run: false },
         { group: "In a session", context: "session", action: "toTab", keys: ["ctrl+alt+t"], label: "Own window: back into a tab", run: false },
+        { group: "In a session", context: "session", action: "hideHotkey", keys: ["ctrl+alt+h"], label: "Hotkey window: hide it (its shortcut brings it back)", run: false },
         { group: "In a session", context: "session", action: "toConnections", keys: ["ctrl+alt+home"], label: "Own window: into a tab, connections forward", run: false },
         { group: "In a session", context: "session", action: "pin", keys: ["ctrl+alt+p"], label: "Pin or unpin the connections list", run: false },
         { group: "In a session", context: "session", action: "keys", keys: ["ctrl+alt+k"], label: "This keymap", run: false },
@@ -148,7 +151,7 @@ Singleton {
         var names = { "return": "⏎", "enter": "⏎", "escape": "Esc", "delete": "Del", "pgup": "PgUp",
                       "pgdown": "PgDn", "up": "↑", "down": "↓", "left": "←", "right": "→", "space": "Space",
                       "tab": "Tab", "home": "Home", "end": "End", "menu": "Menu", "f1": "F1", "f2": "F2",
-                      "ctrl": "Ctrl", "alt": "Alt", "shift": "Shift" }
+                      "ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "super": "Super" }
         return spec.split("+").map(function (p) { return names[p] || p }).join(" ")
     }
 

@@ -335,7 +335,7 @@ Rectangle {
                 }
                 Fact {
                     label: parent.ssh ? "Opens in" : "Display"
-                    value: !root.connection ? "" : parent.ssh ? (root.connection.openIn === "window" ? "its own window" : "a tab")
+                    value: !root.connection ? "" : parent.ssh ? Format.openInLabel(root.connection)
                          : Format.displayLabel(root.connection, Sessions.monitorScale)
                 }
                 Fact { label: "Devices"; value: root.connection && !parent.ssh ? Format.devicesLabel(root.connection) : "" }

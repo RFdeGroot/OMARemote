@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import Quickshell.Io
 import qs.Commons
 
 // The keymap sheet ? opens, after Flea's: every binding from Keymap.qml in two columns of groups.
@@ -193,7 +194,25 @@ FocusScope {
                 font.family: Theme.font
                 font.pixelSize: Theme.small
             }
+
+            // An Apple keyboard (a MacBook's, or a Magic Keyboard) has no Home, End or Page keys;
+            // the kernel's hid_apple driver gives them on Fn + the arrows, so every key above works.
+            Text {
+                visible: appleKeyboard.loaded
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: "Apple keyboard: Fn+← Home  ·  Fn+→ End  ·  Fn+↑ PgUp  ·  Fn+↓ PgDn  ·  Fn+⌫ Delete"
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.caption
+            }
         }
+    }
+
+    FileView {
+        id: appleKeyboard
+        path: "/sys/module/hid_apple/parameters/fnmode"
+        printErrors: false
     }
 
     Component {
@@ -230,8 +249,8 @@ FocusScope {
                 spacing: Theme.gap
                 // The caps column has one width, so every label starts on the same x.
                 Row {
-                    Layout.preferredWidth: 170
-                    Layout.minimumWidth: 170
+                    Layout.preferredWidth: 196
+                    Layout.minimumWidth: 196
                     spacing: 4
                     Repeater {
                         model: Keymap.caps(entry.row)

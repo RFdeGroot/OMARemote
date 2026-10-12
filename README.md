@@ -13,7 +13,8 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 - **Credential sets** shared between hosts, and **group settings** that connections inherit.
 - **Fast Kerberos** on networks with many domain controllers.
 - **Keyboard-driven**, with a keymap sheet on `?`; the mouse works everywhere too.
-- Passwords optional, in your keyring; sessions survive closing the window.
+- Passwords optional, in your keyring; sessions in their own or hotkey window run on when you close
+  OMARemote, and an update brings your tabs back.
 
 ## Screenshots
 
@@ -74,7 +75,7 @@ omaremote --version          # the version you have
 ```
 
 Updating by hand works too: run the install commands above again, and pacman upgrades OMARemote in
-place; then close it with `super+w` and open it again. Each release's notes say what changed; to
+place; then `omaremote restart` (which keeps your tabs; `super+w` would disconnect them). Each release's notes say what changed; to
 hear about new ones, use *Watch → Custom → Releases* on the GitHub page.
 
 **The bar plugin.** The sidebar's footer also looks after the
@@ -152,6 +153,11 @@ Everything works from the keyboard. Press **`?`** (or **F1**; **Ctrl+Alt+K** ins
 the keymap sheet with every binding, grouped. Type to filter it and press ⏎ to run the highlighted
 action. The status bar always shows the keys for where you are.
 
+**On a MacBook** (or any Apple keyboard) there are no Home, End or Page keys: Fn+← is Home, Fn+→ is
+End, Fn+↑ and Fn+↓ are Page Up and Down (Linux's Apple keyboard driver does this, so they work
+everywhere, sessions included). `ctrl+alt+home` is then ctrl+alt+Fn+←. The keymap sheet says so
+too when an Apple keyboard is connected.
+
 The most used:
 
 | Key | Action |
@@ -169,7 +175,7 @@ The most used:
 | `1`–`5` | All, Favourites, Recent, Active, Recently deleted (`r` restores there) |
 | `,` | settings: sync, SSH, updates, files |
 | `tab` | move to the sidebar (`j` `k`, `⏎` open, `s` group settings, `esc` back) |
-| `ctrl+tab`, `alt+1`–`9` | switch tabs |
+| `ctrl+alt+pgdn` / `pgup` | next / previous tab, everywhere (in a session too; also `ctrl+tab`, `alt+1`–`9` outside one) |
 | `p` | pin the connections list beside session tabs |
 | `ctrl+s` / `esc` | save / cancel in an editor; `tab` walks every field |
 
@@ -182,6 +188,7 @@ Inside a session every key goes to the remote desktop, except these:
 | `ctrl+alt+end` | send ctrl+alt+del |
 | `ctrl+alt+⏎` | fullscreen, chrome hidden |
 | `ctrl+alt+o` | move the session to its own window (`ctrl+alt+t` there: back into a tab) |
+| `ctrl+alt+h` | hide a hotkey window (its shortcut brings it back) |
 | `ctrl+alt+p` | pin or unpin the connections list |
 | `ctrl+alt+k` | keymap sheet |
 
@@ -192,12 +199,16 @@ width, and a desktop that follows its tab resizes to the room left; unpin and it
 full width. Click a running connection to switch to it, double-click any to connect. The choice is
 remembered.
 
-Closing a tab disconnects (a Windows session stays logged in). Closing the app does not: sessions
-keep running and come back as tabs when it opens again.
+Closing a window ends what it shows. Closing a tab disconnects that session; closing OMARemote
+(Omarchy's `super+w`, or whatever closes a window for you) disconnects all its tabs (a Windows session stays logged in on the server, so connecting
+again picks up where you were; an SSH shell ends, unless you use tmux or screen). Sessions in their
+own window or a hotkey window are not OMARemote's: they run on, and `super+w` in one of those ends
+that one. Updating OMARemote, or a crash, ends nothing: the tabs come back when it opens again.
 
 From a keybinding or script: `omaremote open "Work PC"` shows that connection in OMARemote (its
 running session, or a new one in a tab, starting OMARemote if needed); `omaremote connect "Work PC"`
-connects without the window. Both take a connection's id, name or host.
+connects without the window; `omaremote toggle "Work PC"` shows or hides a hotkey window. All
+take a connection's id, name or host.
 
 **In the Omarchy bar:** the [OMARemote plugin](https://github.com/RFdeGroot/omarchy-omaremote) lists
 running sessions and favourite connections, a click away
@@ -270,6 +281,18 @@ anything happens: *Move to trash* or *Keep them* (they then go back to that syst
   and takes you to the manager on its connections; `ctrl+alt+o` in a tab sends it out to its own window. The connection stays up
   either way. `omaremote open --window <name>` does the same from a script or keybinding. With *All monitors* on, the
   session opens in FreeRDP's own window (`sdl-freerdp3`) instead, spanning every screen.
+- **Hotkey window** (Open in): a connection kept at hand. Its shortcut slides it in, floating at
+  90% of the screen you are on and focused, from any workspace; the same shortcut, or `ctrl+alt+h`
+  in it, hides it again, and it stays connected in between. It lives on a Hyprland special
+  workspace of its own (`special:omaremote-<id>`), the way Omarchy's scratchpad does. Up to five.
+  - **The shortcut**: set it in the connection's editor (press the keys); it is checked against
+    your other hotkey windows and what Hyprland binds already. Settings › Hotkeys › *Write into
+    Hyprland* (off by default) keeps `~/.config/hypr/omaremote.lua` and loads it from the end of
+    `hyprland.lua` (backed up first); switching it off takes both out again. Or bind it yourself in
+    `~/.config/hypr/bindings.lua`: `o.bind("SUPER + ALT + W", "Work PC", "omaremote toggle c-…")`, with
+    the connection's id from Settings › Hotkeys (a name works too, but then shows up in the list of
+    running programs, which other accounts on the machine can read).
+  - Shortcuts belong to this system: they never sync. RDP and SSH, not RDP on all monitors.
 
 ### Kerberos
 
@@ -306,8 +329,8 @@ They sign in with a VNC password, or a user name and password for servers that a
 ## SSH
 
 Pick **SSH** as a connection's protocol (port 22 by default). The session is a terminal OMARemote
-draws in the tab (or in its own window), so it gets tabs, pinning and own windows like the desktops,
-and it keeps running when you close OMARemote.
+draws in the tab (or in its own window), so it gets tabs, pinning and own windows like the desktops.
+In its own window or a hotkey window it keeps running when you close OMARemote.
 
 - **Sign in** is plain `ssh`: your keys and ssh-agent (1Password's agent works too), and ssh asks
   in the terminal for anything else (a password, a new host key, a second factor). OMARemote stores
@@ -370,10 +393,10 @@ They reach the session process over stdin, never on the command line.
 running program, so OMARemote never puts a connection's name, host, user name or an error text on
 one: sessions read their settings from stdin, keyring entries are labelled by id, a failure
 notification says only that a connection failed (which one, and why, is in OMARemote), the
-Kerberos DNS lookup runs in-process, and the Omarchy bar plugin names connections by id. One
-exception: an SSH session runs `ssh` itself, whose command line holds the host (and the
-user name, port and key when set), the same as typing `ssh` in a terminal. To keep other accounts
-out of `/proc` altogether, mount it with `hidepid=invisible`.
+Kerberos DNS lookup runs in-process, and the Omarchy bar plugin and hotkey bindings name
+connections by id. One exception: an SSH session runs `ssh` itself, whose command line holds the
+host (and the user name, port and key when set), the same as typing `ssh` in a terminal. To keep
+other accounts out of `/proc` altogether, mount it with `hidepid=invisible`.
 
 **Keys** come from one table, `ui/Keymap.qml`, which both handles them and draws the keymap sheet.
 

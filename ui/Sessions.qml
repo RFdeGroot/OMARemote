@@ -148,6 +148,18 @@ Singleton {
         }
     }
 
+    // The key Hyprland closes a window with (Omarchy's super+w, or what the user bound instead), for
+    // the hints; Hyprland does the closing itself, so the key always works whatever it is.
+    property string closeKey: "super+w"
+    Process {
+        command: [root.bin, "close-key"]
+        running: true
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: root.closeKey = text.trim() || "super+w"
+        }
+    }
+
     // Where the backend keeps session state; the list is (re)read whenever its changes file moves.
     Process {
         command: [root.bin, "paths"]

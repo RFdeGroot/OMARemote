@@ -24,6 +24,13 @@ so closing the window never closes a remote desktop.
   omaremote-session float pid <pid> [%]  float a window at % (90) of its monitor, centred
   omaremote-session summon pid <pid>     move a window to the current workspace and focus it
   omaremote-session open-window <name>   a connection in a floating window of its own, here
+  omaremote-session toggle [--show] <name>   a hotkey window: show it (connecting if needed) or hide it
+  omaremote-session place <session> <pid>    a new own window: float it, and into its special workspace
+                                         when it is a hotkey window
+  omaremote-session hide <session>       hide a hotkey window (ctrl+alt+h)
+  omaremote-session hotkeys              the shortcuts Hyprland already binds, JSON (for conflicts)
+  omaremote-session close-key            the key Hyprland closes a window with ("super+w")
+  omaremote-session hypr-hotkeys         write ~/.config/hypr/omaremote.lua when Settings allow it
   omaremote-session export <file|folder> connections and groups to a file (no user names or passwords)
   omaremote-session import <file>        merge an export: prints the result for the UI, JSON
   omaremote-session sync [--allow-deletions <system,…>]   one round of folder sync, JSON for the UI
@@ -42,6 +49,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -97,6 +105,8 @@ DEFAULTS = {
     "kdc": "",               # Kerberos KDCs, comma separated; empty discovers them
     "extraArgs": "",
     "openIn": "tab",         # tab | window (OMARemote's own window; RDP with all monitors: FreeRDP's)
+                             # | hotkey (an own window on a special workspace of its own, see toggle)
+    "hotkey": "",            # the Hyprland shortcut of a hotkey window ("SUPER + ALT + W"), this system's
     "vncScaling": "fit",     # fit | native | resize
     "vncQuality": "auto",    # auto | high | low
     "viewOnly": False,
@@ -271,7 +281,7 @@ def mark_connected(conn_id, path=CONNECTIONS):
 
 # Never leaves this machine (keep in step with localKeys in ui/Store.qml).
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
-              "extraArgs", "sshArgs", "sshKey", "lastConnected")
+              "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey")
 GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs")
 SYNC_SUFFIX = ".omaremote.json"
 TRASH_DAYS = 30
@@ -933,6 +943,9 @@ def open_window(name):
                and (s.get("connection") == want or s.get("id") == want)]
     if running:
         s = running[0]
+        # A hotkey window stays on its special workspace: shown there, not moved here.
+        if is_hotkey(conn) and _session_window(s) is not None:
+            return toggle(conn["id"], show_only=True)
         if not s.get("tab"):
             return 0 if summon_window(s.get("pid")) else 1
         if s.get("view") == "window" and s.get("viewer"):
@@ -964,6 +977,403 @@ def open_window(name):
         time.sleep(0.1)
     print("the session did not start", file=sys.stderr)
     return 1
+
+
+# ---------------------------------------------------------------- hotkey windows
+#
+# A hotkey window is an own window kept on a special workspace of its own (special:omaremote-<id>):
+# one key slides it in on the monitor in use, focused; the same key, or ctrl+alt+h in it, hides it
+# again, the session staying connected. Hyprland does the showing and hiding; the window floats at
+# 90% of the monitor it shows on.
+
+HOTKEY_LIMIT = 5
+
+
+def special_name(conn_id):
+    return "omaremote-" + re.sub(r"[^A-Za-z0-9_-]+", "-", conn_id or "")
+
+
+def is_hotkey(conn):
+    """Shown as a hotkey window: RDP and SSH (VNC opens in tabs, RDP on all monitors in FreeRDP's)."""
+    return bool(conn) and conn.get("openIn") == "hotkey" and conn.get("protocol") != "vnc" \
+        and not (conn.get("multimon") and (conn.get("protocol") or "rdp") == "rdp")
+
+
+def special_shown(name, monitors=None):
+    """(on the focused monitor, on any monitor) for special:name."""
+    monitors = _hyprctl_json("monitors") if monitors is None else monitors
+    full = "special:" + name
+    shown = [m for m in monitors or [] if (m.get("specialWorkspace") or {}).get("name") == full]
+    return any(m.get("focused") for m in shown), bool(shown)
+
+
+def hotkey_action(window, name, active, monitors, show_only=False):
+    """What a toggle does with a running hotkey window: "move" (not on its workspace yet, then
+    shown), "hide" (shown and focused) or "show"."""
+    if (window.get("workspace") or {}).get("name") != "special:" + name:
+        return "move"
+    here, _ = special_shown(name, monitors)
+    focused = here and (active or {}).get("address") == window.get("address")
+    return "hide" if focused and not show_only else "show"
+
+
+def _toggle_special(name):
+    hypr_dispatch('hl.dsp.workspace.toggle_special("%s")' % name, "togglespecialworkspace", name)
+
+
+def show_hotkey(window, name):
+    """Brings the special workspace up on the focused monitor and the window to the front, sized
+    for that monitor."""
+    here, _ = special_shown(name)
+    if not here:
+        _toggle_special(name)
+    float_window(window["pid"])
+    target = "address:" + window["address"]
+    hypr_dispatch('hl.dsp.focus({ window = "%s" })' % target, "focuswindow", target)
+
+
+def move_to_special(window, name):
+    target = "address:" + window["address"]
+    hypr_dispatch('hl.dsp.window.move({ workspace = "special:%s", follow = false, window = "%s" })' % (name, target),
+                  "movetoworkspacesilent", "special:%s,%s" % (name, target))
+
+
+def _session_window(s):
+    """The Hyprland window a running session is shown in, or None (in a tab, or not mapped)."""
+    if s.get("tab"):
+        return find_window("pid", s["viewer"]) if s.get("view") == "window" and s.get("viewer") else None
+    return find_window("pid", s.get("pid"))
+
+
+def toggle(name, show_only=False):
+    """omaremote toggle: a hotkey window shown (connecting first if it is not running) or hidden.
+    A connection that is not a hotkey window opens as `open --window` would."""
+    conn = find_connection(name, load_connections())
+    if not conn or not is_hotkey(conn):
+        return open_window(name)
+    special = special_name(conn["id"])
+    running = [s for s in list_sessions() if s.get("state") in ("connecting", "connected")
+               and s.get("connection") == conn["id"]]
+    if not running:
+        return open_window(conn["id"])  # its window places itself (place), shown
+    window = _session_window(running[0])
+    if window is None:
+        return open_window(conn["id"])  # in a tab: out into its window, which places itself
+    action = hotkey_action(window, special, _hyprctl_json("activewindow"), _hyprctl_json("monitors"), show_only)
+    if action == "hide":
+        _toggle_special(special)
+        return 0
+    if action == "move":
+        move_to_special(window, special)
+    show_hotkey(window, special)
+    return 0
+
+
+def place_window(sid, pid):
+    """A new own window (SessionWindow calls this): floats at 90%, centred; a hotkey window goes to
+    its special workspace and shows there."""
+    if not float_window(pid):
+        return False
+    try:
+        with open(_session_path(sid), encoding="utf-8") as f:
+            conn_id = json.load(f).get("connection")
+    except (OSError, ValueError):
+        return True
+    conn = find_connection(conn_id or "", load_connections())
+    if is_hotkey(conn):
+        window = find_window("pid", pid)
+        if window:
+            move_to_special(window, special_name(conn["id"]))
+            show_hotkey(window, special_name(conn["id"]))
+    return True
+
+
+def hide_window(sid):
+    """ctrl+alt+h in a hotkey window: its special workspace closes."""
+    try:
+        with open(_session_path(sid), encoding="utf-8") as f:
+            conn_id = json.load(f).get("connection")
+    except (OSError, ValueError):
+        return False
+    conn = find_connection(conn_id or "", load_connections())
+    if not is_hotkey(conn):
+        return False
+    here, _ = special_shown(special_name(conn["id"]))
+    if here:
+        _toggle_special(special_name(conn["id"]))
+    return True
+
+
+# Hyprland's modifier bits, as `hyprctl binds -j` reports them.
+HYPR_MODS = {"SHIFT": 1, "CAPS": 2, "CTRL": 4, "CONTROL": 4, "ALT": 8, "MOD2": 16, "MOD3": 32,
+             "SUPER": 64, "WIN": 64, "LOGO": 64, "MOD4": 64, "MOD5": 128}
+
+
+def parse_hotkey(text):
+    """"SUPER + ALT + W" -> (72, "W"); None when it is not a shortcut (no key, or an unknown modifier)."""
+    parts = [p.strip() for p in (text or "").replace(",", "+").split("+") if p.strip()]
+    if not parts:
+        return None
+    mask = 0
+    for mod in parts[:-1]:
+        if mod.upper() not in HYPR_MODS:
+            return None
+        mask |= HYPR_MODS[mod.upper()]
+    key = parts[-1]
+    if key.upper() in HYPR_MODS:
+        return None
+    return mask, key.upper()
+
+
+def hypr_hotkeys(binds=None):
+    """The shortcuts Hyprland binds now, but OMARemote's own: [{mask, key, description}]."""
+    binds = _hyprctl_json("binds") if binds is None else binds
+    out = []
+    for b in binds or []:
+        description = b.get("description") or b.get("arg") or b.get("dispatcher") or ""
+        if description.startswith("OMARemote: ") or b.get("mouse") or b.get("submap"):
+            continue
+        out.append({"mask": b.get("modmask", 0), "key": str(b.get("key", "")).upper(), "description": description})
+    return out
+
+
+# The key that closes a window, as Omarchy binds it (o.bind("SUPER + W", "Close window", …)) or as
+# a classic config does (killactive). Shown in OMARemote's hints; Hyprland does the closing itself.
+CLOSE_DESCRIPTIONS = ("close window", "close active window", "killactive", "closewindow")
+
+
+def close_key(binds=None):
+    """"super+w", or whatever the user bound to closing a window instead; super+w when unsure."""
+    binds = _hyprctl_json("binds") if binds is None else binds
+    names = [(64, "super"), (4, "ctrl"), (8, "alt"), (1, "shift")]
+    for b in binds or []:
+        what = (b.get("description") or b.get("dispatcher") or "").strip().lower()
+        if b.get("submap") or b.get("mouse") or what not in CLOSE_DESCRIPTIONS:
+            continue
+        mods = [n for bit, n in names if (b.get("modmask") or 0) & bit]
+        return "+".join(mods + [str(b.get("key", "")).lower()])
+    return "super+w"
+
+
+HYPR_MARKER_BEGIN = "-- >>> omaremote >>>"
+HYPR_MARKER_END = "-- <<< omaremote <<<"
+HYPR_MANAGED = "omaremote.lua"
+
+
+def hypr_managed_text(connections, launcher):
+    """~/.config/hypr/omaremote.lua: one binding per hotkey window with a shortcut."""
+    lines = ["-- Written by OMARemote: the shortcuts of its hotkey windows. It rewrites this file whole,",
+             "-- so set them in OMARemote (a connection's Shortcut), not here.", ""]
+    count = 0
+    for c in connections:
+        key = parse_hotkey(c.get("hotkey"))
+        if not key or not is_hotkey(c):
+            continue
+        shortcut = " + ".join(p.strip().upper() for p in c["hotkey"].replace(",", "+").split("+") if p.strip())
+        # No name: Hyprland's descriptions reach Omarchy's menus, and from there who knows where.
+        label = "OMARemote: hotkey window"
+        command = "%s toggle %s" % (launcher, c["id"])
+        lines.append("o.bind(%s, %s, %s)" % (json.dumps(shortcut), json.dumps(label, ensure_ascii=False),
+                                             json.dumps(command)))
+        count += 1
+    return "\n".join(lines) + "\n", count
+
+
+def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=True):
+    """Keeps Hyprland's config in step with the shortcuts set in OMARemote, as far as the user allows.
+
+    Settings › Hotkeys › "Write the shortcuts into Hyprland's config" (ui.hyprHotkeys, off by default):
+      on   ~/.config/hypr/omaremote.lua holds the bindings, and hyprland.lua loads it through a block
+           between OMARemote's markers at its end (backed up once first);
+      off  the block and the file go again.
+    Only a Lua config (Hyprland 0.56, Omarchy 4). Returns {"mode": "on" | "off" | "unsupported",
+    "shortcuts", "changed"}."""
+    hypr_dir = hypr_dir or os.path.join(CONFIG_HOME, "hypr")
+    launcher = launcher or os.path.join(HERE, APP)
+    enabled = bool((load_raw(path).get("ui") or {}).get("hyprHotkeys"))
+    data = load_data(path)
+    text, count = hypr_managed_text([resolve(c, data) for c in data["connections"]], launcher)
+    main_config = os.path.join(hypr_dir, "hyprland.lua")
+    managed = os.path.join(hypr_dir, HYPR_MANAGED)
+    try:
+        with open(main_config, encoding="utf-8") as f:
+            config = f.read()
+    except FileNotFoundError:
+        return {"mode": "unsupported", "shortcuts": count, "changed": False}
+    changed = False
+    block = HYPR_MARKER_BEGIN + "\n" + hypr_loader_line() + "\n" + HYPR_MARKER_END
+    try:
+        managed_before = open(managed, encoding="utf-8").read()
+    except OSError:
+        managed_before = None
+    try:
+        span = hypr_block_span(config)
+    except ValueError as e:
+        # Half a block (the user edited it): leave hyprland.lua alone rather than guess.
+        return {"mode": "on" if enabled else "off", "shortcuts": count, "changed": False, "error": str(e)}
+    adding = enabled and (span is None or managed_before != text)
+    if adding and reload:
+        # As Flea does: a config that already reports errors is fixed first, or a new error could
+        # not be told apart from it.
+        errors = hypr_config_errors()
+        if errors:
+            return {"mode": "on", "shortcuts": count, "changed": False,
+                    "error": "Hyprland already reports a config error, fix that first: " + "; ".join(errors)}
+    if not user_file_writable(main_config) and (enabled != (span is not None)):
+        # Generated or managed elsewhere (read-only): its owner adds or removes the loader. The
+        # bindings file itself is still kept current when the folder allows it.
+        if enabled and user_file_writable(managed):
+            try:
+                with open(managed, encoding="utf-8") as f:
+                    current = f.read()
+            except OSError:
+                current = None
+            if current != text:
+                write_json_text(managed, text)
+                changed = True
+        if changed and reload:
+            hypr_reload()
+        return {"mode": "readonly", "shortcuts": count, "changed": changed, "line": hypr_loader_line()}
+    if enabled:
+        try:
+            with open(managed, encoding="utf-8") as f:
+                current = f.read()
+        except OSError:
+            current = None
+        if current != text:
+            write_json_text(managed, text)
+            changed = True
+        if span is None:
+            if not os.path.exists(main_config + ".omaremote-backup"):
+                with open(main_config + ".omaremote-backup", "w", encoding="utf-8") as f:
+                    f.write(config)
+            write_json_text(main_config, hypr_add_block(config, block))
+            changed = True
+    else:
+        if span is not None:
+            write_json_text(main_config, hypr_remove_block(config, span))
+            changed = True
+        if os.path.exists(managed):
+            os.remove(managed)
+            changed = True
+    if changed and reload:
+        if not hypr_reload():
+            return {"mode": "on" if enabled else "off", "shortcuts": count, "changed": changed,
+                    "error": "Hyprland could not be reached: run hyprctl reload inside the session"}
+        errors = hypr_config_errors() if adding else None
+        if errors:
+            # Never leave a config that does not load: both files back as they were, then reload.
+            write_json_text(main_config, config)
+            if managed_before is None:
+                if os.path.exists(managed):
+                    os.remove(managed)
+            else:
+                write_json_text(managed, managed_before)
+            hypr_reload()
+            return {"mode": "off", "shortcuts": count, "changed": False, "revert": True,
+                    "error": "the shortcuts broke Hyprland's config and were taken out again: " + "; ".join(errors)}
+    return {"mode": "on" if enabled else "off", "shortcuts": count, "changed": changed}
+
+
+def hypr_config_errors():
+    """What `hyprctl configerrors` reports, as a list (empty when the config loads cleanly), or None
+    when hyprctl cannot be reached (outside the session)."""
+    out = _hyprctl_json("configerrors")
+    if out is None:
+        return None
+    return [e for e in (out if isinstance(out, list) else [out]) if str(e).strip()]
+
+
+def hypr_reload():
+    try:
+        return subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def hypr_loader_line():
+    """The line in hyprland.lua that loads omaremote.lua, the path worked out when Hyprland loads it
+    (another user or home, a dotfile repo shared between machines), XDG_CONFIG_HOME included when
+    it is set; skipped quietly while the file is not there."""
+    if os.environ.get("XDG_CONFIG_HOME"):
+        where = '(os.getenv("XDG_CONFIG_HOME") or os.getenv("HOME") .. "/.config") .. "/hypr/%s"' % HYPR_MANAGED
+    else:
+        where = 'os.getenv("HOME") .. "/.config/hypr/%s"' % HYPR_MANAGED
+    return 'do local path = %s; local file = io.open(path, "r"); if file then file:close(); dofile(path) end end' % where
+
+
+def hypr_block_span(config):
+    """(first, last) line numbers of OMARemote's block in hyprland.lua, or None when there is none.
+    Only whole lines count as markers, so a comment that mentions one is never taken for it. A
+    start without its end raises ValueError: the block was edited, and nothing is guessed."""
+    lines = config.split("\n")
+    starts = [i for i, line in enumerate(lines) if line.strip() == HYPR_MARKER_BEGIN]
+    if not starts:
+        return None
+    first = starts[0]
+    last = next((i for i in range(first + 1, len(lines)) if lines[i].strip() == HYPR_MARKER_END), None)
+    if last is None:
+        raise ValueError("hyprland.lua has OMARemote's start marker (%s) but not its end marker (%s): "
+                         "remove what is left of the block by hand" % (HYPR_MARKER_BEGIN, HYPR_MARKER_END))
+    return first, last
+
+
+def hypr_add_block(config, block):
+    """config with the block at its end, after one blank line; the user's text stays as it was."""
+    return config + ("" if config.endswith("\n") or not config else "\n") + ("\n" if config else "") + block + "\n"
+
+
+def hypr_remove_block(config, span):
+    """config without the block and the one blank line hypr_add_block put before it; every other
+    line, blank or not, stays."""
+    lines = config.split("\n")
+    first, last = span
+    if first > 0 and lines[first - 1].strip() == "":
+        first -= 1
+    return "\n".join(lines[:first] + lines[last + 1:])
+
+
+def write_user_file(path, text, mode=0o644):
+    """A config file written whole, then renamed into place, so nothing ever reads half of it.
+
+    Through a symlink, never over it: dotfile managers (stow, chezmoi, home-manager) link
+    ~/.config/hypr/hyprland.lua or ~/.ssh/config to a file they own, and renaming onto the link
+    would quietly replace it with a plain file. An existing file keeps its permissions; a new one
+    gets `mode`. The temporary file has a name of its own and goes again if anything fails.
+    (After hyprmoncfg's WriteFileAtomic, internal/config/hyprland.go.)"""
+    real = os.path.realpath(path)
+    folder = os.path.dirname(real) or "."
+    keep = os.stat(real).st_mode & 0o777 if os.path.exists(real) else mode
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix="." + os.path.basename(real) + ".omaremote-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, keep)
+        os.replace(tmp, real)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def user_file_writable(path):
+    """Whether OMARemote may rewrite this config file. A file without any write permission belongs to
+    whatever generates it (a Nix store link, home-manager), even where this process could write it."""
+    real = os.path.realpath(path)
+    folder = os.path.dirname(real) or "."
+    if os.path.exists(real):
+        if os.stat(real).st_mode & 0o222 == 0:
+            return False
+        return os.access(real, os.W_OK) and os.access(folder, os.W_OK)
+    return os.access(folder, os.W_OK)
+
+
+def write_json_text(path, text):
+    write_user_file(path, text)
 
 
 def monitor_scale():
@@ -1258,13 +1668,9 @@ SSH_MARKER = "# OMARemote's SSH keys (~/.ssh/omaremote.conf); first, so it appli
 
 
 def _write_private(path, text, like=None):
-    """Written whole and renamed into place, readable by the user only (or as `like` was)."""
-    tmp = path + ".omaremote.tmp"
-    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
-        f.write(text)
-    if like and os.path.exists(like):
-        os.chmod(tmp, os.stat(like).st_mode & 0o777)
-    os.replace(tmp, path)
+    """Written whole through write_user_file: a new file readable by the user only, an existing one
+    (or a symlink's target) keeping its permissions."""
+    write_user_file(path, text, mode=0o600)
 
 
 def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
@@ -1275,7 +1681,8 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
            (backed up first) unless it includes the file already.
       off  OMARemote's own Include, recognised by its comment, comes out again with the file. An
            Include the user added by hand stays theirs: then only omaremote.conf is kept current.
-    Returns {"mode": "auto" | "manual" | "off", "keys", "changed"}."""
+    A read-only ~/.config (generated elsewhere) is never edited: mode "readonly", the Include is the
+    user's to add. Returns {"mode": "auto" | "manual" | "off" | "readonly", "keys", "changed"}."""
     raw = load_raw(path)
     enabled = bool((raw.get("ui") or {}).get("sshTerminalKeys"))
     data = load_data(path)
@@ -1290,8 +1697,10 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
     ours = user_config is not None and SSH_MARKER in user_config
     included = user_config is not None and bool(SSH_INCLUDE_RE.search(user_config))
     changed = False
+    # A config generated or managed elsewhere (read-only) is its owner's to change.
+    config_writable = user_config is None or user_file_writable(config)
 
-    if not enabled and ours:
+    if not enabled and ours and config_writable:
         # Out again: the marker, the Include under it and the blank line after, nothing else.
         lines = user_config.split("\n")
         at = lines.index(SSH_MARKER)
@@ -1323,6 +1732,8 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
     if current != text:
         _write_private(managed, text)
         changed = True
+    if mode == "auto" and count > 0 and not included and not config_writable:
+        return {"mode": "readonly", "keys": count, "changed": changed}
     if mode == "auto" and count > 0 and not included:
         if user_config is not None and not os.path.exists(config + ".omaremote-backup"):
             with open(os.open(config + ".omaremote-backup", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
@@ -1956,6 +2367,27 @@ def main(argv):
         return 0 if summon_window(rest[1]) else 1
     if cmd == "open-window" and rest:
         return open_window(" ".join(rest))
+    if cmd == "toggle" and rest:
+        show = rest[0] == "--show"
+        rest = rest[1:] if show else rest
+        return toggle(" ".join(rest), show_only=show) if rest else 2
+    if cmd == "place" and len(rest) == 2:
+        return 0 if place_window(rest[0], rest[1]) else 1
+    if cmd == "hide" and len(rest) == 1:
+        return 0 if hide_window(rest[0]) else 1
+    if cmd == "close-key":
+        print(close_key())
+        return 0
+    if cmd == "hotkeys":
+        print(json.dumps(hypr_hotkeys()))
+        return 0
+    if cmd == "hypr-hotkeys":
+        try:
+            print(json.dumps(hypr_hotkeys_sync()))
+        except OSError as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        return 0
     if cmd == "fullscreen":
         toggle_fullscreen()
         return 0

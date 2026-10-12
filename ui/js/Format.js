@@ -47,7 +47,14 @@ function displayLabel(c, monitorScale) {
     var mode = c.display === "fixed" ? c.width + "×" + c.height + " scaled to fit"
              : c.display === "fullscreen" ? "Fullscreen" : "Follows size"
     var scale = c.scale === "auto" ? "auto (" + (monitorScale || 100) + "%)" : c.scale + "%"
-    return (c.openIn === "window" ? "Own window · " : "Tab · ") + mode + " · scale " + scale
+    return openInLabel(c) + " · " + mode + " · scale " + scale
+}
+
+// Where a connection opens: "Tab", "Own window", or "Hotkey window (SUPER + ALT + W)".
+function openInLabel(c) {
+    if (c.openIn === "hotkey")
+        return "Hotkey window" + (c.hotkey ? " (" + c.hotkey + ")" : "")
+    return c.openIn === "window" ? "Own window" : "Tab"
 }
 
 function devicesLabel(c) {

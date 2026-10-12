@@ -6,8 +6,10 @@
 #                              in a tab (by id, name or host; starts OMARemote when needed)
 #   omaremote open --window <name>  the same in a floating window of its own, on this workspace
 #   omaremote connect <name>   connect straight away, without the window (for keybindings)
+#   omaremote toggle <name>    a hotkey window: slide it in (connecting if needed), or hide it again
 #   omaremote window <session> show a running session in a window of its own
 #   omaremote adopt <session> [--home]  move a running session into a tab of the manager
+#   omaremote restart          restart the manager window; its tabs' sessions run on and come back
 #   omaremote list             list saved connections
 #   omaremote --version        print the version
 set -euo pipefail
@@ -51,6 +53,22 @@ case "${1:-}" in
     shift
     exec "$OMAREMOTE_BIN" launch "$*"
     ;;
+  toggle)
+    shift
+    [[ -n ${1:-} ]] || { echo "usage: omaremote toggle <name>" >&2; exit 2; }
+    exec "$OMAREMOTE_BIN" toggle "$*"
+    ;;
+  restart)
+    # As omaremote-update does: quit over IPC (not a close, which would end the tabs), wait for the
+    # window to go, start it again. Nothing open: just start it.
+    pid=$(running_pid)
+    if [[ -n $pid ]]; then
+      qs ipc --pid "$pid" call omaremote quit >/dev/null 2>&1
+      for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    fi
+    require_omarchy
+    setsid -f uwsm-app -- "$0" >/dev/null 2>&1
+    ;;
   list)
     python3 -c 'import json,os,sys
 p=os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),"omaremote","connections.json")
@@ -91,7 +109,7 @@ for c in cs: print(c.get("name") or c.get("host"))'
     OMAREMOTE_ADOPT="$2" OMAREMOTE_ADOPT_HOME=$home exec qs -p "$ui/boot"
     ;;
   -h|--help|help)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   -v|--version|version)
     echo "omaremote $version"

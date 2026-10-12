@@ -1,5 +1,6 @@
 import importlib.machinery
 import json
+import re
 import importlib.util
 import os
 import sys
@@ -381,6 +382,32 @@ class SshKeys(unittest.TestCase):
 
     def test_the_key_never_syncs(self):
         self.assertNotIn("sshKey", session.portable_connection(conn(sshKey="~/.ssh/id_work")))
+
+    def test_a_symlinked_ssh_config_is_written_through_not_replaced(self):
+        dots = os.path.join(self.tmp.name, "dotfiles")
+        os.makedirs(dots)
+        with open(os.path.join(dots, "ssh_config"), "w") as f:
+            f.write("Host mine\n    User me\n")
+        os.symlink(os.path.join(dots, "ssh_config"), os.path.join(self.ssh, "config"))
+        self.connections(conn(id="c1", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"))
+        self.assertEqual(session.ssh_config_sync(self.conf, self.ssh)["mode"], "auto")
+        self.assertTrue(os.path.islink(os.path.join(self.ssh, "config")))
+        with open(os.path.join(dots, "ssh_config")) as f:
+            self.assertTrue(f.read().startswith(session.SSH_MARKER))
+        self.connections(conn(id="c1", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"), terminal=False)
+        session.ssh_config_sync(self.conf, self.ssh)
+        self.assertTrue(os.path.islink(os.path.join(self.ssh, "config")))
+        with open(os.path.join(dots, "ssh_config")) as f:
+            self.assertEqual(f.read(), "Host mine\n    User me\n")
+
+    def test_a_read_only_ssh_config_is_left_to_its_owner(self):
+        self.write("config", "Host mine\n")
+        os.chmod(os.path.join(self.ssh, "config"), 0o444)
+        self.connections(conn(id="c1", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"))
+        out = session.ssh_config_sync(self.conf, self.ssh)
+        self.assertEqual(out["mode"], "readonly")
+        self.assertEqual(self.read("config"), "Host mine\n")
+        self.assertIn("web.lan", self.read("omaremote.conf"))
 
     def test_managed_file_and_one_include_at_the_top(self):
         self.write("config", "Host mine\n    User me\n")
@@ -794,6 +821,249 @@ class PluginCheck(unittest.TestCase):
         self.assertEqual((result["installed"], result["version"], result["git"]), (True, "0.2.0", True))
 
 
+class Hotkeys(unittest.TestCase):
+    def window(self, ws="special:omaremote-c1", address="0x1"):
+        return {"address": address, "pid": 42, "workspace": {"name": ws}}
+
+    def monitors(self, special="", focused=True):
+        return [{"name": "eDP-1", "focused": focused, "specialWorkspace": {"name": special}},
+                {"name": "DP-1", "focused": not focused, "specialWorkspace": {"name": ""}}]
+
+    def test_a_hotkey_window_is_rdp_or_ssh_on_one_monitor(self):
+        self.assertTrue(session.is_hotkey({"openIn": "hotkey", "protocol": "ssh"}))
+        self.assertTrue(session.is_hotkey({"openIn": "hotkey", "protocol": "rdp"}))
+        self.assertFalse(session.is_hotkey({"openIn": "hotkey", "protocol": "vnc"}))
+        self.assertFalse(session.is_hotkey({"openIn": "hotkey", "protocol": "rdp", "multimon": True}))
+        self.assertFalse(session.is_hotkey({"openIn": "window", "protocol": "rdp"}))
+
+    def test_special_names_are_safe(self):
+        self.assertEqual(session.special_name("c-abc12"), "omaremote-c-abc12")
+        self.assertEqual(session.special_name("a b/c"), "omaremote-a-b-c")
+
+    def test_toggle_hides_a_focused_shown_window_and_shows_otherwise(self):
+        w = self.window()
+        shown = self.monitors("special:omaremote-c1")
+        self.assertEqual(session.hotkey_action(w, "omaremote-c1", {"address": "0x1"}, shown), "hide")
+        self.assertEqual(session.hotkey_action(w, "omaremote-c1", {"address": "0x1"}, shown, show_only=True), "show")
+        self.assertEqual(session.hotkey_action(w, "omaremote-c1", {"address": "0x2"}, shown), "show")
+        self.assertEqual(session.hotkey_action(w, "omaremote-c1", {"address": "0x1"}, self.monitors()), "show")
+        # Shown on the other monitor: comes to this one, not hidden.
+        other = self.monitors("special:omaremote-c1", focused=False)
+        self.assertEqual(session.hotkey_action(w, "omaremote-c1", {"address": "0x1"}, other), "show")
+
+    def test_a_window_on_a_normal_workspace_moves_to_its_special_one(self):
+        self.assertEqual(session.hotkey_action(self.window(ws="4"), "omaremote-c1", {}, self.monitors()), "move")
+
+    def test_shortcuts_parse_like_hyprland(self):
+        self.assertEqual(session.parse_hotkey("SUPER + ALT + W"), (72, "W"))
+        self.assertEqual(session.parse_hotkey("super+shift+return"), (65, "RETURN"))
+        self.assertIsNone(session.parse_hotkey("SUPER + ALT"))
+        self.assertIsNone(session.parse_hotkey("HYPER + W"))
+        self.assertIsNone(session.parse_hotkey(""))
+
+    def test_hyprland_binds_leave_out_omaremotes_own(self):
+        binds = [{"modmask": 64, "key": "S", "description": "Toggle scratchpad"},
+                 {"modmask": 72, "key": "w", "description": "OMARemote: Work PC"},
+                 {"modmask": 0, "key": "mouse:272", "mouse": True}]
+        self.assertEqual(session.hypr_hotkeys(binds), [{"mask": 64, "key": "S", "description": "Toggle scratchpad"}])
+
+    def test_the_close_key_is_whatever_closes_a_window(self):
+        self.assertEqual(session.close_key([{"modmask": 64, "key": "W", "description": "Close window"}]), "super+w")
+        self.assertEqual(session.close_key([{"modmask": 64, "key": "W", "description": "Something else"},
+                                            {"modmask": 65, "key": "Q", "description": "Close window"}]), "super+shift+q")
+        self.assertEqual(session.close_key([{"modmask": 72, "key": "C", "dispatcher": "killactive"}]), "super+alt+c")
+        self.assertEqual(session.close_key([]), "super+w")
+
+    def test_the_shortcut_never_syncs(self):
+        data = {"connections": [{"id": "c1", "host": "pc", "openIn": "hotkey", "hotkey": "SUPER + ALT + W"}]}
+        out = session.portable(data, "here")
+        self.assertNotIn("hotkey\"", json.dumps(out).replace('"openIn": "hotkey"', ""))
+        self.assertEqual(out["connections"][0]["openIn"], "hotkey")
+
+    def write_config(self, d, ui, conns):
+        conf = os.path.join(d, "connections.json")
+        with open(conf, "w") as f:
+            json.dump({"ui": ui, "connections": conns}, f)
+        return conf
+
+    def test_hyprland_config_gets_the_bindings_only_when_allowed_and_loses_them_again(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            hypr = os.path.join(d, "hypr")
+            os.makedirs(hypr)
+            main = os.path.join(hypr, "hyprland.lua")
+            original = '-- mine\nrequire("default.hypr.omarchy")\n'
+            with open(main, "w") as f:
+                f.write(original)
+            conns = [{"id": "c1", "name": "Work \"PC\"", "host": "pc", "protocol": "rdp", "openIn": "hotkey",
+                      "hotkey": "super + alt + w"},
+                     {"id": "c2", "name": "Tab one", "host": "t", "protocol": "rdp", "hotkey": "SUPER + T"}]
+            conf = self.write_config(d, {}, conns)
+            out = session.hypr_hotkeys_sync(conf, hypr, "/usr/bin/omaremote", reload=False)
+            self.assertEqual(out, {"mode": "off", "shortcuts": 1, "changed": False})
+            with open(main) as f:
+                self.assertEqual(f.read(), original)
+
+            conf = self.write_config(d, {"hyprHotkeys": True}, conns)
+            out = session.hypr_hotkeys_sync(conf, hypr, "/usr/bin/omaremote", reload=False)
+            self.assertEqual(out["mode"], "on")
+            with open(os.path.join(hypr, "omaremote.lua")) as f:
+                managed = f.read()
+            self.assertIn('o.bind("SUPER + ALT + W", "OMARemote: hotkey window", "/usr/bin/omaremote toggle c1")', managed)
+            self.assertNotIn("Work", managed)
+            self.assertNotIn("Tab one", managed)
+            with open(main) as f:
+                text = f.read()
+            self.assertTrue(text.startswith(original))
+            self.assertEqual(text.count(session.HYPR_MARKER_BEGIN), 1)
+            self.assertTrue(os.path.exists(main + ".omaremote-backup"))
+            # Again: nothing changes, the block is not added twice.
+            self.assertFalse(session.hypr_hotkeys_sync(conf, hypr, "/usr/bin/omaremote", reload=False)["changed"])
+
+            conf = self.write_config(d, {"hyprHotkeys": False}, conns)
+            session.hypr_hotkeys_sync(conf, hypr, "/usr/bin/omaremote", reload=False)
+            with open(main) as f:
+                self.assertEqual(f.read(), original)
+            self.assertFalse(os.path.exists(os.path.join(hypr, "omaremote.lua")))
+
+    def sync_config(self, original, on):
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        hypr = os.path.join(d, "hypr")
+        os.makedirs(hypr)
+        main = os.path.join(hypr, "hyprland.lua")
+        with open(main, "w") as f:
+            f.write(original)
+        conf = self.write_config(d, {"hyprHotkeys": on}, [])
+        out = session.hypr_hotkeys_sync(conf, hypr, "omaremote", reload=False)
+        with open(main) as f:
+            return out, f.read(), hypr, d
+
+    def test_on_then_off_gives_back_the_file_exactly(self):
+        for original in ('-- mine\nrequire("x")\n', "-- mine\n\n\n", "", "-- mine\n\n-- after\n"):
+            out, added, hypr, d = self.sync_config(original, True)
+            self.assertTrue(added.startswith(original), repr(original))
+            conf = self.write_config(d, {"hyprHotkeys": False}, [])
+            session.hypr_hotkeys_sync(conf, hypr, "omaremote", reload=False)
+            with open(os.path.join(hypr, "hyprland.lua")) as f:
+                self.assertEqual(f.read(), original)
+
+    def test_the_users_own_blank_lines_and_text_around_the_block_stay(self):
+        block = session.HYPR_MARKER_BEGIN + "\ndofile(x)\n" + session.HYPR_MARKER_END
+        original = "-- top\n\n\n" + block + "\n\n\n-- below, the user's own\n"
+        out, text, _, _ = self.sync_config(original, False)
+        self.assertTrue(out["changed"])
+        self.assertEqual(text, "-- top\n\n\n\n-- below, the user's own\n")
+
+    def test_a_start_without_its_end_leaves_the_file_alone(self):
+        original = "-- mine\n" + session.HYPR_MARKER_BEGIN + "\ndofile(x)\n-- the user removed the end\nrequire(\"y\")\n"
+        for on in (False, True):
+            out, text, _, _ = self.sync_config(original, on)
+            self.assertEqual(text, original)
+            self.assertIn("end marker", out["error"])
+
+    def test_a_marker_inside_a_comment_is_not_the_block(self):
+        original = "-- I once had " + session.HYPR_MARKER_BEGIN + " here\nrequire(\"y\")\n"
+        out, text, _, _ = self.sync_config(original, False)
+        self.assertEqual(text, original)
+        self.assertFalse(out["changed"])
+        out, text, _, _ = self.sync_config(original, True)
+        self.assertEqual(text.count(session.HYPR_MARKER_END), 1)
+        self.assertTrue(text.startswith(original))
+
+    def test_a_symlinked_hyprland_lua_is_written_through_not_replaced(self):
+        # Dotfile managers link the config to a file they own (after hyprmoncfg's WriteFileAtomic).
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        hypr, dots = os.path.join(d, "hypr"), os.path.join(d, "dotfiles")
+        os.makedirs(hypr)
+        os.makedirs(dots)
+        with open(os.path.join(dots, "hyprland.lua"), "w") as f:
+            f.write("-- mine\n")
+        os.symlink(os.path.join(dots, "hyprland.lua"), os.path.join(hypr, "hyprland.lua"))
+        for on in (True, False):
+            conf = self.write_config(d, {"hyprHotkeys": on}, [])
+            session.hypr_hotkeys_sync(conf, hypr, "omaremote", reload=False)
+            self.assertTrue(os.path.islink(os.path.join(hypr, "hyprland.lua")))
+            with open(os.path.join(dots, "hyprland.lua")) as f:
+                self.assertEqual(session.HYPR_MARKER_BEGIN in f.read(), on)
+        self.assertEqual([n for n in os.listdir(dots) + os.listdir(hypr) if "omaremote-" in n and not n.endswith("backup")], [])
+
+    def test_a_read_only_hyprland_lua_is_left_to_its_owner(self):
+        import tempfile, stat as st
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        hypr = os.path.join(d, "hypr")
+        os.makedirs(hypr)
+        main = os.path.join(hypr, "hyprland.lua")
+        with open(main, "w") as f:
+            f.write("-- generated\n")
+        os.chmod(main, 0o444)
+        conn = {"id": "c1", "name": "W", "host": "pc", "protocol": "rdp", "openIn": "hotkey", "hotkey": "SUPER + W"}
+        conf = self.write_config(d, {"hyprHotkeys": True}, [conn])
+        out = session.hypr_hotkeys_sync(conf, hypr, "omaremote", reload=False)
+        self.assertEqual(out["mode"], "readonly")
+        self.assertIn("dofile(path)", out["line"])
+        with open(main) as f:
+            self.assertEqual(f.read(), "-- generated\n")
+        self.assertTrue(os.path.exists(os.path.join(hypr, "omaremote.lua")))  # its own file is still kept
+        self.assertFalse(os.path.exists(main + ".omaremote-backup"))
+
+    def hypr_with(self, before, after):
+        """hypr_hotkeys_sync with a stand-in Hyprland: configerrors says `before`, then `after`."""
+        from unittest import mock
+        import tempfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, d)
+        hypr = os.path.join(d, "hypr")
+        os.makedirs(hypr)
+        with open(os.path.join(hypr, "hyprland.lua"), "w") as f:
+            f.write("-- mine\n")
+        conn = {"id": "c1", "name": "W", "host": "pc", "protocol": "rdp", "openIn": "hotkey", "hotkey": "SUPER + W"}
+        conf = self.write_config(d, {"hyprHotkeys": True}, [conn])
+        answers = iter([before, after])
+        with mock.patch.object(session, "hypr_config_errors", lambda: next(answers)), \
+             mock.patch.object(session, "hypr_reload", lambda: True):
+            out = session.hypr_hotkeys_sync(conf, hypr, "omaremote", reload=True)
+        with open(os.path.join(hypr, "hyprland.lua")) as f:
+            return out, f.read(), hypr
+
+    def test_nothing_is_written_while_hyprland_already_reports_errors(self):
+        out, text, hypr = self.hypr_with(["line 3: oops"], [])
+        self.assertIn("already reports", out["error"])
+        self.assertEqual(text, "-- mine\n")
+        self.assertFalse(os.path.exists(os.path.join(hypr, "omaremote.lua")))
+
+    def test_a_change_hyprland_rejects_is_taken_out_again(self):
+        out, text, hypr = self.hypr_with([], ["omaremote.lua:4: unexpected symbol"])
+        self.assertTrue(out["revert"])
+        self.assertEqual(text, "-- mine\n")
+        self.assertFalse(os.path.exists(os.path.join(hypr, "omaremote.lua")))
+
+    def test_a_clean_reload_keeps_the_change(self):
+        out, text, hypr = self.hypr_with([], [])
+        self.assertNotIn("error", out)
+        self.assertIn(session.HYPR_MARKER_BEGIN, text)
+
+    def test_the_loader_follows_xdg_config_home_when_it_is_set(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/elsewhere"}):
+            self.assertIn('os.getenv("XDG_CONFIG_HOME")', session.hypr_loader_line())
+        env = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIn('os.getenv("HOME") .. "/.config/hypr/omaremote.lua"', session.hypr_loader_line())
+
+    def test_without_a_lua_config_nothing_is_written(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            conf = self.write_config(d, {"hyprHotkeys": True}, [])
+            out = session.hypr_hotkeys_sync(conf, os.path.join(d, "hypr"), "omaremote", reload=False)
+            self.assertEqual(out["mode"], "unsupported")
+            self.assertFalse(os.path.exists(os.path.join(d, "hypr")))
+
+
 class NothingPrivateInArgv(unittest.TestCase):
     """Other accounts can read any process's command line (/proc/<pid>/cmdline): names, hosts, user
     names and error texts must never go on one (omarchy-plugin-marketplace#11163)."""
@@ -843,3 +1113,10 @@ class NothingPrivateInArgv(unittest.TestCase):
     def test_kerberos_lookup_runs_in_process(self):
         session.srv_records("_kerberos._tcp.SECRET.LAN")
         self.assertEqual(self.argvs, [])
+
+    def test_hotkey_bindings_name_connections_by_id(self):
+        text, _ = session.hypr_managed_text([{"id": "c-1", "name": "Secret Office PC", "host": "pc.secret.lan",
+                                              "protocol": "rdp", "openIn": "hotkey", "hotkey": "SUPER + W"}],
+                                            "omaremote")
+        command = re.search(r'"(omaremote toggle [^"]*)"', text).group(1)
+        self.assertEqual(command, "omaremote toggle c-1")

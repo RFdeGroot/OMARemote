@@ -102,6 +102,8 @@ Rectangle {
     function load(connection) {
         d = JSON.parse(JSON.stringify(connection))
         Sessions.refreshSshKeys()
+        if (d.openIn === "hotkey")
+            Hotkeys.refresh()
         password = ""
         passwordTouched = false
         error = ""
@@ -115,8 +117,27 @@ Rectangle {
         d = next
     }
 
+    // Hotkey windows are limited (Hotkeys.limit), and refresh what Hyprland binds for the check.
+    function pickOpenIn(v) {
+        if (v === "hotkey" && d.openIn !== "hotkey" && Hotkeys.countOthers(d.id) >= Hotkeys.limit) {
+            error = "Up to " + Hotkeys.limit + " hotkey windows: make one of the others a tab or own window first."
+            return
+        }
+        error = ""
+        if (v === "hotkey")
+            Hotkeys.refresh()
+        set("openIn", v)
+    }
+    readonly property string shortcutProblem: d.openIn === "hotkey" ? Hotkeys.conflict(d.hotkey, d.id) : ""
+
     function save() {
         var c = Object.assign({}, d)
+        if (c.openIn === "hotkey" && shortcutProblem !== "") {
+            error = "Shortcut: " + shortcutProblem
+            return
+        }
+        if (c.openIn === "hotkey" && c.hotkey)
+            c.hotkey = Hotkeys.parse(c.hotkey).text
         c.host = String(c.host || "").trim()
         if (!c.host) {
             error = "A host name or address is required."
@@ -389,11 +410,26 @@ Rectangle {
                     inherited: root.fromGroup("openIn")
                     label: "Open in"
                     visible: !root.isVnc
-                    help: "A window of its own"
+                    help: root.d.openIn === "hotkey" ? "Slides in and out on its shortcut, kept connected"
+                                                     : "A window of its own"
                     Segment {
                         value: root.d.openIn || "tab"
                         options: [{ value: "tab", label: "Tab" }, { value: "window", label: "Own window" }]
-                        onPicked: function (v) { root.set("openIn", v) }
+                                 .concat(root.isRdp && root.d.multimon ? [] : [{ value: "hotkey", label: "Hotkey window" }])
+                        onPicked: function (v) { root.pickOpenIn(v) }
+                    }
+                }
+                FormRow {
+                    label: "Shortcut"
+                    visible: !root.isVnc && root.d.openIn === "hotkey"
+                    help: root.shortcutProblem !== "" ? root.shortcutProblem
+                        : !root.d.hotkey ? "Optional: or bind omaremote toggle yourself"
+                        : Hotkeys.writeConfig ? "Written into Hyprland's config"
+                        : "Settings › Hotkeys writes it into Hyprland's config"
+                    ShortcutField {
+                        text: root.d.hotkey || ""
+                        onTextEdited: root.set("hotkey", text.trim())
+                        onRecorded: function (t) { root.set("hotkey", t) }
                     }
                 }
                 FormRow {

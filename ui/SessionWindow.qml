@@ -22,6 +22,12 @@ FocusScope {
     readonly property string launcher: Sessions.bin.replace(/omaremote-session$/, "omaremote")
 
     property bool movingToTab: false
+    // Kept on a special workspace of its own, shown and hidden by its shortcut (omaremote toggle).
+    readonly property bool hotkey: {
+        Store.stored
+        var c = root.session ? Store.get(root.session.connection) : null
+        return !!c && c.openIn === "hotkey"
+    }
     // Reconnecting: the connection whose new session this window waits for.
     property string pendingConnection: ""
 
@@ -33,10 +39,11 @@ FocusScope {
             Quickshell.execDetached([Sessions.bin, "view", sessionId, "window", String(Quickshell.processId)])
     }
     // A new window floats at 90% of its monitor, centred; after that it is an ordinary window
-    // (Omarchy's keys resize it, tile it, move it). Not again after a reconnect in it.
+    // (Omarchy's keys resize it, tile it, move it). Not again after a reconnect in it. A hotkey
+    // window goes to its special workspace too (place in bin/omaremote-session).
     Component.onCompleted: {
         claim()
-        Quickshell.execDetached([Sessions.bin, "float", "pid", String(Quickshell.processId)])
+        Quickshell.execDetached([Sessions.bin, "place", sessionId, String(Quickshell.processId)])
     }
     onSessionIdChanged: claim()
 
@@ -139,6 +146,7 @@ FocusScope {
             onNavigate: function (where) {
                 if (where === "tab") root.toTab(false)
                 else if (where === "home") root.toTab(true)
+                else if (where === "hide" && root.hotkey) Quickshell.execDetached([Sessions.bin, "hide", root.sessionId])
             }
             onToggleFullscreen: Quickshell.execDetached([Sessions.bin, "fullscreen"])
             onReconnectRequested: root.reconnect()
@@ -148,9 +156,9 @@ FocusScope {
         StatusBar {
             Layout.fillWidth: true
             showCounts: false
-            hints: [["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
+            hints: (root.hotkey ? [["ctrl+alt+h", "hide"]] : []).concat([["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
                     root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"] : ["ctrl+alt+end", "ctrl+alt+del"],
-                    ["ctrl+alt+home", "to connections"], ["super+w", "disconnect"]]
+                    ["ctrl+alt+home", "to connections"], [Sessions.closeKey, "disconnect"]])
         }
     }
 }

@@ -16,14 +16,21 @@ ShellRoot {
         color: "#101315"
 
         // Qt.quit() ends Quickshell cleanly (exit code 0); killing the process instead made a
-        // shell print "Terminated" after closing the window. Sessions run on regardless.
+        // shell print "Terminated" after closing the window.
         function quit() {
             Qt.quit()
         }
 
         Connections {
             target: Quickshell
-            function onLastWindowClosed() { window.quit() }
+            // Closing it (super+w) ends what it shows, its tabs, as closing an own window ends
+            // that one's session; own and hotkey windows run on. A restart for an update goes
+            // through quit() instead, and its tabs come back.
+            function onLastWindowClosed() {
+                if (body.item)
+                    body.item.closing()
+                window.quit()
+            }
         }
 
         Loader {
