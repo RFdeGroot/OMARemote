@@ -1,7 +1,7 @@
 # Maintainer: Roelof de Groot <roelofgroot@proton.me>
 pkgname=omaremote
-_tag=v0.4.5
-pkgver=0.4.5
+_tag=v0.5.0
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Keyboard-first remote desktop client (RDP, VNC, SSH) for Omarchy"
 arch=('x86_64' 'aarch64')
