@@ -754,3 +754,47 @@ class PluginCheck(unittest.TestCase):
                 json.dump({"id": session.PLUGIN_ID, "version": "0.2.0"}, f)
             result = session.plugin_check(offline=True, plugins_dir=plugins)
         self.assertEqual((result["installed"], result["version"], result["git"]), (True, "0.2.0", True))
+
+
+class NothingPrivateInArgv(unittest.TestCase):
+    """Other accounts can read any process's command line (/proc/<pid>/cmdline): names, hosts, user
+    names and error texts must never go on one (omarchy-plugin-marketplace#11163)."""
+
+    PRIVATE = ("Secret Office PC", "pc.secret.lan", "alice", "SECRET.LAN")
+
+    def setUp(self):
+        self.argvs = []
+        real_run, real_popen = session.subprocess.run, session.subprocess.Popen
+
+        def run(args, *a, **k):
+            self.argvs.append(list(args))
+            return session.subprocess.CompletedProcess(args, 0, "", "")
+        session.subprocess.run = run
+        session.subprocess.Popen = lambda args, *a, **k: self.argvs.append(list(args)) or self.fail("Popen")
+        self.addCleanup(setattr, session.subprocess, "run", real_run)
+        self.addCleanup(setattr, session.subprocess, "Popen", real_popen)
+
+    def assertClean(self):
+        text = json.dumps(self.argvs)
+        for word in self.PRIVATE:
+            self.assertNotIn(word, text)
+
+    def test_a_failure_notification_names_nothing_on_a_command_line(self):
+        # No session bus here: the fallback path, which must name nothing either. (With a bus the
+        # text goes over D-Bus from this process; a test must not put notifications on the desktop.)
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/nonexistent"}):
+            session.notify("Secret Office PC: connection failed", "pc.secret.lan refused alice")
+        self.assertEqual(self.argvs[0][0], "notify-send")
+        self.assertClean()
+
+    def test_keyring_labels_carry_only_the_id(self):
+        session.secret_set("c-1", "hunter2", session.secret_label("c-1"))
+        session.secret_set("k-1", "hunter2", session.secret_label("k-1", "credential"), "credential")
+        self.assertTrue(self.argvs)
+        self.assertClean()
+        self.assertNotIn("hunter2", json.dumps(self.argvs))
+
+    def test_kerberos_lookup_runs_in_process(self):
+        session.srv_records("_kerberos._tcp.SECRET.LAN")
+        self.assertEqual(self.argvs, [])

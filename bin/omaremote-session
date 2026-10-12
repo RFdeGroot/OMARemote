@@ -660,11 +660,15 @@ def secret_get(conn_id, kind="connection"):
         # Stored before the rename: move it under the new name, then drop the old entry.
         legacy = ["application", LEGACY_APP, "connection", conn_id]
         password = _secret_lookup(legacy)
-        conn = find_connection(conn_id, load_connections())
-        label = f"OMARemote password for {conn['name'] if conn else conn_id}"
-        if password is not None and secret_set(conn_id, password, label):
+        if password is not None and secret_set(conn_id, password, secret_label(conn_id)):
             subprocess.run(["secret-tool", "clear", *legacy], capture_output=True, timeout=10)
     return password
+
+
+def secret_label(conn_id, kind="connection"):
+    """The keyring entry's label: OMARemote's opaque id, never a name, host or user (secret-tool
+    takes the label on its command line, which other accounts can read)."""
+    return f"OMARemote password ({'credential set' if kind == 'credential' else 'connection'} {conn_id})"
 
 
 def secret_set(conn_id, password, label, kind="connection"):
@@ -1388,7 +1392,24 @@ def kerberos_realm(conn):
 
 
 def srv_records(name):
-    """[(host, port)] for an SRV name, via resolvectl, dig or host, whichever answers first."""
+    """[(host, port)] for an SRV name ("_kerberos._tcp.ACME.LAN"), resolved in this process (GLib's
+    resolver), so the realm never shows up in another program's command line. Only without
+    python-gobject does it fall back to resolvectl, dig or host."""
+    m = re.fullmatch(r"_([^.]+)\._([^.]+)\.(.+)", name)
+    try:
+        from gi.repository import Gio
+    except ImportError:
+        Gio = None
+    if m and Gio is not None:
+        try:
+            targets = Gio.Resolver.get_default().lookup_service(m.group(1), m.group(2), m.group(3), None)
+        except Exception:
+            return []
+        return [(t.get_hostname().rstrip("."), t.get_port()) for t in targets]
+    return _srv_records_by_command(name)
+
+
+def _srv_records_by_command(name):
     commands = [
         (["resolvectl", "query", "-t", "SRV", "--legend=no", name],
          re.compile(r"IN SRV \d+ \d+ (\d+) (\S+?)\.?(?:\s|$)"), (1, 0)),
@@ -1711,9 +1732,28 @@ def supervise(conn, sid, tab=None):
     state.update(state="failed" if error else "ended", exitCode=code, error=error, ended=int(time.time()))
     write_session(state)
     if error and os.environ.get("OMAREMOTE_NOTIFY", "1") == "1":
-        subprocess.run(["notify-send", "-a", "OMARemote", "-u", "normal",
-                        f"{state['name']}: connection failed", error], capture_output=True)
+        notify(f"{state['name']}: connection failed", error)
     return 0
+
+
+def notify(summary, body):
+    """A desktop notification, sent over D-Bus from this process: its text (a connection's name,
+    an error with its host) never goes on another program's command line. Without python-gobject,
+    notify-send gets a text that names nothing."""
+    try:
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        bus.call_sync("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                      "org.freedesktop.Notifications", "Notify",
+                      GLib.Variant("(susssasa{sv}i)", ("OMARemote", 0, "omaremote", summary, body, [],
+                                                       {"urgency": GLib.Variant("y", 1)}, -1)),
+                      None, Gio.DBusCallFlags.NONE, 5000, None)
+    except Exception:
+        try:
+            subprocess.run(["notify-send", "-a", "OMARemote", "-u", "normal", "OMARemote",
+                            "A connection failed: open OMARemote for details"], capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def parse_tab(spec):
@@ -1908,15 +1948,7 @@ def main(argv):
         if kind not in ("connection", "credential"):
             return 2
         if action == "set":
-            data = load_data()
-            if kind == "credential":
-                cred = find_credential(key, data)
-                who = f"{cred.get('domain')}\\{cred.get('username')}" if cred and cred.get("domain") else (cred or {}).get("username", key)
-                label = f"OMARemote password for {who}"
-            else:
-                conn = next((c for c in data["connections"] if c.get("id") == key), None)
-                label = f"OMARemote password for {conn['name'] if conn else key}"
-            return 0 if secret_set(key, sys.stdin.read().rstrip("\n"), label, kind) else 1
+            return 0 if secret_set(key, sys.stdin.read().rstrip("\n"), secret_label(key, kind), kind) else 1
         if action == "clear":
             secret_clear(key, kind)
             return 0
