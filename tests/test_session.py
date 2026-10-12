@@ -500,6 +500,44 @@ class Sync(unittest.TestCase):
         self.assertEqual([c["id"] for c in data["connections"]], ["mine"])
         self.assertEqual(report["updated"], ["theirs"])
 
+    def test_a_duplicate_arrives_as_a_connection_of_its_own(self):
+        # Duplicated on the other system: same host and port, another id, both in its file.
+        local = self.local(self.c("orig", name="Server", modified=100))
+        incoming = self.remote(self.c("orig", name="Server", modified=100),
+                               self.c("copy", name="Server (copy)", modified=200))
+        data, report = session.merge(local, [incoming], self.NOW)
+        self.assertEqual(sorted(c["id"] for c in data["connections"]), ["copy", "orig"])
+        self.assertEqual(next(c for c in data["connections"] if c["id"] == "orig")["name"], "Server")
+        self.assertFalse(any(c.get("aliases") for c in data["connections"]))
+        self.assertEqual(report["added"], ["Server (copy)"])
+
+    def test_a_duplicate_taken_for_its_original_is_split_again(self):
+        # What 0.4.3 left on the other system: the copy's data on the original, its id as an alias.
+        local = self.local(self.c("orig", name="Server (copy)", modified=200, aliases=["copy"]))
+        incoming = self.remote(self.c("orig", name="Server", modified=300),
+                               self.c("copy", name="Server (copy)", modified=200))
+        data, _ = session.merge(local, [incoming], self.NOW)
+        by_id = {c["id"]: c for c in data["connections"]}
+        self.assertEqual(sorted(by_id), ["copy", "orig"])
+        self.assertNotIn("aliases", by_id["orig"])
+        self.assertEqual(by_id["orig"]["name"], "Server")
+
+    def test_an_alias_naming_a_connection_here_is_dropped(self):
+        # And on the system where the copy was made: both there, one recorded as the other's alias.
+        local = self.local(self.c("orig", modified=200, aliases=["copy"]), self.c("copy", modified=200))
+        incoming = self.remote(self.c("orig", name="from there", modified=150, aliases=["copy"]))
+        data, report = session.merge(local, [incoming], self.NOW)
+        by_id = {c["id"]: c for c in data["connections"]}
+        self.assertNotIn("aliases", by_id["orig"])
+        self.assertEqual(by_id["copy"]["name"], "copy")  # never overwritten by the original
+        self.assertEqual(report["updated"], [])
+
+    def test_with_two_copies_here_a_new_id_for_that_server_is_not_guessed(self):
+        local = self.local(self.c("a", modified=100), self.c("b", modified=100))
+        data, report = session.merge(local, [self.remote(self.c("z", name="new", modified=300))], self.NOW)
+        self.assertEqual(sorted(c["id"] for c in data["connections"]), ["a", "b", "z"])
+        self.assertEqual(report["added"], ["new"])
+
     def test_a_server_known_by_another_id_follows_its_deletion(self):
         local = self.local(self.c("mine", modified=100))
         data, _ = session.merge(local, [self.remote(self.c("theirs", modified=50))], self.NOW)

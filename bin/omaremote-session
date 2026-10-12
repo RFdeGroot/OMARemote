@@ -347,6 +347,19 @@ def _with_aliases(new, *others):
     return new
 
 
+def _drop_aliases(conn, ids):
+    """conn without the aliases in ids (ids that belong to connections of their own)."""
+    left = set(conn.get("aliases") or []) - set(ids)
+    if left == set(conn.get("aliases") or []):
+        return conn
+    conn = dict(conn)
+    if left:
+        conn["aliases"] = sorted(left)
+    else:
+        conn.pop("aliases", None)
+    return conn
+
+
 def merge(local, incoming, now=None, allow_deletions=()):
     """Merges other systems' files into connections.json's data. Returns (data, report).
 
@@ -359,6 +372,12 @@ def merge(local, incoming, now=None, allow_deletions=()):
     groups = data.setdefault("groups", {})
     gone_groups = data.setdefault("deletedGroups", {})
     report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [], "errors": []}
+
+    # An alias is another system's id for the same server; it can never be the id of a connection
+    # of its own here. (Before 0.4.4 a duplicate, which keeps its original's host, was taken for the
+    # original on other systems and recorded as its alias.)
+    own = {c.get("id") for c in conns}
+    conns[:] = [_drop_aliases(c, own - {c.get("id")}) for c in conns]
 
     for inc in incoming:
         if not isinstance(inc, dict) or inc.get("format") not in ("omaremote-sync", "omaremote-export"):
@@ -395,17 +414,31 @@ def merge(local, incoming, now=None, allow_deletions=()):
                 del groups[name]
             gone_groups[name] = max(gone_groups.get(name, 0), when)
 
-        for ic in inc.get("connections") or []:
-            if not isinstance(ic, dict) or not ic.get("id") or not (ic.get("host") or "").strip():
-                continue
+        listed = [ic for ic in inc.get("connections") or []
+                  if isinstance(ic, dict) and ic.get("id") and (ic.get("host") or "").strip()]
+        # Ids that are connections of their own in that file: never the same connection as another
+        # one there, whatever host they share (a duplicate keeps its original's host).
+        separate = {ic["id"] for ic in listed}
+        conns[:] = [_drop_aliases(c, separate - {c.get("id")}) if c.get("id") in separate else c for c in conns]
+        matched = set()
+        for ic in listed:
+            own = {c.get("id") for c in conns}
+            # Its aliases, without ids that are separate connections there or here.
+            ic = _drop_aliases(ic, (separate - {ic["id"]}) | ((own - {ic["id"]}) if ic["id"] in own else set()))
             changed = ic.get("modified", 0)
             theirs = ids_of(ic)
             if any(deleted.get(i, -1) >= changed for i in theirs):
                 continue  # deleted here after that change
             key = connection_key(ic)
-            match = next((c for c in conns if ids_of(c) & theirs), None) \
-                or next((c for c in conns if connection_key(c) == key), None)
+            # Its own id first, then an alias, then (only when exactly one connection here could be
+            # it, and that one is not listed there itself) the same server under another id.
+            by_host = [c for c in conns if connection_key(c) == key and c.get("id") not in separate
+                       and c.get("id") not in matched]
+            match = next((c for c in conns if c.get("id") == ic["id"]), None) \
+                or next((c for c in conns if ids_of(c) & theirs), None) \
+                or (by_host[0] if len(by_host) == 1 else None)
             if match is not None:
+                matched.add(match.get("id"))
                 if changed > match.get("modified", 0):
                     new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
                     conns[conns.index(match)] = new
@@ -414,8 +447,10 @@ def merge(local, incoming, now=None, allow_deletions=()):
                     # The same server under another id: remember it, so its deletion finds this one.
                     conns[conns.index(match)] = _with_aliases(dict(match), match, ic)
                 continue
+            binned_by_host = [t for t in trash if connection_key(t.get("connection") or {}) == key
+                              and (t.get("connection") or {}).get("id") not in separate]
             binned = next((t for t in trash if ids_of(t.get("connection") or {}) & theirs), None) \
-                or next((t for t in trash if connection_key(t.get("connection") or {}) == key), None)
+                or (binned_by_host[0] if len(binned_by_host) == 1 else None)
             if binned is not None:
                 if changed > binned.get("deleted", 0):
                     old = binned["connection"]
@@ -436,7 +471,8 @@ def merge(local, incoming, now=None, allow_deletions=()):
         for cid, when in (inc.get("deleted") or {}).items():
             if not isinstance(when, (int, float)):
                 continue
-            c = next((c for c in conns if cid in ids_of(c)), None)
+            c = next((c for c in conns if c.get("id") == cid), None) \
+                or next((c for c in conns if cid in ids_of(c)), None)
             if c is not None and when > c.get("modified", 0):
                 doomed.append((c, when))
             elif c is None:
