@@ -2,6 +2,11 @@
 # PKGBUILD, to the GitHub release of the tag. A clean build keeps the package's metadata free of
 # whatever the maintainer's machine has installed; packaging/arch/ci-build.sh does the build.
 #
+# Every package is signed with OMARemote's release key (secret RELEASE_SIGNING_KEY; its public half
+# is packaging/arch/omaremote-release.gpg) and the signature uploaded beside it as <package>.sig. The
+# release is made as a draft, filled, then published, so it works with immutable releases: nothing
+# is replaced once it is out.
+#
 # Releasing: set _tag/pkgver in packaging/arch/PKGBUILD, commit, tag (v0.2.0, v0.3.0-beta, …), push the tag.
 # A tag with a suffix (-alpha, -beta, -rc) becomes a GitHub pre-release.
 # For a tag pushed before this workflow existed: Actions → Release → Run workflow, with the tag.
@@ -89,9 +94,30 @@ jobs:
           merge-multiple: true
           path: out
 
+      # Signed in a throwaway GnuPG home, then checked the way the updater and the bar plugin check
+      # it: gpgv against the key in the repository. A wrong or missing secret stops the release here.
+      - name: Sign the packages
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          [[ -n $RELEASE_SIGNING_KEY ]] || { echo "the RELEASE_SIGNING_KEY secret is not set"; exit 1; }
+          export GNUPGHOME=$(mktemp -d)
+          gpg --batch --quiet --import <<<"$RELEASE_SIGNING_KEY"
+          for pkg in out/*.pkg.tar.zst; do
+            gpg --batch --yes --detach-sign --no-armor -o "$pkg.sig" "$pkg"
+            gpgv --status-fd 1 --keyring "$PWD/packaging/arch/omaremote-release.gpg" "$pkg.sig" "$pkg" > gpgv.status
+            grep -q '^\[GNUPG:\] VALIDSIG ' gpgv.status || { echo "$pkg: the signature does not check out against packaging/arch/omaremote-release.gpg"; exit 1; }
+          done
+          rm -f gpgv.status
+          gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"
+
       - name: Attach to the release
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
+          state=$(gh release view "$TAG" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo none)
+          if [[ $state == published ]]; then
+            echo "$TAG is published already: a release is never changed afterwards. Tag a new version."; exit 1
+          fi
+          if [[ $state == none ]]; then
             prerelease=; [[ $TAG == *-* ]] && prerelease=--prerelease
             pkgver=$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)
             pkgrel=$(sed -n 's/^pkgrel=//p' packaging/arch/PKGBUILD)
@@ -106,12 +132,14 @@ jobs:
           sudo pacman -U ./$pkg
           \`\`\`
 
-          The package is not signed: pacman installs it from a downloaded file, not straight from the URL.
+          The package is signed with OMARemote's release key; OMARemote's Update button checks that before installing. To check it by hand: download \`$pkg.sig\` too and run \`gpgv --keyring ./omaremote-release.gpg $pkg.sig $pkg\` with the key from \`packaging/arch/omaremote-release.gpg\` in the repository.
 
           Updating from an earlier release works the same way: pacman upgrades in place. Restart OMARemote afterwards.
 
           Or build it from source with the attached \`PKGBUILD\`: \`makepkg -si\`. See the README for more.
           EOF
-            gh release create "$TAG" $prerelease --verify-tag --title "OMARemote ${TAG#v}" --notes-file notes.md
+            gh release create "$TAG" --draft $prerelease --verify-tag --title "OMARemote ${TAG#v}" --notes-file notes.md
           fi
-          gh release upload "$TAG" out/*.pkg.tar.zst packaging/arch/PKGBUILD --clobber
+          # Still a draft: replacing what an earlier, failed run uploaded is fine.
+          gh release upload "$TAG" out/*.pkg.tar.zst out/*.pkg.tar.zst.sig packaging/arch/PKGBUILD --clobber
+          gh release edit "$TAG" --draft=false

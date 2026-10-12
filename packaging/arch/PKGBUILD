@@ -8,7 +8,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/RFdeGroot/OMARemote"
 license=('MIT')
 depends=('omarchy' 'quickshell' 'hyprland' 'qt6-declarative' 'freerdp' 'libvncserver'
-         'libvterm' 'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils')
+         'libvterm' 'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils' 'gnupg')
 makedepends=('git' 'cmake' 'ninja' 'pkgconf')
 optdepends=('libnotify: a desktop notification when a session started from the command line fails')
 options=('!debug')
@@ -39,4 +39,6 @@ package() {
   install -Dm644 share/applications/omaremote.desktop "$pkgdir/usr/share/applications/omaremote.desktop"
   install -Dm644 share/icons/hicolor/scalable/apps/omaremote.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/omaremote.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  # The key releases are signed with: bin/omaremote-update checks updates against it.
+  install -Dm644 packaging/arch/omaremote-release.gpg "$pkgdir/usr/share/omaremote/omaremote-release.gpg"
 }

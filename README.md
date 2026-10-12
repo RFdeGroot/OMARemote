@@ -60,8 +60,10 @@ From 0.1.5-alpha on, OMARemote updates itself:
 2. If there is, an **Update to …** button appears at the bottom of the sidebar, above the OMARemote
    logo (also reachable with the keyboard: `tab` to the sidebar, then down to the button). The
    version you run is in the About card: click the logo.
-3. Clicking it opens a floating terminal that downloads the package and installs it with
-   `sudo pacman -U` (type your password there), then restarts OMARemote on the new version.
+3. Clicking it opens a floating terminal that downloads the package, checks its signature against
+   OMARemote's release key (from 0.4.0 every release is signed; a package that does not check out
+   is never installed), and installs it with `sudo pacman -U` (type your password there), then
+   restarts OMARemote on the new version.
    Running sessions keep going and come back as tabs.
 
 The button runs `omaremote-update`, which you can also run yourself in a terminal, any time:

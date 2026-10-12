@@ -22,11 +22,25 @@ if [[ $latest == "$current" ]]; then
   exit 0
 fi
 
+# Releases are signed with OMARemote's release key (packaging/arch/omaremote-release.gpg, installed
+# beside the UI): a package whose signature does not check out against it is never installed.
+keyring=/usr/share/omaremote/omaremote-release.gpg
+[[ -f $keyring ]] || keyring="$(dirname "$here")/packaging/arch/omaremote-release.gpg"
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 package="$work/${url##*/}"
 echo "Updating OMARemote $current to $latest…"
-curl -fL --progress-bar -o "$package" "$url" || exit 1
+curl -fL --proto '=https' --progress-bar -o "$package" "$url" || exit 1
+curl -fsSL --proto '=https' -o "$package.sig" "$url.sig" || {
+  echo "The release has no signature ($url.sig): not installing it."
+  exit 1
+}
+if ! gpgv --status-fd 1 --keyring "$keyring" "$package.sig" "$package" 2>/dev/null | grep -q '^\[GNUPG:\] VALIDSIG '; then
+  echo "The package's signature does not check out against OMARemote's release key: not installing it."
+  exit 1
+fi
+echo "Signature checked: signed with OMARemote's release key."
 sudo pacman -U "$package" || exit 1
 
 # The open window still runs the old version from memory: close it and start the new one.
