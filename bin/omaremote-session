@@ -33,7 +33,8 @@ so closing the window never closes a remote desktop.
   omaremote-session hypr-hotkeys         write ~/.config/hypr/omaremote.lua when Settings allow it
   omaremote-session export <file|folder> connections and groups to a file (no user names or passwords)
   omaremote-session import <file>        merge an export: prints the result for the UI, JSON
-  omaremote-session sync [--allow-deletions <system,…>]   one round of folder sync, JSON for the UI
+  omaremote-session sync [--allow-deletions <system,…>] [--allow-address <id,…>]
+                                         one round of folder sync, JSON for the UI
   omaremote-session system-name          this system's name in the sync folder
   omaremote-session watch-folder <dir>   print each *.omaremote.json that arrives or changes there
   omaremote-session ssh-keys             keys in ~/.ssh (files, and agent keys by their .pub), JSON
@@ -280,9 +281,15 @@ def mark_connected(conn_id, path=CONNECTIONS):
 # below print what to apply.
 
 # Never leaves this machine (keep in step with localKeys in ui/Store.qml).
+# "Ignore certificate" and the security level are local too: a sync file must never be able to turn
+# off the server checks of a connection that signs in here.
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
-              "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey")
-GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs")
+              "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert", "security")
+GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security")
+# Where a connection signs in. A synced change to these, on a connection or group that signs in here
+# with a saved password or a credential set, waits for the user: it would send those credentials to
+# another server.
+ADDRESS_KEYS = ("host", "port", "gateway", "kdc")
 SYNC_SUFFIX = ".omaremote.json"
 TRASH_DAYS = 30
 DAY_MS = 24 * 3600 * 1000
@@ -357,6 +364,10 @@ def _with_aliases(new, *others):
     return new
 
 
+# Connection ids as OMARemote makes them (Store.newId: "c-" and base 36); others' ids look the same.
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
 def _drop_aliases(conn, ids):
     """conn without the aliases in ids (ids that belong to connections of their own)."""
     left = set(conn.get("aliases") or []) - set(ids)
@@ -370,10 +381,39 @@ def _drop_aliases(conn, ids):
     return conn
 
 
-def merge(local, incoming, now=None, allow_deletions=()):
+def _address(conn, settings=None):
+    """Where a connection (or a group's settings) points: host, port, gateway and KDC."""
+    c = settings if settings is not None else conn
+    return tuple(str(c.get(k) or "").strip().lower() for k in ADDRESS_KEYS)
+
+
+def _describe_address(c):
+    host = (c.get("host") or "").strip()
+    port = c.get("port")
+    out = host + (f":{port}" if host and port and int(port or 0) not in DEFAULT_PORTS.values() else "")
+    for k, label in (("gateway", "gateway"), ("kdc", "KDC")):
+        if (c.get(k) or "").strip():
+            out += f" via {label} {c[k].strip()}" if out else f"{label} {c[k].strip()}"
+    return out or "(none)"
+
+
+def _signs_in_here(conn, groups):
+    """Whether this system would send credentials to wherever the connection points: a saved
+    password, a credential set, or its group's set."""
+    if conn.get("savePassword"):
+        return True
+    mode = conn.get("credential") or "custom"
+    if mode == "inherit":
+        return bool((groups.get(conn.get("group") or "") or {}).get("credential"))
+    return mode not in ("custom", "new")
+
+
+def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
     """Merges other systems' files into connections.json's data. Returns (data, report).
 
-    allow_deletions names systems whose mass deletion the user confirmed."""
+    allow_deletions names systems whose mass deletion the user confirmed; allow_address the
+    connection ids (and "group:<name>"s) whose new address the user accepted, or "*" for all (a
+    file the user imported by hand)."""
     now = now if now is not None else now_ms()
     data = json.loads(json.dumps(local))
     conns = data.setdefault("connections", [])
@@ -381,7 +421,9 @@ def merge(local, incoming, now=None, allow_deletions=()):
     deleted = data.setdefault("deleted", {})
     groups = data.setdefault("groups", {})
     gone_groups = data.setdefault("deletedGroups", {})
-    report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [], "errors": []}
+    report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [],
+              "pendingAddress": [], "errors": []}
+    address_ok = lambda key: allow_address == "*" or key in allow_address
 
     # An alias is another system's id for the same server; it can never be the id of a connection
     # of its own here. (Before 0.4.4 a duplicate, which keeps its original's host, was taken for the
@@ -406,6 +448,13 @@ def merge(local, incoming, now=None, allow_deletions=()):
                 continue
             if g.get("modified", 0) <= gone_groups.get(name, -1):
                 continue  # deleted or renamed here after that change
+            theirs_settings = {k: v for k, v in (g.get("settings") or {}).items() if k not in GROUP_LOCAL_SETTINGS}
+            if mine is not None and mine.get("credential") and not address_ok("group:" + name) \
+                    and _address({}, theirs_settings) != _address({}, {k: v for k, v in (mine.get("settings") or {}).items()}):
+                report["pendingAddress"].append({
+                    "system": system, "id": "group:" + name, "name": "group " + name,
+                    "from": _describe_address(mine.get("settings") or {}), "to": _describe_address(theirs_settings)})
+                continue
             mine = dict(mine or {})
             kept = {k: v for k, v in (mine.get("settings") or {}).items() if k in GROUP_LOCAL_SETTINGS}
             mine["settings"] = dict({k: v for k, v in (g.get("settings") or {}).items()
@@ -426,6 +475,12 @@ def merge(local, incoming, now=None, allow_deletions=()):
 
         listed = [ic for ic in inc.get("connections") or []
                   if isinstance(ic, dict) and ic.get("id") and (ic.get("host") or "").strip()]
+        # Ids and hosts end up in commands and settings: a file that bends them is not taken in.
+        odd = [ic for ic in listed if not ID_RE.match(str(ic["id"])) or not HOST_RE.match(ic["host"].strip())
+               or any(not ID_RE.match(str(a)) for a in ic.get("aliases") or [])]
+        if odd:
+            report["errors"].append(f"{system}: skipped {len(odd)} connection(s) with an invalid id or host")
+            listed = [ic for ic in listed if ic not in odd]
         # Ids that are connections of their own in that file: never the same connection as another
         # one there, whatever host they share (a duplicate keeps its original's host).
         separate = {ic["id"] for ic in listed}
@@ -449,6 +504,12 @@ def merge(local, incoming, now=None, allow_deletions=()):
                 or (by_host[0] if len(by_host) == 1 else None)
             if match is not None:
                 matched.add(match.get("id"))
+                if changed > match.get("modified", 0) and _address(ic) != _address(match) \
+                        and _signs_in_here(match, groups) and not address_ok(match["id"]):
+                    report["pendingAddress"].append({
+                        "system": system, "id": match["id"], "name": match.get("name") or match.get("host"),
+                        "from": _describe_address(match), "to": _describe_address(ic)})
+                    continue
                 if changed > match.get("modified", 0):
                     new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
                     conns[conns.index(match)] = new
@@ -537,7 +598,7 @@ def _same_content(a, b):
     return strip(a) == strip(b)
 
 
-def sync_folder(path=CONNECTIONS, now=None, allow_deletions=()):
+def sync_folder(path=CONNECTIONS, now=None, allow_deletions=(), allow_address=()):
     """One sync round: refreshes this system's file in the folder, merges everyone else's.
     Returns {"data", "report", "purged", "system", "folder"} for the UI to apply."""
     now = now if now is not None else now_ms()
@@ -571,7 +632,7 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=()):
             incoming.append(other)
         except (OSError, ValueError) as e:
             errors.append(f"{name}: {e}")
-    merged, report = merge(data, incoming, now, allow_deletions)
+    merged, report = merge(data, incoming, now, allow_deletions, allow_address)
     report["errors"] = errors + report["errors"]
     return {"data": merged, "report": report, "purged": purged, "system": system, "folder": folder}
 
@@ -627,7 +688,8 @@ def import_file(file_path, path=CONNECTIONS, now=None):
         incoming["deleted"] = {}
     raw = load_raw(path)
     data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted", "deletedGroups") if raw.get(k) is not None}
-    merged, report = merge(data, [incoming], now)
+    # A file the user picked by hand: its addresses are what they asked for.
+    merged, report = merge(data, [incoming], now, allow_address="*")
     return {"data": merged, "report": report}
 
 
@@ -1172,7 +1234,7 @@ def hypr_managed_text(connections, launcher):
         shortcut = " + ".join(p.strip().upper() for p in c["hotkey"].replace(",", "+").split("+") if p.strip())
         # No name: Hyprland's descriptions reach Omarchy's menus, and from there who knows where.
         label = "OMARemote: hotkey window"
-        command = "%s toggle %s" % (launcher, c["id"])
+        command = "%s toggle %s" % (shlex.quote(launcher), shlex.quote(c["id"]))
         lines.append("o.bind(%s, %s, %s)" % (json.dumps(shortcut), json.dumps(label, ensure_ascii=False),
                                              json.dumps(command)))
         count += 1
@@ -1406,6 +1468,35 @@ def resolve_scale(setting, auto_scale):
 
 # ---------------------------------------------------------------- arguments
 
+# A host as a session may use it: a DNS name, an IPv4 or [IPv6] address (with a zone), an ssh Host
+# alias. Nothing else: the clients read their settings one per line, and a host or gateway arrives
+# from other systems through sync, so a line break or a comma in one would be read as settings of
+# its own (FreeRDP's /drive: sharing the whole disk, for one).
+HOST_RE = re.compile(r"^(?!-)[A-Za-z0-9._%:@\[\]-]{1,253}$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def check_host(value, what="host"):
+    value = (value or "").strip()
+    if not HOST_RE.match(value):
+        raise ValueError(f"not a valid {what} name: letters, digits, dots, dashes and a :port only")
+    return value
+
+
+def plain(value):
+    """Text with its control characters (line breaks included) turned into spaces."""
+    return CONTROL_RE.sub(" ", value or "")
+
+
+def check_lines(args):
+    """The last guard before settings go to a client one per line: none may hold a line break."""
+    for a in args:
+        if CONTROL_RE.search(a):
+            raise ValueError("a setting of this connection contains a line break or another control "
+                             "character, so it was not passed on")
+    return args
+
+
 def build_args(conn, password=None, auto_scale=100, tab=None):
     """FreeRDP arguments for one connection, one argument per entry (fed to /args-from:stdin).
 
@@ -1413,9 +1504,9 @@ def build_args(conn, password=None, auto_scale=100, tab=None):
     desktop then starts at the tab's size and the window-only options are left out.
     """
     c = dict(DEFAULTS, **conn)
-    host = c["host"].strip()
-    if not host:
+    if not c["host"].strip():
         raise ValueError("connection has no host")
+    host = check_host(c["host"])
     port = int(c.get("port") or 3389)
     args = [f"/v:{host}" if port == 3389 else f"/v:{host}:{port}"]
 
@@ -1436,7 +1527,7 @@ def build_args(conn, password=None, auto_scale=100, tab=None):
             args.append("+dynamic-resolution")
         auto_scale = int(tab.get("scale") or auto_scale)
     else:
-        args.append(f"/t:{c['name'] or host}")
+        args.append(f"/t:{plain(c['name']) or host}")
 
     # Display. Every mode keeps resolution in step with the window except fixed.
     if tab:
@@ -1481,7 +1572,7 @@ def build_args(conn, password=None, auto_scale=100, tab=None):
     args.append("+auto-reconnect")
 
     if c["gateway"].strip():
-        gw = [f"g:{c['gateway'].strip()}"]
+        gw = [f"g:{check_host(c['gateway'], 'gateway')}"]
         user = c["gatewayUser"] or c["username"]
         domain = c["gatewayDomain"] or c["domain"]
         if user:
@@ -1494,15 +1585,15 @@ def build_args(conn, password=None, auto_scale=100, tab=None):
 
     if c["extraArgs"].strip():
         args.extend(shlex.split(c["extraArgs"]))
-    return args
+    return check_lines(args)
 
 
 def build_vnc_config(conn, password=None):
     """Settings for omaremote-vnc, as key=value lines (fed on stdin)."""
     c = dict(DEFAULTS, **conn)
-    host = c["host"].strip()
-    if not host:
+    if not c["host"].strip():
         raise ValueError("connection has no host")
+    host = check_host(c["host"])
     port = int(conn.get("port") or DEFAULT_PORTS["vnc"])
     lines = [f"host={host}", f"port={port}",
              f"scaling={c['vncScaling'] if c['vncScaling'] in ('fit', 'native', 'resize') else 'fit'}",
@@ -1512,7 +1603,7 @@ def build_vnc_config(conn, password=None):
         lines.append(f"username={c['username']}")
     if password:
         lines.append(f"password={password}")
-    return lines
+    return check_lines(lines)
 
 
 # The terminal's look: the theme's terminal colours (Omarchy writes a foot.ini for every theme) and
@@ -1556,9 +1647,7 @@ def terminal_font_size(terminal=None, fallback=9.0):
 
 def build_ssh_command(conn):
     """The ssh command line. ~/.ssh/config still applies: the port and user go along only when set."""
-    host = conn["host"].strip()
-    if not host or host.startswith("-") or any(ch.isspace() for ch in host):
-        raise ValueError(f"not a host name: {host!r}")
+    host = check_host(conn["host"])
     args = ["ssh"]
     port = int(conn.get("port") or 22)
     if port != 22:
@@ -1747,9 +1836,9 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
 def build_ssh_config(conn):
     """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
     lines = [f"arg={a}" for a in build_ssh_command(conn)]
-    lines += [f"host={conn['host'].strip()}", "font=monospace", f"fontSize={terminal_font_size():g}",
+    lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size():g}",
               f"theme={THEME_TERMINAL}"]
-    return lines
+    return check_lines(lines)
 
 
 def redact(args):
@@ -1920,7 +2009,12 @@ def discover_kdcs(realm, cache_dir=CACHE_DIR):
 
 
 def krb5_config(realm, kdcs, host=""):
-    """A krb5.conf fragment pinning a realm to the given KDCs over TCP."""
+    """A krb5.conf fragment pinning a realm to the given KDCs over TCP. The realm comes from the
+    domain or the host and the KDCs from DNS: anything that is not a plain name stays out."""
+    if not HOST_RE.match(realm or ""):
+        raise ValueError("not a realm name")
+    kdcs = [k for k in kdcs if HOST_RE.match(k)]
+    host = host if HOST_RE.match(host or "") else ""
     lines = ["[libdefaults]", "\tudp_preference_limit = 1", "", "[realms]", f"\t{realm} = {{"]
     lines += [f"\t\tkdc = {k}" for k in kdcs]
     lines += ["\t}", ""]
@@ -1969,7 +2063,7 @@ VIEW_KEYS = ("view", "viewer")
 
 
 def write_session(state, keep=VIEW_KEYS):
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    os.makedirs(SESSIONS_DIR, mode=0o700, exist_ok=True)
     try:
         with open(_session_path(state["id"]), encoding="utf-8") as f:
             current = json.load(f)
@@ -1986,7 +2080,7 @@ def write_session(state, keep=VIEW_KEYS):
 
 
 def touch_changes():
-    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
     fd = os.open(CHANGES, os.O_WRONLY | os.O_CREAT, 0o600)
     try:
         os.ftruncate(fd, 0)
@@ -2007,7 +2101,7 @@ def _alive(pid):
 
 def ensure_changes():
     """Create the watch target without touching it, so a watcher can attach before any session."""
-    os.makedirs(RUNTIME_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
     os.close(os.open(CHANGES, os.O_WRONLY | os.O_CREAT, 0o600))
 
 
@@ -2017,6 +2111,10 @@ def list_sessions():
         names = os.listdir(SESSIONS_DIR)
     except FileNotFoundError:
         return sessions
+    try:
+        hotkeys = {c.get("id") for c in load_connections() if is_hotkey(c)}
+    except (OSError, ValueError):
+        hotkeys = set()
     for name in names:
         if not name.endswith(".json"):
             continue
@@ -2033,6 +2131,9 @@ def list_sessions():
         # An own window that is gone (closed or crashed) leaves its session for the manager's tabs.
         if s["view"] == "window" and s.get("tab") and not _alive(s.get("viewer")):
             s["view"], s["viewer"] = "tab", None
+        # Its connection opens as a hotkey window (is_hotkey: openIn hotkey, not VNC, not RDP on
+        # all monitors), so `omaremote toggle` shows or hides it.
+        s["hotkey"] = s.get("connection") in hotkeys
         sessions.append(s)
     sessions.sort(key=lambda s: s.get("started", 0), reverse=True)
     return prune(sessions)
@@ -2103,12 +2204,17 @@ def supervise(conn, sid, tab=None):
     password = None
     if conn.get("savePassword") and conn.get("secretId"):
         password = secret_get(conn["secretId"], conn.get("secretKind", "connection"))
-    if protocol == "vnc":
-        args = build_vnc_config(conn, password=password)
-    elif protocol == "ssh":
-        args = build_ssh_config(conn)
-    else:
-        args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
+    try:
+        if protocol == "vnc":
+            args = build_vnc_config(conn, password=password)
+        elif protocol == "ssh":
+            args = build_ssh_config(conn)
+        else:
+            args = build_args(conn, password=password, auto_scale=monitor_scale(), tab=tab)
+    except ValueError as e:
+        state.update(state="failed", error=f"Not connected: {e}", ended=int(time.time()))
+        write_session(state)
+        return 1
     env = dict(os.environ, SDL_APP_ID=SESSION_APP_ID, WLOG_LEVEL=os.environ.get("WLOG_LEVEL", "INFO"),
                **krb_env)
     # The stage markers below are DEBUG lines; raise only their tags, not the whole log.
@@ -2226,7 +2332,7 @@ def launch(key, tab=None):
         print("connection has no host", file=sys.stderr)
         return 2
     sid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    os.makedirs(SESSIONS_DIR, mode=0o700, exist_ok=True)
     # Double fork: the supervisor belongs to no terminal and outlives the UI.
     child = os.fork()
     if child > 0:
@@ -2322,8 +2428,16 @@ def main(argv):
         return 0
     if cmd == "sync":
         allow = rest[rest.index("--allow-deletions") + 1].split(",") if "--allow-deletions" in rest[:-1] else ()
+        address = rest[rest.index("--allow-address") + 1].split(",") if "--allow-address" in rest[:-1] else ()
+        # The UI passes them in the environment (JSON lists): system and group names never go on a
+        # command line, which other accounts can read.
         try:
-            print(json.dumps(sync_folder(allow_deletions=allow)))
+            allow = tuple(allow) + tuple(json.loads(os.environ.get("OMAREMOTE_ALLOW_DELETIONS") or "[]"))
+            address = tuple(address) + tuple(json.loads(os.environ.get("OMAREMOTE_ALLOW_ADDRESS") or "[]"))
+        except ValueError:
+            pass
+        try:
+            print(json.dumps(sync_folder(allow_deletions=allow, allow_address=address)))
         except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
             return 1

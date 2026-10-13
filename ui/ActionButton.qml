@@ -49,6 +49,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
+            textFormat: Text.PlainText
             text: root.text
             visible: root.text !== ""
             color: root.ink
@@ -58,6 +59,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
+            textFormat: Text.PlainText
             text: root.hint
             visible: root.hint !== ""
             color: root.primary ? Qt.rgba(root.ink.r, root.ink.g, root.ink.b, 0.6) : Theme.muted

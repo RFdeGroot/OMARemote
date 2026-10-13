@@ -30,12 +30,14 @@ Rectangle {
         width: parent ? parent.width : 0
         spacing: 1
         Text {
+            textFormat: Text.PlainText
             text: parent.label
             color: Theme.muted
             font.family: Theme.font
             font.pixelSize: Theme.caption
         }
         Text {
+            textFormat: Text.PlainText
             text: parent.value
             width: parent.width
             wrapMode: Text.Wrap
@@ -58,6 +60,7 @@ Rectangle {
             color: Theme.hairline
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: Store.connections.length === 0 ? "No connections yet" : "Nothing selected"
@@ -66,6 +69,7 @@ Rectangle {
             font.pixelSize: Theme.title
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
@@ -117,6 +121,7 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 2
                     Text {
+                        textFormat: Text.PlainText
                         width: parent.width
                         elide: Text.ElideRight
                         text: root.connection ? (root.connection.name || root.connection.host) : ""
@@ -126,6 +131,7 @@ Rectangle {
                         font.bold: true
                     }
                     Text {
+                        textFormat: Text.PlainText
                         width: parent.width
                         elide: Text.ElideRight
                         text: root.connection ? String(root.connection.protocol || "rdp").toUpperCase() + " · " + Format.address(root.connection) : ""
@@ -149,6 +155,7 @@ Rectangle {
                         anchors.centerIn: parent
                         spacing: Theme.gap
                         Text {
+                            textFormat: Text.PlainText
                             visible: starMouse.containsMouse
                             anchors.verticalCenter: parent.verticalCenter
                             text: "f"
@@ -174,6 +181,7 @@ Rectangle {
             }
 
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 visible: root.inTrash
                 wrapMode: Text.Wrap
@@ -229,6 +237,7 @@ Rectangle {
                 visible: root.sessions.length > 0
                 spacing: Theme.gap * 0.75
                 Text {
+                    textFormat: Text.PlainText
                     text: "SESSIONS"
                     color: Theme.muted
                     font.family: Theme.font
@@ -260,6 +269,7 @@ Rectangle {
                                 spacing: 6
                                 Glyph { text: ""; size: Theme.caption - 2; color: tone; anchors.verticalCenter: parent.verticalCenter }
                                 Text {
+                                    textFormat: Text.PlainText
                                     text: (modelData.state === "connected" ? "Connected" : modelData.state === "connecting" ? (modelData.stage || "Connecting") + "…"
                                           : modelData.state === "failed" ? "Failed" : "Ended")
                                           + (modelData.auth ? " · " + modelData.auth : "")
@@ -271,6 +281,7 @@ Rectangle {
                                 }
                             }
                             Text {
+                                textFormat: Text.PlainText
                                 visible: !!modelData.error
                                 width: parent.width
                                 wrapMode: Text.Wrap

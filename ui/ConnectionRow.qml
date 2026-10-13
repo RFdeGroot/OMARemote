@@ -65,6 +65,7 @@ Rectangle {
             spacing: Theme.gap
             width: parent.width
             Text {
+                textFormat: Text.PlainText
                 text: root.modelData.name || root.modelData.host
                 elide: Text.ElideRight
                 width: Math.min(implicitWidth, parent.width - star.width - chip.width - 2 * Theme.gap)
@@ -92,6 +93,7 @@ Rectangle {
                 border.width: 1
                 border.color: Theme.hairline
                 Text {
+                    textFormat: Text.PlainText
                     id: chipText
                     anchors.centerIn: parent
                     text: String(root.modelData.protocol || "rdp").toUpperCase()
@@ -103,6 +105,7 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             elide: Text.ElideRight
             text: {
@@ -122,6 +125,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 2
         Text {
+            textFormat: Text.PlainText
             anchors.right: parent.right
             text: root.modelData.trashedAt ? "deleted " + Format.ago(Math.floor(root.modelData.trashedAt / 1000), root.now)
                                              + (root.modelData.trashedFrom !== "local" ? " on " + root.modelData.trashedFrom : "")
@@ -132,6 +136,7 @@ Rectangle {
             font.pixelSize: Theme.caption
         }
         Text {
+            textFormat: Text.PlainText
             anchors.right: parent.right
             visible: text !== ""
             text: root.modelData.group || ""

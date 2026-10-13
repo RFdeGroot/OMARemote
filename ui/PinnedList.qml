@@ -53,6 +53,7 @@ Rectangle {
     }
 
     component Heading: Text {
+        textFormat: Text.PlainText
         width: parent.width
         leftPadding: Theme.padX
         topPadding: Theme.gap * 1.5

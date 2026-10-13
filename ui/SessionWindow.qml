@@ -117,6 +117,7 @@ FocusScope {
                          : root.session.state === "connecting" ? Theme.warning : Theme.urgent
                 }
                 Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.title
                     color: Theme.foreground
@@ -125,6 +126,7 @@ FocusScope {
                     font.bold: true
                 }
                 Text {
+                    textFormat: Text.PlainText
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !!root.session
                     text: root.session ? String(root.session.protocol || "rdp").toUpperCase() + " · " + root.session.host : ""

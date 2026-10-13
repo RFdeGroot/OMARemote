@@ -50,7 +50,7 @@ Singleton {
     readonly property var resolvedOnly: ["credentialSource", "secretKind", "secretId"]
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
-        "gatewayDomain", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey"]
+        "gatewayDomain", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert", "security"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
     readonly property var connections: stored.map(function (c) { return root.resolve(c) })
@@ -337,6 +337,19 @@ Singleton {
         edited()
     }
 
+    // The same for groups (their settings win back over another system's change).
+    function touchGroups(names) {
+        if (names.length === 0)
+            return
+        var now = Date.now()
+        var groupsCopy = JSON.parse(JSON.stringify(groupSettings))
+        for (var i = 0; i < names.length; i++)
+            if (groupsCopy[names[i]])
+                groupsCopy[names[i]].modified = now
+        root.groupSettings = groupsCopy
+        edited()
+    }
+
     // What `omaremote-session sync` or `import` computed. Not an edit of ours: no new sync round.
     function applyMerged(data) {
         root.stored = (data.connections || []).filter(function (c) { return c && c.id })
@@ -556,7 +569,8 @@ Singleton {
 
     Process {
         id: mkdir
-        command: ["mkdir", "-p", root.configDir]
+        // Only the user reads it: user names, hosts and domains, even with the passwords in the keyring.
+        command: ["sh", "-c", "mkdir -p -m 700 \"$1\" && chmod 700 \"$1\" && { [ ! -e \"$1/connections.json\" ] || chmod 600 \"$1/connections.json\"; }", "sh", root.configDir]
         running: true
     }
 

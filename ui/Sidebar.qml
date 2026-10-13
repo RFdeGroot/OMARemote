@@ -69,6 +69,7 @@ Rectangle {
     }
 
     component Heading: Text {
+        textFormat: Text.PlainText
         width: parent.width
         leftPadding: Theme.padX
         topPadding: Theme.gap * 1.5
@@ -211,6 +212,7 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             leftPadding: Theme.padX
             elide: Text.ElideRight
@@ -247,12 +249,14 @@ Rectangle {
             leftPadding: Theme.padX
             spacing: Theme.gap
             Text {
+                textFormat: Text.PlainText
                 text: "Bar plugin not installed"
                 color: Theme.muted
                 font.family: Theme.font
                 font.pixelSize: Theme.caption - 1
             }
             Text {
+                textFormat: Text.PlainText
                 text: "hide"
                 color: hideMouse.containsMouse ? Theme.foreground : Theme.muted
                 font.family: Theme.font

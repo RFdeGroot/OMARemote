@@ -113,6 +113,7 @@ Rectangle {
     readonly property var onOff: [{ value: "", label: "—" }, { value: "on", label: "On" }, { value: "off", label: "Off" }]
 
     component Section: Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         Layout.topMargin: Theme.gap
         color: Theme.muted
@@ -132,6 +133,7 @@ Rectangle {
             Layout.bottomMargin: Theme.gap
             spacing: 2
             Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 elide: Text.ElideRight
                 text: root.isNew ? "New group" : "Group " + root.originalName
@@ -141,6 +143,7 @@ Rectangle {
                 font.bold: true
             }
             Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 wrapMode: Text.Wrap
                 text: root.isNew ? "Then drag connections onto it in the sidebar, or press m on one."
@@ -256,7 +259,7 @@ Rectangle {
                             validator: IntValidator { bottom: 640; top: 8192 }
                             onTextEdited: root.set("width", parseInt(text) || "")
                         }
-                        Text { text: "×"; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.body }
+                        Text { textFormat: Text.PlainText; text: "×"; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.body }
                         Input {
                             Layout.preferredWidth: 80
                             width: 80
@@ -371,6 +374,7 @@ Rectangle {
             spacing: Theme.gap
             Check { checked: root.apply; onToggled: root.apply = !checked }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: "Apply to the " + root.members + (root.members === 1 ? " connection" : " connections")
@@ -403,6 +407,7 @@ Rectangle {
                 }
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: root.error || (root.deleteArmed ? (root.members > 0
                       ? "Its " + root.members + (root.members === 1 ? " connection stays" : " connections stay") + ", without a group"

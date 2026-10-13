@@ -108,6 +108,7 @@ Item {
             }
         }
         Text {
+            textFormat: Text.PlainText
             anchors.horizontalCenter: parent.horizontalCenter
             text: root.session ? (root.session.stage || "Connecting") + "…" : ""
             color: Theme.foreground
@@ -115,6 +116,7 @@ Item {
             font.pixelSize: Theme.title
         }
         Text {
+            textFormat: Text.PlainText
             anchors.horizontalCenter: parent.horizontalCenter
             text: root.session ? root.session.host + (root.session.auth ? " · " + root.session.auth : "") : ""
             color: Theme.muted
@@ -143,6 +145,7 @@ Item {
             color: root.session && root.session.state === "failed" ? Theme.urgent : Theme.muted
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: root.session && root.session.state === "failed" ? "Connection failed" : "Disconnected"
@@ -151,6 +154,7 @@ Item {
             font.pixelSize: Theme.heading
         }
         Text {
+            textFormat: Text.PlainText
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
@@ -213,6 +217,7 @@ Item {
                 spacing: Theme.gap
 
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
                     text: !root.hasPrompt ? ""
@@ -229,6 +234,7 @@ Item {
 
                 // Certificate details.
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     visible: root.hasPrompt && root.prompt.kind === "cert"
                     wrapMode: Text.Wrap
@@ -251,11 +257,11 @@ Item {
                     // A VNC password has no user; neither VNC form has a domain.
                     readonly property bool needsUser: root.hasPrompt && root.prompt.reason !== "vnc-password"
                     readonly property bool needsDomain: root.hasPrompt && String(root.prompt.reason).indexOf("vnc") !== 0
-                    Text { visible: parent.needsUser; text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
+                    Text { textFormat: Text.PlainText; visible: parent.needsUser; text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input { id: authUser; visible: parent.needsUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : "" }
-                    Text { visible: parent.needsDomain; text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
+                    Text { textFormat: Text.PlainText; visible: parent.needsDomain; text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input { id: authDomain; visible: parent.needsDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : "" }
-                    Text { text: "Password"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
+                    Text { textFormat: Text.PlainText; text: "Password"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input {
                         id: authPassword
                         Layout.fillWidth: true

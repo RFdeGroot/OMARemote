@@ -40,6 +40,7 @@ ListView {
         width: ListView.view.width
 
         Text {
+            textFormat: Text.PlainText
             id: heading
             visible: entry.opensGroup
             width: parent.width

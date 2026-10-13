@@ -70,6 +70,7 @@ Rectangle {
             Layout.margins: Theme.panelPad
             spacing: 2
             Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 elide: Text.ElideRight
                 text: root.isNew ? "New credential set" : Store.credentialLabel(root.cred)
@@ -79,6 +80,7 @@ Rectangle {
                 font.bold: true
             }
             Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 wrapMode: Text.Wrap
                 visible: !root.isNew
@@ -160,6 +162,7 @@ Rectangle {
                 }
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: root.error || (root.deleteArmed && (root.users.connections || root.users.groups)
                       ? "Its connections will ask for credentials" : "")

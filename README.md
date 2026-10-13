@@ -231,9 +231,16 @@ another system:
   overwrites another.
 
 **What never leaves the system:** user names, domains, credential sets, passwords (they stay in the
-keyring), gateway users, extra FreeRDP arguments and extra ssh options. A connection that arrives
+keyring), gateway users, extra FreeRDP arguments and extra ssh options, and the certificate checks
+(*Ignore certificate* and the security level): another system can never switch those off here. A connection that arrives
 from elsewhere asks for its credentials, or takes its group's credential set where that group has
 one here.
+
+**A new address waits for you.** When another system changes where a connection points (its host,
+port, gateway or Kerberos KDC) and this system signs in there with a saved password or a credential
+set, nothing changes until you say so: the credentials would otherwise go to the new address.
+*Accept* takes the change, *Keep mine* sends yours back. Connections and groups whose host or id
+holds anything but a plain name are not taken in at all.
 
 **Deleting is safe.** A deleted connection goes to *Recently deleted* (`5`) for 30 days, with its user
 name and password, and `r` brings it back; a deletion on another system arrives there too, never

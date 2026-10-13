@@ -129,6 +129,7 @@ FocusScope {
                 spacing: Theme.gap
                 Glyph { text: ""; color: Theme.accent; size: Theme.title }
                 Text {
+                    textFormat: Text.PlainText
                     text: "Keys"
                     color: Theme.foreground
                     font.family: Theme.font
@@ -136,6 +137,7 @@ FocusScope {
                     font.bold: true
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     Layout.leftMargin: Theme.gap
                     text: root.query ? "“" + root.query + "”  ·  ↑↓ pick  ·  ⏎ run" : "Type to find an action"
@@ -145,6 +147,7 @@ FocusScope {
                     elide: Text.ElideRight
                 }
                 Text {
+                    textFormat: Text.PlainText
                     text: "Esc close"
                     color: Theme.muted
                     font.family: Theme.font
@@ -188,6 +191,7 @@ FocusScope {
             }
 
             Text {
+                textFormat: Text.PlainText
                 visible: root.rows.length === 0
                 text: "No key matches “" + root.query + "”"
                 color: Theme.muted
@@ -198,6 +202,7 @@ FocusScope {
             // An Apple keyboard (a MacBook's, or a Magic Keyboard) has no Home, End or Page keys;
             // the kernel's hid_apple driver gives them on Fn + the arrows, so every key above works.
             Text {
+                textFormat: Text.PlainText
                 visible: appleKeyboard.loaded
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
@@ -218,6 +223,7 @@ FocusScope {
     Component {
         id: heading
         Text {
+            textFormat: Text.PlainText
             topPadding: Theme.gap
             bottomPadding: 2
             text: entry.heading.toUpperCase()
@@ -263,6 +269,7 @@ FocusScope {
                             border.width: 1
                             border.color: Theme.hairline
                             Text {
+                                textFormat: Text.PlainText
                                 id: capText
                                 anchors.centerIn: parent
                                 text: modelData
@@ -274,6 +281,7 @@ FocusScope {
                     }
                 }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: entry.row.label
                     elide: Text.ElideRight

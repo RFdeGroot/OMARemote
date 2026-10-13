@@ -867,6 +867,21 @@ class Hotkeys(unittest.TestCase):
                  {"modmask": 0, "key": "mouse:272", "mouse": True}]
         self.assertEqual(session.hypr_hotkeys(binds), [{"mask": 64, "key": "S", "description": "Toggle scratchpad"}])
 
+    def test_listed_sessions_say_whether_they_are_hotkey_windows(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            for sid, cid in (("s1", "hk"), ("s2", "plain"), ("s3", "vnc")):
+                with open(os.path.join(d, sid + ".json"), "w") as f:
+                    json.dump({"id": sid, "connection": cid, "state": "ended", "tab": True, "started": 1}, f)
+            conns = [{"id": "hk", "openIn": "hotkey", "protocol": "rdp"},
+                     {"id": "plain", "openIn": "window", "protocol": "rdp"},
+                     {"id": "vnc", "openIn": "hotkey", "protocol": "vnc"}]
+            with mock.patch.object(session, "SESSIONS_DIR", d), \
+                 mock.patch.object(session, "load_connections", lambda *a: conns):
+                flags = {s["id"]: s["hotkey"] for s in session.list_sessions()}
+        self.assertEqual(flags, {"s1": True, "s2": False, "s3": False})
+
     def test_the_close_key_is_whatever_closes_a_window(self):
         self.assertEqual(session.close_key([{"modmask": 64, "key": "W", "description": "Close window"}]), "super+w")
         self.assertEqual(session.close_key([{"modmask": 64, "key": "W", "description": "Something else"},
@@ -1120,3 +1135,109 @@ class NothingPrivateInArgv(unittest.TestCase):
                                             "omaremote")
         command = re.search(r'"(omaremote toggle [^"]*)"', text).group(1)
         self.assertEqual(command, "omaremote toggle c-1")
+
+
+class NoInjection(unittest.TestCase):
+    """Hosts, names and gateways arrive from other systems through sync. The clients read their
+    settings one per line, so a line break (or a comma inside /gateway:) would add settings of
+    its own: FreeRDP's /drive: could share the whole disk with the server."""
+
+    def test_a_line_break_in_the_host_never_reaches_freerdp(self):
+        with self.assertRaises(ValueError):
+            session.build_args(conn(host="pc.lan\n/drive:all,/"))
+        with self.assertRaises(ValueError):
+            session.build_vnc_config(conn(protocol="vnc", host="pc.lan\npassword=x"))
+        with self.assertRaises(ValueError):
+            session.build_ssh_config(conn(protocol="ssh", host="pc.lan\narg=-oProxyCommand=sh"))
+
+    def test_a_gateway_cannot_add_gateway_options(self):
+        with self.assertRaises(ValueError):
+            session.build_args(conn(gateway="gw.lan,p:stolen"))
+        self.assertIn("/gateway:g:gw.lan:443", session.build_args(conn(gateway="gw.lan:443")))
+
+    def test_a_name_with_a_line_break_becomes_one_title(self):
+        args = session.build_args(conn(name="Office\n/drive:all,/"))
+        titles = [a for a in args if a.startswith("/t:")]
+        self.assertEqual(len(titles), 1)
+        self.assertNotIn("\n", titles[0])
+        self.assertFalse(any(a.startswith("/drive:") for a in args))
+
+    def test_ordinary_hosts_still_pass(self):
+        for host in ("pc.acme.lan", "10.0.0.5", "[fe80::1%eth0]", "alice@server", "srv_01"):
+            session.check_host(host)
+
+    def test_sync_takes_in_no_connection_with_an_odd_id_or_host(self):
+        remote = {"format": "omaremote-sync", "version": 1, "system": "laptop", "written": 1,
+                  "connections": [{"id": "c-1; rm -rf ~", "host": "pc.lan", "modified": 5},
+                                  {"id": "c-2", "host": "pc.lan\n/drive:x,/", "modified": 5},
+                                  {"id": "c-3", "host": "ok.lan", "modified": 5}],
+                  "groups": {}, "deleted": {}}
+        data, report = session.merge({"connections": [], "groups": {}, "trash": [], "deleted": {}}, [remote], 10)
+        self.assertEqual([c["id"] for c in data["connections"]], ["c-3"])
+        self.assertTrue(any("invalid id or host" in e for e in report["errors"]))
+
+    def test_the_hotkey_command_quotes_what_it_runs(self):
+        text, _ = session.hypr_managed_text([{"id": "c-1", "host": "pc", "protocol": "rdp", "openIn": "hotkey",
+                                              "hotkey": "SUPER + W"}], "/opt/my apps/omaremote")
+        self.assertIn("'/opt/my apps/omaremote' toggle c-1", text)
+
+
+class AddressGuard(unittest.TestCase):
+    """A synced change to where a connection points waits for the user when this system signs in
+    there with saved credentials: they would go to the new address."""
+
+    def remote(self, *conns, groups=None):
+        return {"format": "omaremote-sync", "version": 1, "system": "laptop", "written": 1,
+                "connections": list(conns), "groups": groups or {}, "deleted": {}}
+
+    def local(self, *conns, groups=None):
+        return {"connections": list(conns), "groups": groups or {}, "trash": [], "deleted": {}}
+
+    def c(self, **kw):
+        return dict({"id": "c1", "name": "Files", "host": "files.lan", "protocol": "rdp", "port": 3389, "modified": 100}, **kw)
+
+    def test_a_new_host_for_a_connection_with_a_saved_password_waits(self):
+        local = self.local(self.c(savePassword=True, username="alice"))
+        data, report = session.merge(local, [self.remote(self.c(host="evil.example", modified=200))], 1000)
+        self.assertEqual(data["connections"][0]["host"], "files.lan")
+        self.assertEqual(report["pendingAddress"][0]["id"], "c1")
+        self.assertEqual((report["pendingAddress"][0]["from"], report["pendingAddress"][0]["to"]),
+                         ("files.lan", "evil.example"))
+        data, report = session.merge(local, [self.remote(self.c(host="evil.example", modified=200))], 1000,
+                                     allow_address=("c1",))
+        self.assertEqual(data["connections"][0]["host"], "evil.example")
+        self.assertEqual(report["pendingAddress"], [])
+
+    def test_a_gateway_or_kdc_counts_as_an_address_too(self):
+        local = self.local(self.c(credential="k1"))
+        for change in ({"gateway": "gw.example"}, {"kdc": "kdc.example"}, {"port": 3390}):
+            _, report = session.merge(local, [self.remote(self.c(modified=200, **change))], 1000)
+            self.assertEqual(len(report["pendingAddress"]), 1, change)
+
+    def test_without_credentials_here_the_change_just_arrives(self):
+        local = self.local(self.c(credential="custom", savePassword=False))
+        data, report = session.merge(local, [self.remote(self.c(host="new.lan", modified=200))], 1000)
+        self.assertEqual(data["connections"][0]["host"], "new.lan")
+        self.assertEqual(report["pendingAddress"], [])
+
+    def test_a_connection_using_its_groups_set_waits_too(self):
+        local = self.local(self.c(credential="inherit", group="Servers"),
+                           groups={"Servers": {"credential": "k1", "settings": {}, "modified": 1}})
+        _, report = session.merge(local, [self.remote(self.c(host="new.lan", group="Servers", modified=200))], 1000)
+        self.assertEqual(len(report["pendingAddress"]), 1)
+
+    def test_a_groups_new_gateway_waits_when_the_group_signs_in_here(self):
+        local = self.local(groups={"Servers": {"credential": "k1", "settings": {"gateway": "gw.lan"}, "modified": 1}})
+        incoming = self.remote(groups={"Servers": {"settings": {"gateway": "gw.example"}, "modified": 9}})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertEqual(data["groups"]["Servers"]["settings"]["gateway"], "gw.lan")
+        self.assertEqual(report["pendingAddress"][0]["id"], "group:Servers")
+
+    def test_certificate_checks_never_travel(self):
+        out = json.dumps(session.portable(self.local(self.c(ignoreCert=True, security="rdp")), "here"))
+        self.assertNotIn("ignoreCert", out)
+        self.assertNotIn('"security"', out)
+        local = self.local(self.c(ignoreCert=False))
+        data, _ = session.merge(local, [self.remote(self.c(ignoreCert=True, security="rdp", modified=200))], 1000)
+        self.assertFalse(data["connections"][0].get("ignoreCert"))
+        self.assertNotEqual(data["connections"][0].get("security"), "rdp")

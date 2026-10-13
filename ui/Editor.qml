@@ -175,6 +175,7 @@ Rectangle {
     }
 
     component Section: Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         Layout.topMargin: Theme.gap
         color: Theme.muted
@@ -189,6 +190,7 @@ Rectangle {
         spacing: 0
 
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             Layout.margins: Theme.panelPad
             Layout.bottomMargin: Theme.gap
@@ -355,6 +357,7 @@ Rectangle {
                     label: "Password"
                     visible: !root.ownCredentials && !root.isSsh
                     Text {
+                        textFormat: Text.PlainText
                         width: parent.width
                         topPadding: 6
                         wrapMode: Text.Wrap
@@ -457,7 +460,7 @@ Rectangle {
                             validator: IntValidator { bottom: 640; top: 8192 }
                             onTextEdited: root.set("width", text)
                         }
-                        Text { text: "×"; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.body }
+                        Text { textFormat: Text.PlainText; text: "×"; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.body }
                         Input {
                             Layout.preferredWidth: 80
                             width: 80
@@ -637,6 +640,7 @@ Rectangle {
             Layout.rightMargin: Theme.panelPad
             spacing: Theme.gap
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: root.error
                 wrapMode: Text.WordWrap

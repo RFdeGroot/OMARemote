@@ -47,6 +47,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: Theme.gap * 1.5
         Text {
+            textFormat: Text.PlainText
             id: countText
             visible: root.showCounts
             text: Store.connections.length + (Store.connections.length === 1 ? " connection" : " connections")
@@ -60,6 +61,7 @@ Rectangle {
             spacing: 4
             Glyph { text: ""; size: Theme.caption - 3; color: Theme.success; anchors.verticalCenter: parent.verticalCenter }
             Text {
+                textFormat: Text.PlainText
                 text: Sessions.activeCount + " active"
                 color: Theme.success
                 font.family: Theme.font
@@ -67,6 +69,7 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             id: noticeText
             text: root.notice
             visible: text !== ""
@@ -91,6 +94,7 @@ Rectangle {
                 required property var modelData
                 spacing: 4
                 Text {
+                    textFormat: Text.PlainText
                     text: modelData[0]
                     color: Theme.accent
                     font.family: Theme.font
@@ -98,6 +102,7 @@ Rectangle {
                     font.bold: true
                 }
                 Text {
+                    textFormat: Text.PlainText
                     text: modelData[1]
                     color: Theme.muted
                     font.family: Theme.font

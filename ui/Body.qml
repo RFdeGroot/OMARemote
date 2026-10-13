@@ -833,6 +833,7 @@ FocusScope {
                     visible: root.shown.length === 0 && Store.connections.length > 0
                     spacing: Theme.gap
                     Text {
+                        textFormat: Text.PlainText
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: root.query !== "" ? "No match for “" + root.query + "”" : "Nothing here yet"
                         color: Theme.muted
@@ -840,6 +841,7 @@ FocusScope {
                         font.pixelSize: Theme.body
                     }
                     Text {
+                        textFormat: Text.PlainText
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: "esc to clear"
                         color: Theme.muted
@@ -962,12 +964,14 @@ FocusScope {
                             visible: tabLoader.status === Loader.Error
                             spacing: Theme.gap
                             Text {
+                                textFormat: Text.PlainText
                                 text: "Sessions cannot be shown in a tab: the native renderer is not built."
                                 color: Theme.urgent
                                 font.family: Theme.font
                                 font.pixelSize: Theme.body
                             }
                             Text {
+                                textFormat: Text.PlainText
                                 text: "Run ./install.sh, or set this connection to open in a window."
                                 color: Theme.muted
                                 font.family: Theme.font
@@ -1039,6 +1043,7 @@ FocusScope {
             width: parent.width - 2 * Theme.panelPad
             spacing: Theme.gap
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: Sync.pending ? Sync.pending.ids.length + " connections were deleted on " + Sync.pending.system : ""
@@ -1048,6 +1053,7 @@ FocusScope {
                 font.bold: true
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: Sync.pending ? Sync.pending.names.join(", ")
@@ -1063,6 +1069,69 @@ FocusScope {
                 Item { Layout.fillWidth: true }
                 ActionButton { text: "Keep them"; onClicked: Sync.confirmPending(false) }
                 ActionButton { danger: true; text: "Move to trash"; onClicked: Sync.confirmPending(true) }
+            }
+        }
+    }
+
+    // Another system changed where connections that sign in here point: the credentials would go
+    // to the new address, so nothing changed yet (bin/omaremote-session, ADDRESS_KEYS).
+    Rectangle {
+        visible: Sync.pendingAddress.length > 0 && !Sync.pending
+        z: 95
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.control * 2
+        width: Math.min(620, parent.width - 2 * Theme.panelPad)
+        height: addressBody.implicitHeight + 2 * Theme.panelPad
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.warning
+        ColumnLayout {
+            id: addressBody
+            x: Theme.panelPad
+            y: Theme.panelPad
+            width: parent.width - 2 * Theme.panelPad
+            spacing: Theme.gap
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: Sync.pendingAddress.length === 1
+                      ? Sync.pendingAddress[0].system + " changed where " + Sync.pendingAddress[0].name + " connects"
+                      : (Sync.pendingAddress.length > 0 ? Sync.pendingAddress[0].system : "") + " changed where "
+                        + Sync.pendingAddress.length + " connections connect"
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.title
+                font.bold: true
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: Sync.pendingAddress.map(function (x) { return x.name + ":  " + x.from + "  →  " + x.to }).join("\n")
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: "This system signs in there with a saved password or a credential set, which would then go to "
+                      + "the new address. Accept it only if you made this change yourself; keep yours and it goes "
+                      + "back to the other systems."
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.gap
+                Item { Layout.fillWidth: true }
+                ActionButton { text: "Keep mine"; onClicked: Sync.confirmAddress(false) }
+                ActionButton { primary: true; text: "Accept"; onClicked: Sync.confirmAddress(true) }
             }
         }
     }
@@ -1105,6 +1174,7 @@ FocusScope {
             border.width: 1
             border.color: Theme.accent
             Text {
+                textFormat: Text.PlainText
                 id: dragLabel
                 anchors.centerIn: parent
                 text: root.dragging ? (root.dragging.name || root.dragging.host) : ""
@@ -1318,6 +1388,7 @@ FocusScope {
         else if (parts[0] === "deletegroup") deleteGroup(parts[1])
         else if (parts[0] === "gname") groupEditor.name = parts.slice(1).join(":")
         else if (a === "movenew") chooseGroup(newGroup)
+        else if (a === "addresscard") Sync.pendingAddress = [{ system: "laptop", id: "c-1", name: "File Server", from: "files.acme.lan", to: "files.example.net" }]
         else if (a === "enter") keymapSheet.runPicked()
         else if (parts[0] === "walk") {
             // Walks the focus chain the way Tab does, n steps.

@@ -60,6 +60,7 @@ Flow {
             border.color: on ? Theme.accent : Style.normalBorderColor
             z: on ? 1 : 0
             Text {
+                textFormat: Text.PlainText
                 id: label
                 anchors.centerIn: parent
                 text: modelData.label

@@ -74,6 +74,7 @@ FocusScope {
                 }
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 Layout.topMargin: Theme.gap
                 horizontalAlignment: Text.AlignHCenter
@@ -84,6 +85,7 @@ FocusScope {
                 font.pixelSize: Theme.body
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
                 text: "Version " + (Updates.version || "dev") + (Updates.checkout ? " (a checkout)" : "") + " · MIT licence"
@@ -92,6 +94,7 @@ FocusScope {
                 font.pixelSize: Theme.caption
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 visible: root.updateState !== ""
                 horizontalAlignment: Text.AlignHCenter

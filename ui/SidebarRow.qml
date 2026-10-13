@@ -49,6 +49,7 @@ Rectangle {
         color: root.iconColor
     }
     Text {
+        textFormat: Text.PlainText
         anchors.left: glyph.right
         anchors.leftMargin: Theme.gap
         anchors.right: actionGlyph.visible ? actionGlyph.left : badge.left
@@ -80,6 +81,7 @@ Rectangle {
         }
     }
     Text {
+        textFormat: Text.PlainText
         id: badge
         anchors.right: parent.right
         anchors.rightMargin: Theme.padX

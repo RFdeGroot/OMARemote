@@ -62,6 +62,7 @@ Rectangle {
             spacing: Theme.gap
             Glyph { text: ""; color: Theme.accent; size: Theme.body }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 elide: Text.ElideMiddle
                 text: root.session ? root.session.name + " · " + Format.clock(root.session.started) + " · " + root.session.log : ""
@@ -104,6 +105,7 @@ Rectangle {
         }
 
         Text {
+            textFormat: Text.PlainText
             visible: root.lines.length === 0
             Layout.alignment: Qt.AlignHCenter
             Layout.bottomMargin: Theme.panelPad * 2

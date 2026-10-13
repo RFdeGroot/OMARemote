@@ -79,6 +79,7 @@ FocusScope {
             spacing: 2
 
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 Layout.bottomMargin: Theme.gap
                 elide: Text.ElideRight

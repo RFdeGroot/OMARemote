@@ -45,5 +45,33 @@ class Palette(unittest.TestCase):
         self.assertEqual(missing, [])
 
 
+class PlainText(unittest.TestCase):
+    # Connection names, group names and error texts come from other systems through sync, and from
+    # remote servers: a Text left to guess its format (AutoText) shows HTML in them, images fetched
+    # from the internet included. Every Text says it is plain.
+    def test_every_text_is_plain(self):
+        missing = []
+        for path in sources():
+            if not path.endswith(".qml"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                lines = f.read().split("\n")
+            for n, line in enumerate(lines):
+                block = re.match(r"^(\s*)(?:component \w+: )?Text \{\s*(.*)$", line)
+                if not block:
+                    continue
+                if block.group(2).strip():  # Text { a: b; … } on one line
+                    ok = "textFormat:" in line
+                else:
+                    indent, ok = block.group(1), False
+                    for inner in lines[n + 1:]:
+                        if re.match("^" + re.escape(indent) + r"\}", inner):
+                            break
+                        ok = ok or inner.strip().startswith("textFormat:")
+                if not ok:
+                    missing.append(f"{os.path.relpath(path, UI)}:{n + 1}")
+        self.assertEqual(missing, [], "add textFormat: Text.PlainText")
+
+
 if __name__ == "__main__":
     unittest.main()

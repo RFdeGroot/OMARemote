@@ -68,6 +68,7 @@ FocusScope {
                 Layout.bottomMargin: Theme.gap
                 SettingsGlyph { size: Theme.title; color: Theme.accent }
                 Text {
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: "Settings"
                     color: Theme.foreground
@@ -205,6 +206,7 @@ FocusScope {
                                 onClicked: Sync.syncNow()
                             }
                             Text {
+                                textFormat: Text.PlainText
                                 Layout.fillWidth: true
                                 wrapMode: Text.Wrap
                                 text: !Sync.enabled ? "Set a folder to start"
@@ -345,6 +347,7 @@ FocusScope {
                             spacing: Theme.gap
                             ActionButton { text: "Check now"; icon: ""; onClicked: Updates.check(true) }
                             Text {
+                                textFormat: Text.PlainText
                                 Layout.fillWidth: true
                                 wrapMode: Text.Wrap
                                 text: Updates.newer ? Updates.latest + " is available" + (Updates.checkout ? " (a checkout: git pull)" : ": the button in the sidebar installs it")
@@ -378,6 +381,7 @@ FocusScope {
     }
 
     component Heading: Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         Layout.topMargin: Theme.gap
         color: Theme.muted
@@ -387,6 +391,7 @@ FocusScope {
         font.letterSpacing: 1
     }
     component Note: Text {
+        textFormat: Text.PlainText
         Layout.fillWidth: true
         wrapMode: Text.Wrap
         color: Theme.muted
@@ -399,8 +404,9 @@ FocusScope {
         property string value: ""
         Layout.fillWidth: true
         spacing: 1
-        Text { text: parent.label; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.caption }
+        Text { textFormat: Text.PlainText; text: parent.label; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.caption }
         Text {
+            textFormat: Text.PlainText
             text: parent.value
             width: parent.width
             wrapMode: Text.WrapAnywhere

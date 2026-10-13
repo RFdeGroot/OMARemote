@@ -29,6 +29,9 @@ Singleton {
     property string lastError: ""
     // A file that would trash many connections at once: {system, ids, names}, until the user says.
     property var pending: null
+    // Synced changes to where connections that sign in here point (host, port, gateway, KDC):
+    // [{system, id, name, from, to}], held back until the user accepts or keeps their own.
+    property var pendingAddress: []
 
     signal notice(string text, bool isError)
     // A key file chosen in the file chooser, for the connection editor.
@@ -53,8 +56,9 @@ Singleton {
 
     property int startedAt: 0
     property var allow: []
+    property var allowAddress: []
 
-    function syncNow(allowDeletionsFrom) {
+    function syncNow(allowDeletionsFrom, allowAddressFor) {
         if (!enabled || !Store.loaded)
             return
         if (runner.running || paused) {
@@ -62,9 +66,27 @@ Singleton {
             return
         }
         root.allow = allowDeletionsFrom || []
+        root.allowAddress = allowAddressFor || root.allowAddress
         root.startedAt = Store.localRevision
         root.busy = true
         runner.running = true
+    }
+
+    // The user's answer to changed addresses: accept them, or keep what is here (stamped newer, so
+    // it goes back to the other systems).
+    function confirmAddress(accept) {
+        var p = pendingAddress
+        root.pendingAddress = []
+        if (p.length === 0)
+            return
+        var ids = p.map(function (x) { return x.id })
+        if (accept) {
+            syncNow(root.allow, ids)
+        } else {
+            Store.touch(ids.filter(function (i) { return i.indexOf("group:") !== 0 }))
+            Store.touchGroups(ids.filter(function (i) { return i.indexOf("group:") === 0 }).map(function (i) { return i.slice(6) }))
+            notice("Kept the addresses here; they go back to " + p[0].system, false)
+        }
     }
 
     // The user's answer to a mass deletion.
@@ -83,7 +105,10 @@ Singleton {
 
     Process {
         id: runner
-        command: [Sessions.bin, "sync"].concat(root.allow.length ? ["--allow-deletions", root.allow.join(",")] : [])
+        command: [Sessions.bin, "sync"]
+        // System and group names in the environment, never on the command line.
+        environment: ({ OMAREMOTE_ALLOW_DELETIONS: JSON.stringify(root.allow),
+                        OMAREMOTE_ALLOW_ADDRESS: JSON.stringify(root.allowAddress) })
         stdout: StdioCollector { id: syncOut; waitForEnd: true }
         onExited: function (exitCode) {
             root.busy = false
@@ -105,6 +130,7 @@ Singleton {
             }
             root.lastError = ""
             root.allow = []
+            root.allowAddress = []
             root.systemName = result.system || root.systemName
             Store.applyMerged(result.data)
             for (var i = 0; i < (result.purged || []).length; i++)
@@ -114,6 +140,8 @@ Singleton {
             root.lastSync = Date.now()
             if (report.pendingDeletions.length > 0)
                 root.pending = report.pendingDeletions[0]
+            if ((report.pendingAddress || []).length > 0)
+                root.pendingAddress = report.pendingAddress
             var said = root.summary(report)
             if (said)
                 root.notice("Synced: " + said, false)
@@ -123,7 +151,7 @@ Singleton {
     }
 
     // After an edit here, and again whenever a round was skipped or outdated.
-    Timer { id: again; interval: 3000; onTriggered: root.syncNow(root.allow) }
+    Timer { id: again; interval: 3000; onTriggered: root.syncNow(root.allow, root.allowAddress) }
     Timer {
         interval: Math.max(1, root.interval) * 60000
         repeat: true

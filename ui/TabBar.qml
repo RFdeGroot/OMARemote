@@ -120,7 +120,7 @@ Item {
             markColor: on ? Theme.accent : Theme.muted
             width: implicitTitle.implicitWidth + Theme.caption * 1.5 + Theme.gap * 0.75 + 2 * Theme.padX
             last: root.tabs.length === 0
-            Text { id: implicitTitle; visible: false; text: "Connections"; font.family: Theme.font; font.pixelSize: Theme.caption }
+            Text { textFormat: Text.PlainText; id: implicitTitle; visible: false; text: "Connections"; font.family: Theme.font; font.pixelSize: Theme.caption }
         }
         Repeater {
             model: root.tabs

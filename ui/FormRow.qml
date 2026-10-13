@@ -27,6 +27,7 @@ RowLayout {
             font.pixelSize: Theme.small
         }
         Text {
+            textFormat: Text.PlainText
             text: root.help
             visible: root.help !== ""
             width: parent.width
