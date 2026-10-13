@@ -1176,6 +1176,18 @@ class NoInjection(unittest.TestCase):
         self.assertEqual([c["id"] for c in data["connections"]], ["c-3"])
         self.assertTrue(any("invalid id or host" in e for e in report["errors"]))
 
+    def test_an_id_never_starts_with_a_dash(self):
+        # Ids go on command lines (omaremote open <id>, qs ipc … open <id>): "--help" would be an option.
+        for bad in ("--help", "-n", "--window"):
+            self.assertIsNone(session.ID_RE.match(bad))
+        self.assertTrue(session.ID_RE.match("c-abc123xyz"))
+        remote = {"format": "omaremote-sync", "version": 1, "system": "laptop", "written": 1,
+                  "connections": [{"id": "--window", "host": "pc.lan", "modified": 5},
+                                  {"id": "c-4", "host": "pc4.lan", "modified": 5, "aliases": ["-x"]}],
+                  "groups": {}, "deleted": {}}
+        data, _ = session.merge({"connections": [], "groups": {}, "trash": [], "deleted": {}}, [remote], 10)
+        self.assertEqual(data["connections"], [])
+
     def test_the_hotkey_command_quotes_what_it_runs(self):
         text, _ = session.hypr_managed_text([{"id": "c-1", "host": "pc", "protocol": "rdp", "openIn": "hotkey",
                                               "hotkey": "SUPER + W"}], "/opt/my apps/omaremote")

@@ -87,7 +87,7 @@ for c in cs: print(c.get("name") or c.get("host"))'
     # Running: ask that window. Otherwise start one that connects once it is up.
     pid=$(running_pid)
     if [[ -n $pid ]]; then
-      exec qs ipc --pid "$pid" call omaremote open "$*"
+      exec qs ipc --pid "$pid" call omaremote open -- "$*"
     fi
     require_omarchy
     OMAREMOTE_OPEN="$*" exec qs -p "$ui/boot"
@@ -103,7 +103,7 @@ for c in cs: print(c.get("name") or c.get("host"))'
     [[ ${3:-} == --home ]] && { call=stash; home=1; }
     pid=$(running_pid)
     if [[ -n $pid ]]; then
-      exec qs ipc --pid "$pid" call omaremote "$call" "$2"
+      exec qs ipc --pid "$pid" call omaremote "$call" -- "$2"
     fi
     require_omarchy
     OMAREMOTE_ADOPT="$2" OMAREMOTE_ADOPT_HOME=$home exec qs -p "$ui/boot"

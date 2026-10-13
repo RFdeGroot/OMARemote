@@ -365,7 +365,9 @@ def _with_aliases(new, *others):
 
 
 # Connection ids as OMARemote makes them (Store.newId: "c-" and base 36); others' ids look the same.
-ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# Never a leading "-": ids go on command lines (omaremote open <id>, qs ipc … open <id>), where one
+# would read as an option.
+ID_RE = re.compile(r"^(?!-)[A-Za-z0-9_-]{1,64}$")
 
 
 def _drop_aliases(conn, ids):
