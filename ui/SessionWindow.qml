@@ -152,6 +152,8 @@ FocusScope {
                 if (where === "tab") root.toTab(false)
                 else if (where === "home") root.toTab(true)
                 else if (where === "hide" && root.hotkey) Quickshell.execDetached([Sessions.bin, "hide", root.sessionId])
+                // The manager comes forward with the quick connect card; this session stays here.
+                else if (where === "quick") Quickshell.execDetached(["uwsm-app", "--", root.launcher, "quick"])
             }
             onToggleFullscreen: Quickshell.execDetached([Sessions.bin, "fullscreen"])
             onReconnectRequested: root.reconnect()

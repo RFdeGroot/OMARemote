@@ -21,7 +21,7 @@ Item {
 
     signal reconnectRequested()
     signal closeRequested()
-    signal navigate(string where) // home, next, previous, keys, window (out of the tab), tab (into one)
+    signal navigate(string where) // home, next, previous, keys, window (out of the tab), tab (into one), quick (connect)
     signal toggleFullscreen()
     signal togglePinned()
 
@@ -103,6 +103,7 @@ Item {
         else if (event.key === Qt.Key_End && live) view.sendCtrlAltDel()
         else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && live) root.toggleFullscreen()
         else if (event.key === Qt.Key_K) root.navigate("keys")
+        else if (event.key === Qt.Key_N) root.navigate("quick")
         else if (event.key === Qt.Key_O && !root.inWindow && live) root.navigate("window")
         else if (event.key === Qt.Key_T && root.inWindow) root.navigate("tab")
         else if (event.key === Qt.Key_H && root.inWindow) root.navigate("hide")
@@ -298,17 +299,23 @@ Item {
                     rowSpacing: Theme.gap
                     // A VNC password has no user; neither VNC form has a domain.
                     readonly property bool needsUser: root.hasPrompt && root.prompt.reason !== "vnc-password"
+                    // The first thing to fill in: the user name when none is known (a quick
+                    // connection, a connection without one), else the password.
+                    readonly property bool userFirst: needsUser && !root.prompt.user
                     readonly property bool needsDomain: root.hasPrompt && String(root.prompt.reason).indexOf("vnc") !== 0
                     Text { textFormat: Text.PlainText; visible: parent.needsUser; text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Input { id: authUser; visible: parent.needsUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : "" }
+                    Input { id: authUser; visible: parent.needsUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : ""
+                            focus: root.hasPrompt && root.prompt.kind === "auth" && parent.userFirst
+                            onAccepted: (parent.needsDomain ? authDomain : authPassword).forceActiveFocus() }
                     Text { textFormat: Text.PlainText; visible: parent.needsDomain; text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Input { id: authDomain; visible: parent.needsDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : "" }
+                    Input { id: authDomain; visible: parent.needsDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : ""
+                            onAccepted: authPassword.forceActiveFocus() }
                     Text { textFormat: Text.PlainText; text: "Password"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input {
                         id: authPassword
                         Layout.fillWidth: true
                         password: true
-                        focus: root.hasPrompt && root.prompt.kind === "auth"
+                        focus: root.hasPrompt && root.prompt.kind === "auth" && !parent.userFirst
                         onAccepted: root.submitAuth()
                     }
                 }

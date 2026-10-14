@@ -26,6 +26,17 @@ Singleton {
     property var deleted: ({})
     // When each group was deleted or renamed away ({name: ms}): the same, for groups.
     property var deletedGroups: ({})
+    // Quick connections: a host typed in the search field and connected to straight away. This
+    // system's only (never synced or exported, not in the list), the newest ten, until saved.
+    property var quick: []
+    readonly property int quickKept: 10
+    readonly property var quickConnections: quick.map(function (c) {
+        var r = root.resolve(c)
+        r.quick = true
+        // In Recent from the first try on, also when that one failed.
+        r.lastConnected = r.lastConnected || Math.floor((c.used || 0) / 1000)
+        return r
+    })
     // Counts this window's own edits (not what sync brings in): sync runs after them, and drops a
     // merge computed before the latest one.
     property int localRevision: 0
@@ -186,7 +197,54 @@ Singleton {
         for (var i = 0; i < connections.length; i++)
             if (connections[i].id === id)
                 return connections[i]
+        for (var j = 0; j < quickConnections.length; j++)
+            if (quickConnections[j].id === id)
+                return quickConnections[j]
         return null
+    }
+
+    // A quick connection for spec ({protocol, host, port, username, domain[, credential, sshKey]}):
+    // the one made before for the same server and user, or a new one. Returns its id.
+    function quickConnect(spec) {
+        var same = function (c) {
+            return c.protocol === spec.protocol && c.host.toLowerCase() === spec.host.toLowerCase()
+                && c.port === spec.port && (c.username || "") === (spec.username || "")
+        }
+        var found = quick.filter(same)
+        var entry = found.length > 0 ? JSON.parse(JSON.stringify(found[0])) : {
+            id: newId("q-"), protocol: spec.protocol, name: spec.host, host: spec.host, port: spec.port,
+            username: spec.username || "", domain: spec.domain || "", credential: "custom", group: ""
+        }
+        // How it signs in is what was chosen this time (the card's credential set or SSH key).
+        entry.credential = spec.credential || "custom"
+        entry.sshKey = spec.sshKey || ""
+        if (spec.domain)
+            entry.domain = spec.domain
+        entry.used = Date.now()
+        var rest = quick.filter(function (c) { return !same(c) })
+        root.quick = [entry].concat(rest).slice(0, quickKept)
+        write()
+        return entry.id
+    }
+
+    // A quick connection kept as an ordinary one (it syncs from then on). Returns the new id.
+    function saveQuick(id, edited) {
+        var q = quick.filter(function (c) { return c.id === id })[0]
+        if (!q)
+            return ""
+        var c = JSON.parse(JSON.stringify(edited || q))
+        delete c.used
+        delete c.quick
+        c.id = ""
+        var newId_ = upsert(c)
+        root.quick = quick.filter(function (x) { return x.id !== id })
+        write()
+        return newId_
+    }
+
+    function forgetQuick(id) {
+        root.quick = quick.filter(function (c) { return c.id !== id })
+        write()
     }
 
     function storedGet(id) {
@@ -212,6 +270,7 @@ Singleton {
             root.trash = (data.trash || []).filter(function (t) { return t && t.connection && t.connection.id })
             root.deleted = data.deleted || {}
             root.deletedGroups = data.deletedGroups || {}
+            root.quick = (data.quick || []).filter(function (c) { return c && c.id })
         } catch (e) {
             console.warn("connections.json is not valid JSON, leaving it untouched: " + e)
         }
@@ -221,7 +280,7 @@ Singleton {
     function write() {
         file.setText(JSON.stringify({ version: 3, ui: ui, credentials: credentials, groups: groupSettings,
                                       connections: stored, trash: trash, deleted: deleted,
-                                      deletedGroups: deletedGroups }, null, 2) + "\n")
+                                      deletedGroups: deletedGroups, quick: quick }, null, 2) + "\n")
     }
 
     function setUi(key, value) {

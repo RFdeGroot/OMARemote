@@ -87,6 +87,57 @@ function matches(c, query) {
     return true
 }
 
+// What a search reads as, to connect to straight away: {protocol, host, port, username}, or null.
+// "pc.lan", "rdp://pc.lan:3390", "vnc://10.0.0.5", "ssh://alice@srv", "alice@srv:2222", "[fe80::1]".
+// The protocol is the scheme's, else RDP for DOMAIN\user@, SSH for user@ or :22, VNC for
+// :5900-5999, else RDP. A bare
+// word (no dot, scheme, user or port) only counts when `alone` (nothing in the list matched it).
+function quickSpec(query, alone) {
+    var q = String(query || "").trim()
+    if (!q || /\s/.test(q))
+        return null
+    var m = q.match(/^(rdp|vnc|ssh):\/\/(.*)$/i)
+    var scheme = m ? m[1].toLowerCase() : ""
+    var rest = m ? m[2].replace(/\/$/, "") : q
+    var user = ""
+    var at = rest.lastIndexOf("@")
+    if (at >= 0) {
+        user = rest.slice(0, at)
+        rest = rest.slice(at + 1)
+        if (!/^[A-Za-z0-9._\\-]{1,64}$/.test(user))
+            return null
+    }
+    var host = rest, port = 0
+    var v6 = rest.match(/^\[([0-9A-Fa-f:.%a-zA-Z]+)\](?::(\d{1,5}))?$/)
+    if (v6) {
+        host = v6[1]
+        port = v6[2] ? parseInt(v6[2]) : 0
+    } else {
+        var hp = rest.match(/^([A-Za-z0-9._-]+)(?::(\d{1,5}))?$/)
+        if (!hp)
+            return null
+        host = hp[1]
+        port = hp[2] ? parseInt(hp[2]) : 0
+    }
+    // The same rule as hosts everywhere else (HOST_RE in bin/omaremote-session).
+    if (!host || host[0] === "-" || host.length > 253 || port > 65535)
+        return null
+    var looksLikeHost = scheme || user || port || v6 || host.indexOf(".") >= 0
+    if (!looksLikeHost && !alone)
+        return null
+    // DOMAIN\user is a Windows sign-in: RDP, with the domain apart.
+    var domain = ""
+    var slash = user.indexOf("\\")
+    if (slash >= 0) {
+        domain = user.slice(0, slash)
+        user = user.slice(slash + 1)
+    }
+    var protocol = scheme || (domain ? "rdp" : user || port === 22 ? "ssh" : (port >= 5900 && port <= 5999 ? "vnc" : "rdp"))
+    var defaults = { rdp: 3389, vnc: 5900, ssh: 22 }
+    return { protocol: protocol, host: host, port: port || defaults[protocol], portGiven: port > 0,
+             schemeGiven: !!scheme, username: user, domain: domain }
+}
+
 // FreeRDP log text -> [{level, text}], compacted to "time  LEVEL  source  function: message".
 // Sample line: [21:41:46:330] [576177:0008cabc] [WARN][com.freerdp.crypto] - [verify_cb]: CN = X
 var LOG_RE = /^\[(\d\d:\d\d:\d\d):\d+\] \[[^\]]*\] \[(\w+)\]\[([^\]]*)\] - \[([^\]]*)\]:? ?(.*)$/

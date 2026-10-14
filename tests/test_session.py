@@ -132,6 +132,40 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class QuickConnections(unittest.TestCase):
+    # A host typed in the search field: started like a saved connection, but this system's only.
+    def data(self):
+        return {"connections": [conn()],
+                "quick": [{"id": "q-1", "protocol": "ssh", "name": "srv.lan", "host": "srv.lan", "port": 22,
+                           "username": "alex", "credential": "custom", "used": 1}]}
+
+    def test_a_session_finds_it(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "connections.json")
+            with open(path, "w") as f:
+                json.dump(self.data(), f)
+            found = {c["id"]: c for c in session.load_connections(path)}
+            self.assertEqual(found["q-1"]["host"], "srv.lan")
+            self.assertEqual(found["q-1"]["protocol"], "ssh")
+            self.assertIn("c1", found)
+            session.mark_connected("q-1", path)
+            with open(path) as f:
+                self.assertGreater(json.load(f)["quick"][0]["lastConnected"], 0)
+
+    def test_it_never_syncs_or_exports(self):
+        for kind in ("sync", "export"):
+            doc = session.portable(self.data(), "laptop", kind)
+            self.assertEqual([c["id"] for c in doc["connections"]], ["c1"])
+            self.assertNotIn("quick", doc)
+            self.assertNotIn("srv.lan", json.dumps(doc))
+
+    def test_a_sync_keeps_it(self):
+        merged, _ = session.merge(self.data(), [session.portable({"connections": [conn(id="c2", host="b.lan")]}, "pc")])
+        self.assertEqual([q["id"] for q in merged["quick"]], ["q-1"])
+        self.assertNotIn("q-1", [c["id"] for c in merged["connections"]])
+
+
 class Kerberos(unittest.TestCase):
     def test_realm_from_dotted_domain(self):
         self.assertEqual(session.kerberos_realm({"domain": "acme.lan", "host": "x"}), "ACME.LAN")

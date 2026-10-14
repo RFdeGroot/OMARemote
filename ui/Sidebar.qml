@@ -54,7 +54,8 @@ Rectangle {
     function countOf(f) {
         if (f === "trash")
             return Store.trash.length
-        var list = Store.connections
+        // Quick connections count where they show: Recent and Active.
+        var list = f === "recent" || f === "active" ? Store.connections.concat(Store.quickConnections) : Store.connections
         var n = 0
         for (var i = 0; i < list.length; i++) {
             var c = list[i]
@@ -110,7 +111,7 @@ Rectangle {
                     visible: modelData.f !== "trash" || Store.trash.length > 0
                     icon: modelData.icon
                     label: modelData.label
-                    count: { Store.connections; Store.trash; Sessions.sessions; return root.countOf(modelData.f) }
+                    count: { Store.connections; Store.quickConnections; Store.trash; Sessions.sessions; return root.countOf(modelData.f) }
                     current: root.filter === modelData.f
                     cursor: root.hasCursor("filter", modelData.f)
                     iconColor: modelData.f === "active" && count > 0 ? Theme.success : (current ? Theme.accent : Theme.muted)

@@ -15,8 +15,12 @@ Rectangle {
     signal restoreRequested()
     // A connection in Recently deleted: it can come back or go for good, nothing else.
     readonly property bool inTrash: !!connection && !!connection.trashedAt
+    // A quick connection (typed in search, not saved) and the "Connect to …" row before it exists.
+    readonly property bool quick: !!connection && !!connection.quick
+    readonly property bool quickRow: !!connection && !!connection.quickRow
     signal favouriteRequested()
     signal newRequested()
+    signal saveQuickRequested()
 
     color: Theme.surface
 
@@ -143,7 +147,7 @@ Rectangle {
                 // Favourite: hollow until it is one, then filled like the star in the list.
                 Rectangle {
                     id: star
-                    visible: !root.inTrash
+                    visible: !root.inTrash && !root.quick && !root.quickRow
                     readonly property bool on: !!root.connection && !!root.connection.favourite
                     Layout.alignment: Qt.AlignTop
                     implicitWidth: starRow.implicitWidth + 2 * Theme.gap
@@ -216,9 +220,36 @@ Rectangle {
                 }
             }
 
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                visible: root.quick || root.quickRow
+                wrapMode: Text.Wrap
+                text: root.quickRow ? "Not saved: connects with what you typed, and asks for the password."
+                                    : "A quick connection: kept on this system only, not synced. Save it to keep it in your list."
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+
             Flow {
                 Layout.fillWidth: true
-                visible: !root.inTrash
+                visible: root.quick
+                spacing: Theme.gap
+                ActionButton { icon: "\uf0c7"; text: "Save as connection"; hint: "s"; onClicked: root.saveQuickRequested() }
+                ActionButton {
+                    visible: !!root.connection && root.connection.protocol === "ssh"
+                    icon: "\uf07c"
+                    text: "Browse files"
+                    hint: "b"
+                    onClicked: Sessions.browse(root.connection.id)
+                }
+                ActionButton { icon: ""; danger: true; text: "Forget"; hint: "del"; onClicked: root.deleteRequested() }
+            }
+
+            Flow {
+                Layout.fillWidth: true
+                visible: !root.inTrash && !root.quick && !root.quickRow
                 spacing: Theme.gap
                 ActionButton { icon: ""; text: "Edit"; hint: "e"; onClicked: root.editRequested() }
                 ActionButton { icon: ""; text: "Duplicate"; hint: "d"; onClicked: root.duplicateRequested() }

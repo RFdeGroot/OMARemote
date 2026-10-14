@@ -172,6 +172,7 @@ The most used:
 | `c` | new credential set |
 | `l` | log of the last session (`w` warnings only, `esc` close) |
 | `/` | search |
+| `o` / `ctrl+l` | quick connect: type an address, connect without saving |
 | `1`–`5` | All, Favourites, Recent, Active, Recently deleted (`r` restores there) |
 | `,` | settings: sync, SSH, updates, files |
 | `tab` | move to the sidebar (`j` `k`, `⏎` open, `s` group settings, `esc` back) |
@@ -191,6 +192,7 @@ Inside a session every key goes to the remote desktop, except these:
 | `ctrl+alt+w` | disconnect: close the tab (or its own window) |
 | `ctrl+alt+h` | hide a hotkey window (its shortcut brings it back) |
 | `ctrl+alt+p` | pin or unpin the connections list |
+| `ctrl+alt+n` | quick connect, the session keeps running |
 | `ctrl+alt+k` | keymap sheet |
 
 **Pinning** (`p`, `ctrl+alt+p` or the pin in the tab strip) docks the connections on the left of
@@ -206,10 +208,26 @@ again picks up where you were; an SSH shell ends, unless you use tmux or screen)
 own window or a hotkey window are not OMARemote's: they run on, and `super+w` in one of those ends
 that one. Updating OMARemote, or a crash, ends nothing: the tabs come back when it opens again.
 
+**Quick connect** (`o`, `ctrl+l`, the button beside *New*, or `omaremote quick` from a keybinding)
+opens a small card: an address, the protocol (guessed while you type, yours to change), and how to
+sign in: *Ask when connecting*, or one of your credential sets for RDP and VNC (never picked for
+you: its saved password goes to the server you typed); a user name and key for SSH. The last few
+quick connections are a click away, and *Also save it* opens the editor instead, to name it; saving
+there connects.
+
+The search field does it too: type an address there and the list offers *Connect to …*
+on top: `pc.acme.lan`, `rdp://pc.acme.lan:3390`, `vnc://10.0.0.5`, `alex@build.acme.lan` (SSH),
+`ACME\alex@pc.acme.lan` (RDP). Without a scheme, a user name means SSH, a port 22 SSH, 5900–5999
+VNC, anything else RDP. ⏎ connects when nothing in your list matches; otherwise the match is
+selected and *Connect to …* is one `↑` away. It asks for what it needs (a password, a host key) and
+saves nothing but the address: quick connections stay on this system (not synced or exported),
+show under *Recent* and *Active*, and `s` saves one as an ordinary connection (`del` forgets it).
+The newest ten are kept.
+
 From a keybinding or script: `omaremote open "Work PC"` shows that connection in OMARemote (its
 running session, or a new one in a tab, starting OMARemote if needed); `omaremote connect "Work PC"`
 connects without the window; `omaremote toggle "Work PC"` shows or hides a hotkey window. All
-take a connection's id, name or host.
+take a connection's id, name or host. `omaremote quick` opens the quick connect card.
 
 **In the Omarchy bar:** the [OMARemote plugin](https://github.com/RFdeGroot/omarchy-omaremote) lists
 running sessions and favourite connections, a click away
@@ -367,8 +385,8 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   work. *Extra ssh options* are passed to ssh as-is (for example `-J jump.example.com`).
 - **Looks like your terminal**: Omarchy's terminal font (fontconfig's `monospace`) at your default
   terminal's size, in the theme's terminal colours, following a theme switch live.
-- **Keys**: `ctrl+shift+c` copies the selection (drag to select), `ctrl+shift+v`, `shift+insert`
-  or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel scroll back (10,000 lines).
+- **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select),
+  `ctrl+shift+v`, `super+v`, `shift+insert` or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel scroll back (10,000 lines).
   Programs that use the mouse (htop, vim with `mouse=a`) get it; hold `shift` to select anyway.
   Remote programs can set your clipboard (OSC 52, as tmux and Neovim do). The `ctrl+alt` keys stay
   OMARemote's, as in every session.

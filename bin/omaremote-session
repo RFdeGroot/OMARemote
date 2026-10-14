@@ -207,6 +207,9 @@ def load_data(path=CONNECTIONS):
         "connections": [c for c in data.get("connections", []) if isinstance(c, dict)],
         "credentials": [c for c in data.get("credentials", []) if isinstance(c, dict) and c.get("id")],
         "groups": {k: v for k, v in (data.get("groups") or {}).items() if isinstance(v, dict)},
+        # Quick connections (a host typed in the search field): this system's only, never synced
+        # or exported, kept until saved as a connection or pushed out by newer ones.
+        "quick": [c for c in data.get("quick", []) if isinstance(c, dict) and c.get("id")],
     }
 
 
@@ -244,8 +247,9 @@ def resolve(conn, data):
 
 
 def load_connections(path=CONNECTIONS):
+    """Every connection a session can be started for: the saved ones, then the quick ones."""
     data = load_data(path)
-    return [resolve(c, data) for c in data["connections"]]
+    return [resolve(c, data) for c in data["connections"] + data["quick"]]
 
 
 def find_connection(key, connections):
@@ -268,7 +272,7 @@ def mark_connected(conn_id, path=CONNECTIONS):
     try:
         with open(path, "r+", encoding="utf-8") as f:
             data = json.load(f)
-            for c in data.get("connections", []):
+            for c in data.get("connections", []) + data.get("quick", []):
                 if c.get("id") == conn_id:
                     c["lastConnected"] = int(time.time())
             f.seek(0)

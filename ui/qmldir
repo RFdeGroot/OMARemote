@@ -34,3 +34,4 @@ AboutCard 1.0 AboutCard.qml
 GroupPicker 1.0 GroupPicker.qml
 singleton Hotkeys 1.0 Hotkeys.qml
 ShortcutField 1.0 ShortcutField.qml
+QuickConnectCard 1.0 QuickConnectCard.qml

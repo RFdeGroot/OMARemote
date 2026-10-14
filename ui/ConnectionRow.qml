@@ -42,7 +42,7 @@ Rectangle {
         x: Theme.padX + 2
         width: Theme.icon * 1.6
         anchors.verticalCenter: parent.verticalCenter
-        text: root.modelData.protocol === "ssh" ? "" : ""
+        text: root.modelData.quickRow ? "󰉁" : root.modelData.protocol === "ssh" ? "" : ""
         size: Theme.title
         color: root.stateColor
         SequentialAnimation on opacity {
@@ -130,7 +130,10 @@ Rectangle {
             text: root.modelData.trashedAt ? "deleted " + Format.ago(Math.floor(root.modelData.trashedAt / 1000), root.now)
                                              + (root.modelData.trashedFrom !== "local" ? " on " + root.modelData.trashedFrom : "")
                 : root.state_ === "connected" ? "connected" : root.state_ === "connecting" ? root.stage + "…"
-                : root.state_ === "failed" ? "failed" : Format.ago(root.modelData.lastConnected, root.now)
+                : root.state_ === "failed" ? "failed"
+                : root.modelData.quickRow ? "⏎ connect"
+                : root.modelData.quick ? "quick · s saves"
+                : Format.ago(root.modelData.lastConnected, root.now)
             color: root.state_ ? root.stateColor : Theme.muted
             font.family: Theme.font
             font.pixelSize: Theme.caption

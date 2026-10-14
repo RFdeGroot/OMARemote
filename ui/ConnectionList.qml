@@ -80,7 +80,7 @@ ListView {
             now: root.now
             onClicked: root.picked(modelData.id)
             onActivated: root.activated(modelData.id)
-            draggable: true
+            draggable: !modelData.quickRow && !modelData.quick
             onDragStarted: root.dragStarted(modelData.id)
             onDragMoved: function (x, y) { root.dragMoved(x, y) }
             onDragEnded: root.dragEnded()

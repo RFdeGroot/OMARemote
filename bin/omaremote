@@ -7,6 +7,7 @@
 #   omaremote open --window <name>  the same in a floating window of its own, on this workspace
 #   omaremote connect <name>   connect straight away, without the window (for keybindings)
 #   omaremote toggle <name>    a hotkey window: slide it in (connecting if needed), or hide it again
+#   omaremote quick            quick connect: type an address and connect, without saving it
 #   omaremote window <session> show a running session in a window of its own
 #   omaremote adopt <session> [--home]  move a running session into a tab of the manager
 #   omaremote restart          restart the manager window; its tabs' sessions run on and come back
@@ -92,6 +93,15 @@ for c in cs: print(c.get("name") or c.get("host"))'
     require_omarchy
     OMAREMOTE_OPEN="$*" exec qs -p "$ui/boot"
     ;;
+  quick)
+    # The quick connect card: in the open window, or a new one that opens on it.
+    pid=$(running_pid)
+    if [[ -n $pid ]]; then
+      exec qs ipc --pid "$pid" call omaremote quick
+    fi
+    require_omarchy
+    OMAREMOTE_QUICK=1 exec qs -p "$ui/boot"
+    ;;
   window)
     [[ -n ${2:-} ]] || { echo "usage: omaremote window <session-id>" >&2; exit 2; }
     require_omarchy
@@ -109,7 +119,7 @@ for c in cs: print(c.get("name") or c.get("host"))'
     OMAREMOTE_ADOPT="$2" OMAREMOTE_ADOPT_HOME=$home exec qs -p "$ui/boot"
     ;;
   -h|--help|help)
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   -v|--version|version)
     echo "omaremote $version"

@@ -55,11 +55,45 @@ FocusScope {
 
     readonly property bool inTrash: filter === "trash"
 
-    readonly property var shown: {
+    // A search that reads as an address (Format.quickSpec): connect to it without saving it first.
+    readonly property var quickSpec: {
+        if (root.inTrash || !root.query)
+            return null
+        return Format.quickSpec(root.query, root.listed.length === 0)
+    }
+    readonly property string quickRowId: "quick:"
+    // The list with the "Connect to …" row on top when the search reads as an address.
+    readonly property var shownWithQuick: {
+        var spec = root.quickSpec
+        if (!spec)
+            return root.listed
+        // A saved connection to that very server is the one to use: no unsaved twin next to it.
+        for (var i = 0; i < Store.connections.length; i++) {
+            var c = Store.connections[i]
+            if (c.protocol === spec.protocol && String(c.host).toLowerCase() === spec.host.toLowerCase()
+                    && Number(c.port) === spec.port && (!spec.username || c.username === spec.username))
+                return root.listed
+        }
+        var who = spec.username ? (spec.domain ? spec.domain + "\\" : "") + spec.username + "@" : ""
+        var defaultPort = { rdp: 3389, vnc: 5900, ssh: 22 }[spec.protocol]
+        // A whole connection (a blank one with what was typed), so the detail pane reads like any other.
+        var row = Store.resolve(Object.assign(Store.blankIn(""), {
+            id: root.quickRowId, protocol: spec.protocol, host: spec.host, port: spec.port,
+            username: spec.username, domain: spec.domain, group: "", credential: "custom",
+            name: "Connect to " + who + spec.host + (spec.port !== defaultPort ? ":" + spec.port : "")
+        }))
+        row.quickRow = true
+        return [row].concat(root.listed)
+    }
+    readonly property var shown: shownWithQuick
+    readonly property var listed: {
         if (root.inTrash)
             return Store.trashedConnections.filter(function (c) { return Format.matches(c, root.query) })
                                            .sort(function (a, b) { return b.trashedAt - a.trashedAt })
-        var list = Store.connections.filter(function (c) {
+        // Quick connections show where they matter: in Recent and Active.
+        var source = root.filter === "recent" || root.filter === "active"
+                     ? Store.connections.concat(Store.quickConnections) : Store.connections
+        var list = source.filter(function (c) {
             if (!Format.matches(c, root.query))
                 return false
             if (root.filter === "favourites")
@@ -96,7 +130,9 @@ FocusScope {
     }
 
     readonly property var selected: {
-        Store.connections; Store.trashedConnections
+        Store.connections; Store.trashedConnections; Store.quickConnections
+        if (root.selectedId === root.quickRowId)
+            return root.shown.length > 0 && root.shown[0].quickRow ? root.shown[0] : null
         return root.inTrash ? Store.trashedGet(root.selectedId) : Store.get(root.selectedId)
     }
     // An emptied trash has nothing left to show.
@@ -108,8 +144,10 @@ FocusScope {
         for (var i = 0; i < shown.length; i++)
             if (shown[i].id === selectedId)
                 return
+        // The first real match, before the "Connect to …" row, which is one ↑ away.
         if (!editing)
-            selectedId = shown.length > 0 ? shown[0].id : ""
+            selectedId = shown.length > 1 && shown[0].quickRow ? shown[1].id
+                       : shown.length > 0 ? shown[0].id : ""
     }
     onSelectedIdChanged: {
         deleteArmed = false
@@ -136,7 +174,23 @@ FocusScope {
         list.positionViewAtIndex(at, ListView.Contain)
     }
 
+    // The "Connect to …" row: a quick connection for what was typed, then connected like any other.
+    // Its id goes into connections.json first; the session starts once that is written.
+    function connectQuick() {
+        var spec = root.quickSpec
+        if (!spec)
+            return
+        var id = Store.quickConnect(spec)
+        query = ""
+        selectedId = id
+        quickLaunch.target = id
+        quickLaunch.restart()
+    }
+    Timer { id: quickLaunch; property string target: ""; interval: 200; onTriggered: root.connect(target) }
+
     function connect(id) {
+        if ((id || selectedId) === quickRowId)
+            return connectQuick()
         var c = Store.get(id || selectedId)
         if (!c)
             return
@@ -276,8 +330,10 @@ FocusScope {
     }
 
     function startEdit() {
-        if (!selected)
+        if (!selected || selected.quickRow)
             return
+        if (selected.quick)
+            return saveQuickSelected()
         closePanels()
         editing = true
         editor.load(selected)
@@ -285,6 +341,49 @@ FocusScope {
             Sessions.checkSecret(selected.secretKind, selected.secretId)
         if (selected.gatewaySavePassword)
             Sessions.checkSecret("gateway", selected.id)
+    }
+
+    // The quick connect card (o, ctrl+l, the button, `omaremote quick`): opened on the home tab, with
+    // the search text when that reads as an address.
+    function openQuick(text) {
+        showTab("home")
+        closePanels()
+        quickCard.open(text !== undefined ? text : (quickSpec ? query : ""))
+    }
+    // From the card: a quick connection now, or ("Also save it") the editor on a new connection that
+    // connects once saved.
+    property bool connectAfterSave: false
+    function quickCardConnect(spec) {
+        if (spec.save) {
+            closePanels()
+            editing = true
+            connectAfterSave = true
+            editor.load(Object.assign(Store.blankIn(""), {
+                protocol: spec.protocol, host: spec.host, port: spec.port, name: spec.host,
+                username: spec.username, domain: spec.domain, credential: spec.credential, sshKey: spec.sshKey
+            }))
+            return
+        }
+        var id = Store.quickConnect(spec)
+        query = ""
+        selectedId = id
+        quickLaunch.target = id
+        quickLaunch.restart()
+    }
+
+    // Saving a quick connection: the editor opens on it as a new connection; once saved, the quick
+    // one is gone and the saved one syncs like any other.
+    property string savingQuick: ""
+    function saveQuickSelected() {
+        if (!selected || !selected.quick)
+            return
+        var c = JSON.parse(JSON.stringify(Store.quick.filter(function (q) { return q.id === selected.id })[0]))
+        savingQuick = c.id
+        delete c.used
+        c.id = ""
+        closePanels()
+        editing = true
+        editor.load(Object.assign(Store.blankIn(""), c))
     }
 
     function finishEdit() {
@@ -434,6 +533,15 @@ FocusScope {
         var before = c.id ? Store.get(c.id) : null
         var hadGatewayPassword = !!before && !!before.gatewaySavePassword
         var id = Store.upsert(c)
+        if (savingQuick !== "") {
+            Store.forgetQuick(savingQuick)
+            savingQuick = ""
+        }
+        if (connectAfterSave) {
+            connectAfterSave = false
+            quickLaunch.target = id
+            quickLaunch.restart()
+        }
         if (c.credential !== "custom" || !c.savePassword)
             Sessions.clearSecret("connection", id) // no password of its own any more
         else if (passwordTouched && password !== "")
@@ -454,6 +562,11 @@ FocusScope {
     }
 
     function deleteSelected() {
+        if (selected && selected.quick) {
+            Store.forgetQuick(selected.id)
+            say("Forgot " + selected.host)
+            return
+        }
         if (!selected)
             return
         if (!deleteArmed) {
@@ -486,6 +599,8 @@ FocusScope {
     }
 
     function duplicateSelected() {
+        if (selected && (selected.quick || selected.quickRow))
+            return
         if (!selected)
             return
         selectedId = Store.duplicate(selected.id)
@@ -577,7 +692,7 @@ FocusScope {
         if (root.currentTab !== "home")
             return
         // The settings panel owns the keys while it is open.
-        if (settingsPanel.opened || aboutCard.opened || groupPicker.opened) {
+        if (settingsPanel.opened || aboutCard.opened || groupPicker.opened || quickCard.opened) {
             event.accepted = true
             return
         }
@@ -605,6 +720,21 @@ FocusScope {
 
     function runAction(action) {
         var sidebarEntry = sidebar.entries[sidebarCursor]
+        // The "Connect to …" row and quick connections take only what fits them: a quick one is
+        // saved with s (or e) and forgotten with delete; the rest waits until it is saved.
+        if (selected && (selected.quickRow || selected.quick)
+                && ["edit", "duplicate", "delete", "favourite", "moveGroup", "groupSettings"].indexOf(action) >= 0) {
+            if (selected.quickRow)
+                say("Press ⏎ to connect to it")
+            else if (action === "edit" || action === "groupSettings")
+                saveQuickSelected()
+            else if (action === "delete") {
+                Store.forgetQuick(selected.id)
+                say("Forgot " + selected.host)
+            } else
+                say("Save it as a connection first: s")
+            return
+        }
         // In the trash a connection can only come back or go for good.
         if (inTrash && ["connect", "edit", "duplicate", "favourite", "log", "groupSettings"].indexOf(action) >= 0) {
             if (action === "connect")
@@ -621,6 +751,7 @@ FocusScope {
             else say("Recently deleted is empty")
             break
         case "connect": connect(); break
+        case "quickConnect": openQuick(); break
         case "down": move(1); break
         case "up": move(-1); break
         case "first": move(-1e6); break
@@ -759,6 +890,24 @@ FocusScope {
                         onClicked: root.togglePinned()
                     }
                 }
+                ActionButton {
+                    visible: root.currentTab === "home"
+                    Layout.preferredHeight: Theme.chrome - 6
+                    fontSize: Theme.caption
+                    icon: "\u{f0241}"
+                    text: "Quick connect"
+                    hint: "o"
+                    onClicked: root.openQuick()
+                }
+                ActionButton {
+                    visible: root.currentTab === "home"
+                    Layout.preferredHeight: Theme.chrome - 6
+                    fontSize: Theme.caption
+                    icon: "\uf067"
+                    text: "New"
+                    hint: "n"
+                    onClicked: root.startNew()
+                }
                 Input {
                     id: search
                     visible: root.currentTab === "home"
@@ -771,7 +920,10 @@ FocusScope {
                     text: root.query
                     onTextEdited: root.query = text
                     Keys.onPressed: function (event) {
-                        if (event.key === Qt.Key_Escape) {
+                        if (event.key === Qt.Key_L && (event.modifiers & Qt.ControlModifier)) {
+                            root.openQuick()
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Escape) {
                             root.query = ""
                             root.takeKeys()
                             event.accepted = true
@@ -782,15 +934,6 @@ FocusScope {
                             event.accepted = true
                         }
                     }
-                }
-                ActionButton {
-                    visible: root.currentTab === "home"
-                    Layout.preferredHeight: Theme.chrome - 6
-                    fontSize: Theme.caption
-                    icon: "\uf067"
-                    text: "New"
-                    hint: "n"
-                    onClicked: root.startNew()
                 }
                 // Settings, as in Flea: after a short divider, at the far right.
                 Rectangle {
@@ -913,6 +1056,7 @@ FocusScope {
                     onRestoreRequested: root.restoreSelected()
                     onFavouriteRequested: root.runAction("favourite")
                     onNewRequested: root.startNew()
+                    onSaveQuickRequested: root.saveQuickSelected()
                 }
                 Editor {
                     id: editor
@@ -922,7 +1066,7 @@ FocusScope {
                     onSaved: function (c, password, touched, gatewayPassword, gatewayTouched) {
                         root.saveEdit(c, password, touched, gatewayPassword, gatewayTouched)
                     }
-                    onCancelled: root.finishEdit()
+                    onCancelled: { root.savingQuick = ""; root.connectAfterSave = false; root.finishEdit() }
                 }
                 GroupEditor {
                     id: groupEditor
@@ -996,6 +1140,7 @@ FocusScope {
                             item.closeRequested.connect(function () { root.closeTab(tabLoader.modelData) })
                             item.navigate.connect(function (where) {
                                 if (where === "keys") keymapSheet.open()
+                                else if (where === "quick") root.openQuick("")
                             else if (where === "window") root.popOut(tabLoader.modelData)
                             else if (where === "tab") return
                                 else if (where === "home") root.showTab("home")
@@ -1044,6 +1189,8 @@ FocusScope {
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
                  : root.focusArea === "sidebar" ? [["j k", "move"], ["⏎", "open"], ["s", "group settings"], ["tab", "list"], ["?", "keys"]]
                  : root.inTrash ? [["r", "restore"], ["del del", "delete for good"], ["1", "all connections"], [",", "settings"], ["?", "keys"]]
+                 : root.selected && root.selected.quickRow ? [["⏎", "connect"], ["j k", "move"], ["/", "search"], ["?", "keys"]]
+                 : root.selected && root.selected.quick ? [["⏎", "connect"], ["s", "save"], ["del", "forget"], ["/", "search"], ["tab", "sidebar"], ["?", "keys"]]
                  : [["⏎", "connect"], ["n", "new"], ["e", "edit"], ["s", "group"], ["/", "search"], ["tab", "sidebar"], [",", "settings"], ["?", "keys"]]
         }
     }
@@ -1359,6 +1506,14 @@ FocusScope {
         }
     }
 
+    QuickConnectCard {
+        id: quickCard
+        anchors.fill: parent
+        z: 90
+        onConnectRequested: function (spec) { root.quickCardConnect(spec) }
+        onClosed: root.takeKeys()
+    }
+
     AboutCard {
         id: aboutCard
         anchors.fill: parent
@@ -1424,6 +1579,8 @@ FocusScope {
     onReadyChanged: {
         if (ready && Quickshell.env("OMAREMOTE_OPEN"))
             Qt.callLater(function () { root.openNamed(Quickshell.env("OMAREMOTE_OPEN")) })
+        if (ready && Quickshell.env("OMAREMOTE_QUICK") === "1")
+            Qt.callLater(function () { root.openQuick("") })
         if (ready && Quickshell.env("OMAREMOTE_ADOPT"))
             Qt.callLater(function () { root.adoptSession(Quickshell.env("OMAREMOTE_ADOPT"), Quickshell.env("OMAREMOTE_ADOPT_HOME") === "1") })
     }
@@ -1433,6 +1590,8 @@ FocusScope {
         target: "omaremote"
         function open(name: string): string { return root.openNamed(name) }
         function focus(): void { root.raise() }
+        // omaremote quick: the quick connect card, the window brought forward.
+        function quick(): void { root.raise(); root.openQuick("") }
         function adopt(id: string): string { return root.adoptSession(id, false) }
         // Into a tab, but the manager comes forward on its connections (an own window's ctrl+alt+home).
         function stash(id: string): string { return root.adoptSession(id, true) }
@@ -1556,12 +1715,15 @@ FocusScope {
         else if (a === "keys") keymapSheet.open()
         else if (parts[0] === "settings") settingsPanel.open(parts[1] || "")
         else if (a === "about") aboutCard.open()
+        else if (parts[0] === "quickcard") openQuick(parts.slice(1).join(":"))
+        else if (parts[0] === "quickset") quickCard[parts[1]] = parts[2] === "true" ? true : parts.slice(2).join(":")
         else if (a === "drag") { draggingId = selectedId; dragProxy.x = 140; dragProxy.y = 250 }
         else if (parts[0] === "move") moveToGroup([selectedId], parts.slice(1).join(":"))
         else if (parts[0] === "renamegroup") Store.renameGroup(parts[1], parts[2])
         else if (parts[0] === "deletegroup") deleteGroup(parts[1])
         else if (parts[0] === "gname") groupEditor.name = parts.slice(1).join(":")
         else if (a === "movenew") chooseGroup(newGroup)
+        else if (parts[0] === "quickentry") selectedId = Store.quickConnect(Format.quickSpec(parts.slice(1).join(":"), true))
         else if (a === "gvfscard") gvfsFor = selectedId
         else if (a === "filescard") { Sessions.mountedFiles = [selectedId]; filesAsk = [selectedId] }
         else if (a === "addresscard") Sync.pendingAddress = [{ system: "laptop", id: "c-1", name: "File Server", from: "files.acme.lan", to: "files.example.net" }]
