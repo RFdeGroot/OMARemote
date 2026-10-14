@@ -152,7 +152,8 @@ FocusScope {
             }
             onToggleFullscreen: Quickshell.execDetached([Sessions.bin, "fullscreen"])
             onReconnectRequested: root.reconnect()
-            onCloseRequested: { if (root.host) root.host.quit() }
+            // ctrl+alt+w, or Close on an ended session: as the close key, it disconnects.
+            onCloseRequested: { root.closing(); if (root.host) root.host.quit() }
         }
 
         StatusBar {

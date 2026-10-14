@@ -600,6 +600,18 @@ FocusScope {
         case "delete": deleteSelected(); break
         case "favourite": if (selected) Store.toggleFavourite(selected.id); break
         case "log": showLog(); break
+        case "browse":
+            if (selected && selected.protocol === "ssh" && !inTrash)
+                Sessions.browse(selected.id)
+            else
+                say("Files are for SSH connections")
+            break
+        case "unmount":
+            if (selected && selected.protocol === "ssh" && Sessions.isMounted(selected.id))
+                Sessions.unmountFiles(selected.id)
+            else
+                say("No files of this connection are mounted")
+            break
         case "moveGroup":
             if (selected && !inTrash)
                 groupPicker.open(selected.name || selected.host, selected.group)
@@ -992,7 +1004,7 @@ FocusScope {
             hints: root.currentTab !== "home" && root.currentEnded
                        ? [["⏎", "reconnect"], ["l", "log"], ["w", "close tab"], ["ctrl+alt+home", "connections"],
                           ["ctrl+alt+pgup/pgdn", "tabs"], ["ctrl+alt+k", "keys"]]
-                 : root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"]]
+                 : root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"], ["ctrl+alt+w", "close tab"]]
                                                 .concat(root.currentIsSsh ? [["ctrl+shift+c/v", "copy/paste"]] : [["ctrl+alt+end", "ctrl+alt+del"]])
                                                 .concat([["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]])
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
@@ -1069,6 +1081,135 @@ FocusScope {
                 Item { Layout.fillWidth: true }
                 ActionButton { text: "Keep them"; onClicked: Sync.confirmPending(false) }
                 ActionButton { danger: true; text: "Move to trash"; onClicked: Sync.confirmPending(true) }
+            }
+        }
+    }
+
+    // GVFS's folder layer is gone (Omarchy's suspend hook, omacom/omarchy#5214, fix pending in
+    // PR #14496): restarting gvfs-daemon brings it back, but disconnects other network locations,
+    // so only on the user's say-so.
+    property string gvfsFor: ""
+
+    // An SSH session that ended where no "Disconnected" panel is left to ask (its tab closed, its
+    // own window closed): with Settings › SSH › After a session = Ask, the manager asks here,
+    // once the last session to that connection is gone and its files are still mounted.
+    property var filesAsk: []      // connection ids to ask about
+    property var activeSsh: ({})   // session id -> connection id, as last seen running
+    Connections {
+        target: Sessions
+        function onSessionsChanged() {
+            var now = {}
+            var ended = []
+            var list = Sessions.sessions
+            for (var i = 0; i < list.length; i++) {
+                var s = list[i]
+                if (s.protocol !== "ssh")
+                    continue
+                if (Sessions.isActive(s))
+                    now[s.id] = s.connection
+                else if (root.activeSsh[s.id] !== undefined
+                         && root.openTabs.indexOf(s.id) < 0 && !(s.view === "window" && s.viewer))
+                    ended.push(s.connection)
+            }
+            root.activeSsh = now
+            if (ended.length > 0 && (Store.ui.sftpOnEnd || "ask") === "ask") {
+                root.filesAsk = root.filesAsk.concat(ended.filter(function (c) { return root.filesAsk.indexOf(c) < 0 }))
+                Sessions.refreshMounts()
+            }
+        }
+    }
+    // Asked about: mounted, and no session to it running any more.
+    readonly property string filesAskFor: {
+        Sessions.mountedFiles; Sessions.sessions
+        for (var i = 0; i < filesAsk.length; i++)
+            if (Sessions.isMounted(filesAsk[i]) && Sessions.activeFor(filesAsk[i]).length === 0)
+                return filesAsk[i]
+        return ""
+    }
+    function filesAnswered(id) {
+        filesAsk = filesAsk.filter(function (c) { return c !== id })
+    }
+    Rectangle {
+        visible: root.filesAskFor !== "" && root.gvfsFor === ""
+        z: 96
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.control * 2
+        width: Math.min(520, parent.width - 2 * Theme.panelPad)
+        height: filesAskBody.implicitHeight + 2 * Theme.panelPad
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.hairline
+        RowLayout {
+            id: filesAskBody
+            x: Theme.panelPad
+            y: Theme.panelPad
+            width: parent.width - 2 * Theme.panelPad
+            spacing: Theme.gap
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: { var c = Store.get(root.filesAskFor); return "Files of " + (c ? (c.name || c.host) : "it") + " are still mounted" }
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            ActionButton { text: "Keep"; onClicked: root.filesAnswered(root.filesAskFor) }
+            ActionButton { primary: true; text: "Unmount"; onClicked: { var id = root.filesAskFor; Sessions.unmountFiles(id); root.filesAnswered(id) } }
+        }
+    }
+    Connections {
+        target: Sessions
+        function onFilesNotice(text, isError) { root.say(text, isError) }
+        function onFilesNeedGvfs(id) { root.gvfsFor = id }
+    }
+    Rectangle {
+        visible: root.gvfsFor !== ""
+        z: 96
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.control * 2
+        width: Math.min(600, parent.width - 2 * Theme.panelPad)
+        height: gvfsBody.implicitHeight + 2 * Theme.panelPad
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.warning
+        ColumnLayout {
+            id: gvfsBody
+            x: Theme.panelPad
+            y: Theme.panelPad
+            width: parent.width - 2 * Theme.panelPad
+            spacing: Theme.gap
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: "The files can't open as a folder"
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.title
+                font.bold: true
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: "GVFS's folder layer is gone since the last suspend (a known Omarchy issue, fixed in a pending "
+                      + "update). Restarting GVFS brings it back; other network locations that are open now (SMB and "
+                      + "the like) disconnect."
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.gap
+                Item { Layout.fillWidth: true }
+                ActionButton { text: "Cancel"; onClicked: root.gvfsFor = "" }
+                ActionButton { primary: true; text: "Restart GVFS"; onClicked: { Sessions.restartGvfs(root.gvfsFor); root.gvfsFor = "" } }
             }
         }
     }
@@ -1388,6 +1529,8 @@ FocusScope {
         else if (parts[0] === "deletegroup") deleteGroup(parts[1])
         else if (parts[0] === "gname") groupEditor.name = parts.slice(1).join(":")
         else if (a === "movenew") chooseGroup(newGroup)
+        else if (a === "gvfscard") gvfsFor = selectedId
+        else if (a === "filescard") { Sessions.mountedFiles = [selectedId]; filesAsk = [selectedId] }
         else if (a === "addresscard") Sync.pendingAddress = [{ system: "laptop", id: "c-1", name: "File Server", from: "files.acme.lan", to: "files.example.net" }]
         else if (a === "enter") keymapSheet.runPicked()
         else if (parts[0] === "walk") {

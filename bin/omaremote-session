@@ -28,6 +28,10 @@ so closing the window never closes a remote desktop.
   omaremote-session place <session> <pid>    a new own window: float it, and into its special workspace
                                          when it is a hotkey window
   omaremote-session hide <session>       hide a hotkey window (ctrl+alt+h)
+  omaremote-session browse <id>          an SSH connection's files (GVFS) in the default file manager
+  omaremote-session unmount <id>         unmount them again
+  omaremote-session mounts               the SSH connections whose files are mounted, JSON
+  omaremote-session restart-gvfs         restart gvfs-daemon, when its folder layer is gone
   omaremote-session hotkeys              the shortcuts Hyprland already binds, JSON (for conflicts)
   omaremote-session close-key            the key Hyprland closes a window with ("super+w")
   omaremote-session hypr-hotkeys         write ~/.config/hypr/omaremote.lua when Settings allow it
@@ -43,10 +47,12 @@ so closing the window never closes a remote desktop.
                                          the desktop's file chooser (portal); prints {"path"}, "" if cancelled
 """
 
+import glob
 import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -1440,6 +1446,144 @@ def write_json_text(path, text):
     write_user_file(path, text)
 
 
+# ---------------------------------------------------------------- files over SFTP
+#
+# An SSH connection's files as an ordinary folder: GVFS mounts sftp:// (with the system ssh, so
+# ~/.ssh/config, keys, the agent and known_hosts all apply) and its FUSE layer shows the mount under
+# $XDG_RUNTIME_DIR/gvfs, which the user's own file manager opens (xdg-open). OMARemote moves no
+# files itself: uploading and downloading is dragging in that file manager.
+
+# Where distributions put GVFS's sftp backend (Arch, Debian/Fedora, older layouts).
+GVFSD_SFTP = ("/usr/lib/gvfsd-sftp", "/usr/libexec/gvfsd-sftp", "/usr/lib/gvfs/gvfsd-sftp", "/usr/lib*/gvfs/gvfsd-sftp")
+GVFS_FUSE = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "gvfs")
+
+
+def sftp_uri(conn):
+    """sftp://[user@]host[:port]/ for an SSH connection; ValueError for anything else."""
+    if conn.get("protocol") != "ssh":
+        raise ValueError("files are for SSH connections")
+    host = check_host(conn.get("host"))
+    user = (conn.get("username") or "").strip()
+    if "@" in host:
+        user, host = host.rsplit("@", 1)
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # an IPv6 address
+    try:
+        port = int(conn.get("port") or 22)
+    except (TypeError, ValueError):
+        port = 22
+    from urllib.parse import quote
+    who = quote(user, safe="") + "@" if user else ""
+    return f"sftp://{who}{host}" + (f":{port}" if port != 22 else "") + "/"
+
+
+def gvfs_fuse_ready(mounts_text=None):
+    """Whether GVFS's FUSE layer is up, so a mount has a local folder (Omarchy's suspend hook can
+    leave it down: omacom/omarchy#5214)."""
+    if mounts_text is None:
+        try:
+            with open("/proc/mounts", encoding="utf-8") as f:
+                mounts_text = f.read()
+        except OSError:
+            return False
+    return any(len(parts) > 2 and parts[1] == GVFS_FUSE and parts[2] == "fuse.gvfsd-fuse"
+               for parts in (line.split() for line in mounts_text.splitlines()))
+
+
+def _gio_mount(uri):
+    """The GMount holding uri, or None."""
+    from gi.repository import Gio
+    try:
+        return Gio.File.new_for_uri(uri).find_enclosing_mount(None)
+    except Exception:
+        return None
+
+
+def files_mounted(conn):
+    try:
+        return _gio_mount(sftp_uri(conn)) is not None
+    except (ValueError, ImportError):
+        return False
+
+
+def browse(name):
+    """omaremote-session browse: an SSH connection's files in the default file manager. Prints JSON:
+    {"state": "opened" | "terminal" | "needs-fuse"} or {"error"}."""
+    conn = find_connection(name, load_connections())
+    if not conn:
+        return {"error": "no such connection"}
+    try:
+        uri = sftp_uri(conn)
+        from gi.repository import Gio  # noqa: F401  (python-gobject)
+    except ValueError as e:
+        return {"error": str(e)}
+    except ImportError:
+        return {"error": "browsing files needs python-gobject"}
+    if not shutil.which("gio") or not any(glob.glob(p) for p in GVFSD_SFTP):
+        return {"error": "browsing files needs gvfs (the gvfs package)"}
+    if not gvfs_fuse_ready():
+        return {"state": "needs-fuse"}
+    if _gio_mount(uri) is None:
+        # Keys and the agent sign in without a word; anything that asks (a password, a new host
+        # key) gets a terminal, where gio mount asks and OMARemote never sees the answer.
+        try:
+            done = subprocess.run(["gio", "mount", uri], stdin=subprocess.DEVNULL, capture_output=True,
+                                  timeout=30).returncode == 0
+        except subprocess.TimeoutExpired:
+            done = False
+        if not done or _gio_mount(uri) is None:
+            again = "gio mount %s && %s browse %s" % (shlex.quote(uri), shlex.quote(os.path.abspath(__file__)),
+                                                       shlex.quote(conn["id"]))
+            subprocess.Popen(["omarchy", "launch", "floating", "terminal", "with", "presentation", again],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return {"state": "terminal"}
+    mount = _gio_mount(uri)
+    folder = mount.get_default_location().get_path() if mount else None  # the remote home
+    if not folder:
+        return {"state": "needs-fuse"}
+    subprocess.Popen(["xdg-open", folder], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return {"state": "opened"}
+
+
+def unmount_files(name):
+    conn = find_connection(name, load_connections())
+    if not conn:
+        return {"error": "no such connection"}
+    try:
+        uri = sftp_uri(conn)
+    except ValueError as e:
+        return {"error": str(e)}
+    out = subprocess.run(["gio", "mount", "-u", uri], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    return {"unmounted": out.returncode == 0} if out.returncode == 0 else {"error": (out.stderr or "").strip()[:200]}
+
+
+def mounted_files():
+    """The SSH connections whose files are mounted now: their ids, and per id how many of its
+    sessions are running (the UI asks about unmounting only when the last one ends)."""
+    out = []
+    try:
+        from gi.repository import Gio  # noqa: F401
+    except ImportError:
+        return out
+    for c in load_connections():
+        if c.get("protocol") == "ssh" and files_mounted(c):
+            out.append(c["id"])
+    return out
+
+
+def restart_gvfs():
+    """The fix Omarchy's own PR #14496 applies after a resume: restart gvfs-daemon, which brings its
+    FUSE layer back. Only on the user's say-so (other network locations disconnect)."""
+    subprocess.run(["systemctl", "--user", "restart", "gvfs-daemon.service"], capture_output=True, timeout=30)
+    for _ in range(50):
+        if gvfs_fuse_ready():
+            return {"ok": True}
+        time.sleep(0.2)
+    return {"error": "GVFS came back without its folder layer"}
+
+
 def monitor_scale():
     """The focused monitor's scale in percent, or 100 when Hyprland cannot answer."""
     try:
@@ -2288,7 +2432,27 @@ def supervise(conn, sid, tab=None):
     write_session(state)
     if error and os.environ.get("OMAREMOTE_NOTIFY", "1") == "1":
         notify()
+    if protocol == "ssh":
+        files_after_session(conn)
     return 0
+
+
+def files_after_session(conn):
+    """Settings › SSH › After a session = Unmount: the files go once the last session to the
+    connection has ended, however it ended (exit, a closed tab or window, OMARemote closed). Ask and
+    Keep are the UI's: it asks where the user is, or leaves them."""
+    try:
+        if ((load_raw().get("ui") or {}).get("sftpOnEnd") or "ask") != "unmount":
+            return
+        if any(s.get("connection") == conn.get("id") and s.get("state") in ("connecting", "connected")
+               for s in list_sessions()):
+            return
+        if files_mounted(conn):
+            subprocess.run(["gio", "mount", "-u", sftp_uri(conn)], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=30)
+            touch_changes()
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
 
 
 # The same words for every failure: a notification's text is not private once it leaves (Omarchy's
@@ -2493,6 +2657,18 @@ def main(argv):
         return 0 if hide_window(rest[0]) else 1
     if cmd == "close-key":
         print(close_key())
+        return 0
+    if cmd == "browse" and rest:
+        print(json.dumps(browse(" ".join(rest))))
+        return 0
+    if cmd == "unmount" and rest:
+        print(json.dumps(unmount_files(" ".join(rest))))
+        return 0
+    if cmd == "mounts":
+        print(json.dumps(mounted_files()))
+        return 0
+    if cmd == "restart-gvfs":
+        print(json.dumps(restart_gvfs()))
         return 0
     if cmd == "hotkeys":
         print(json.dumps(hypr_hotkeys()))

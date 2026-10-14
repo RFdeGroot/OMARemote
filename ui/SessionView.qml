@@ -38,7 +38,29 @@ Item {
 
     onCurrentChanged: if (current) Qt.callLater(focusDesktop)
     onHasPromptChanged: if (current) Qt.callLater(focusDesktop)
-    onLiveChanged: if (current) Qt.callLater(focusDesktop)
+    onLiveChanged: {
+        if (current)
+            Qt.callLater(focusDesktop)
+        if (!live && isSsh)
+            Qt.callLater(root.filesAfterSession)
+    }
+
+    readonly property bool isSsh: !!session && session.protocol === "ssh"
+    // Its files still mounted once the last SSH session to that connection has ended: asked on the
+    // ended panel, or unmounted or kept as Settings › SSH says.
+    property bool filesAsked: false
+    readonly property bool filesStillMounted: {
+        Sessions.sessions
+        if (!isSsh || live || !session || !(Sessions.mountedFiles, Sessions.isMounted(session.connection)))
+            return false
+        return Sessions.activeFor(session.connection).length === 0
+    }
+    // Unmount is done by the session's supervisor (files_after_session); here only the mount list
+    // is brought up to date for the question.
+    function filesAfterSession() {
+        filesAsked = false
+        Sessions.refreshMounts()
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -85,6 +107,8 @@ Item {
         else if (event.key === Qt.Key_T && root.inWindow) root.navigate("tab")
         else if (event.key === Qt.Key_H && root.inWindow) root.navigate("hide")
         else if (event.key === Qt.Key_P) root.togglePinned()
+        else if (event.key === Qt.Key_B && root.isSsh) Sessions.browse(root.session.connection)
+        else if (event.key === Qt.Key_W) root.closeRequested()
         else return false
         return true
     }
@@ -171,13 +195,31 @@ Item {
             ActionButton { text: "Log"; hint: "l"; onClicked: Sessions.openLog(root.session) }
             ActionButton { text: root.inWindow ? "Close" : "Close tab"; hint: "w"; onClicked: root.closeRequested() }
         }
+        // Its files still mounted (Settings › SSH: ask).
+        Row {
+            id: filesQuestion
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: root.filesStillMounted && !root.filesAsked && (Store.ui.sftpOnEnd || "ask") === "ask"
+            spacing: Theme.gap
+            Text {
+                textFormat: Text.PlainText
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Its files are still mounted"
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            ActionButton { text: "Unmount"; hint: "u"; onClicked: { Sessions.unmountFiles(root.session.connection); root.filesAsked = true } }
+            ActionButton { text: "Keep"; onClicked: root.filesAsked = true }
+        }
         focus: visible && root.current
         Keys.onPressed: function (event) {
             if (root.chord(event)) {
                 event.accepted = true
                 return
             }
-            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.reconnectRequested()
+            if (event.key === Qt.Key_U && filesQuestion.visible) { Sessions.unmountFiles(root.session.connection); root.filesAsked = true }
+            else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.reconnectRequested()
             else if (event.key === Qt.Key_L) Sessions.openLog(root.session)
             else if (event.key === Qt.Key_W || event.key === Qt.Key_Escape) root.closeRequested()
             else return

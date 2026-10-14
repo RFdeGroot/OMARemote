@@ -223,6 +223,21 @@ Rectangle {
                 ActionButton { icon: ""; text: "Edit"; hint: "e"; onClicked: root.editRequested() }
                 ActionButton { icon: ""; text: "Duplicate"; hint: "d"; onClicked: root.duplicateRequested() }
                 ActionButton {
+                    visible: !!root.connection && root.connection.protocol === "ssh"
+                    icon: "\uf07c"
+                    text: "Browse files"
+                    hint: "b"
+                    onClicked: Sessions.browse(root.connection.id)
+                }
+                ActionButton {
+                    visible: !!root.connection && root.connection.protocol === "ssh"
+                             && (Sessions.mountedFiles, Sessions.isMounted(root.connection.id))
+                    icon: "\uf052"
+                    text: "Unmount files"
+                    hint: "u"
+                    onClicked: Sessions.unmountFiles(root.connection.id)
+                }
+                ActionButton {
                     icon: ""
                     danger: true
                     text: root.deleteArmed ? "Press again to delete" : "Delete"

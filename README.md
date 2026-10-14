@@ -188,6 +188,7 @@ Inside a session every key goes to the remote desktop, except these:
 | `ctrl+alt+end` | send ctrl+alt+del |
 | `ctrl+alt+⏎` | fullscreen, chrome hidden |
 | `ctrl+alt+o` | move the session to its own window (`ctrl+alt+t` there: back into a tab) |
+| `ctrl+alt+w` | disconnect: close the tab (or its own window) |
 | `ctrl+alt+h` | hide a hotkey window (its shortcut brings it back) |
 | `ctrl+alt+p` | pin or unpin the connections list |
 | `ctrl+alt+k` | keymap sheet |
@@ -339,6 +340,15 @@ Pick **SSH** as a connection's protocol (port 22 by default). The session is a t
 draws in the tab (or in its own window), so it gets tabs, pinning and own windows like the desktops.
 In its own window or a hotkey window it keeps running when you close OMARemote.
 
+- **Files:** *Browse files* (`b` on an SSH connection, `ctrl+alt+b` in its session) opens the host's
+  files in your own file manager, whichever it is (Flea, Nautilus, Dolphin, Thunar, yazi…): GVFS mounts
+  `sftp://` with your ssh (its config, keys, agent and known hosts) and the files show up as an ordinary
+  folder. Copy or drag files in and out there; OMARemote moves no files itself. A host that asks for
+  a password asks once in a small terminal. *Unmount files* disconnects them; when the last session
+  to a host ends with its files still mounted, OMARemote asks (Settings › SSH: ask, unmount or keep).
+  After a suspend, Omarchy can leave GVFS without its folder layer (omacom/omarchy#5214): OMARemote
+  then offers to restart GVFS, the same fix Omarchy has pending.
+
 - **Sign in** is plain `ssh`: your keys and ssh-agent (1Password's agent works too), and ssh asks
   in the terminal for anything else (a password, a new host key, a second factor). OMARemote stores
   no SSH passwords.
@@ -402,7 +412,8 @@ one: sessions read their settings from stdin, keyring entries are labelled by id
 notification says only that a connection failed (which one, and why, is in OMARemote), the
 Kerberos DNS lookup runs in-process, and the Omarchy bar plugin and hotkey bindings name
 connections by id. One exception: an SSH session runs `ssh` itself, whose command line holds the
-host (and the user name, port and key when set), the same as typing `ssh` in a terminal. To keep
+host (and the user name, port and key when set), the same as typing `ssh` in a terminal; *Browse
+files* likewise runs `gio mount sftp://user@host`. To keep
 other accounts out of `/proc` altogether, mount it with `hidepid=invisible`.
 
 **Keys** come from one table, `ui/Keymap.qml`, which both handles them and draws the keymap sheet.

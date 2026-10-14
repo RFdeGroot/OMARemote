@@ -283,6 +283,18 @@ FocusScope {
                             color: Theme.foreground
                         }
 
+                        Heading { visible: root.section === "ssh"; text: "FILES" }
+                        FormRow {
+                            visible: root.section === "ssh"
+                            label: "After a session"
+                            help: "Its files still mounted when the last session to it ends"
+                            Segment {
+                                value: Store.ui.sftpOnEnd || "ask"
+                                options: [{ value: "ask", label: "Ask" }, { value: "unmount", label: "Unmount" }, { value: "keep", label: "Keep" }]
+                                onPicked: function (v) { Store.setUi("sftpOnEnd", v) }
+                            }
+                        }
+
                         // ------------------------------------------------ Hotkeys
                         Heading { visible: root.section === "hotkeys"; text: "HOTKEY WINDOWS" }
                         Note {

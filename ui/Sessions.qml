@@ -148,6 +148,77 @@ Singleton {
         }
     }
 
+    // ---------------------------------------------------------------- files over SFTP
+    // An SSH connection's files, mounted by GVFS and opened in the default file manager
+    // (browse in bin/omaremote-session). mountedFiles: the connection ids mounted now.
+    property var mountedFiles: []
+    signal filesNotice(string text, bool isError)
+    // GVFS's folder layer is down (a known Omarchy issue after suspend): the UI asks before restarting it.
+    signal filesNeedGvfs(string id)
+
+    function isMounted(id) { return mountedFiles.indexOf(id) >= 0 }
+
+    function browse(id) {
+        if (filesRunner.running)
+            return
+        filesRunner.connId = id
+        filesRunner.command = [bin, "browse", id]
+        filesRunner.running = true
+    }
+    function unmountFiles(id) {
+        if (filesRunner.running)
+            return
+        filesRunner.connId = id
+        filesRunner.command = [bin, "unmount", id]
+        filesRunner.running = true
+    }
+    function restartGvfs(id) {
+        if (filesRunner.running)
+            return
+        filesRunner.connId = id
+        filesRunner.command = [bin, "restart-gvfs"]
+        filesRunner.running = true
+    }
+    function refreshMounts() {
+        if (!mountsProbe.running)
+            mountsProbe.running = true
+    }
+
+    Process {
+        id: filesRunner
+        property string connId: ""
+        stdout: StdioCollector { id: filesOut; waitForEnd: true }
+        onExited: {
+            var r = {}
+            try { r = JSON.parse(filesOut.text) } catch (e) { r = { error: "no answer" } }
+            var verb = filesRunner.command[1]
+            if (r.error)
+                root.filesNotice("Files: " + r.error, true)
+            else if (r.state === "needs-fuse")
+                root.filesNeedGvfs(filesRunner.connId)
+            else if (r.state === "terminal")
+                root.filesNotice("Signing in to the files in a terminal", false)
+            else if (r.state === "opened")
+                root.filesNotice("Opened the files in your file manager", false)
+            else if (verb === "unmount")
+                root.filesNotice("Files unmounted", false)
+            else if (verb === "restart-gvfs" && r.ok)
+                Qt.callLater(function () { root.browse(filesRunner.connId) })
+            root.refreshMounts()
+        }
+    }
+    Process {
+        id: mountsProbe
+        command: [root.bin, "mounts"]
+        running: true
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: { try { root.mountedFiles = JSON.parse(text) || [] } catch (e) {} }
+        }
+    }
+    // A file manager can unmount too (eject): look again now and then.
+    Timer { interval: 15000; repeat: true; running: true; onTriggered: root.refreshMounts() }
+
     // The key Hyprland closes a window with (Omarchy's super+w, or what the user bound instead), for
     // the hints; Hyprland does the closing itself, so the key always works whatever it is.
     property string closeKey: "super+w"

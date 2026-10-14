@@ -1253,3 +1253,87 @@ class AddressGuard(unittest.TestCase):
         data, _ = session.merge(local, [self.remote(self.c(ignoreCert=True, security="rdp", modified=200))], 1000)
         self.assertFalse(data["connections"][0].get("ignoreCert"))
         self.assertNotEqual(data["connections"][0].get("security"), "rdp")
+
+
+class Files(unittest.TestCase):
+    """An SSH connection's files through GVFS, opened in the user's own file manager."""
+
+    def test_the_sftp_url_of_a_connection(self):
+        self.assertEqual(session.sftp_uri({"protocol": "ssh", "host": "srv.lan"}), "sftp://srv.lan/")
+        self.assertEqual(session.sftp_uri({"protocol": "ssh", "host": "srv.lan", "username": "alice", "port": 2222}),
+                         "sftp://alice@srv.lan:2222/")
+        self.assertEqual(session.sftp_uri({"protocol": "ssh", "host": "bob@srv.lan"}), "sftp://bob@srv.lan/")
+        self.assertEqual(session.sftp_uri({"protocol": "ssh", "host": "fe80::1"}), "sftp://[fe80::1]/")
+        self.assertEqual(session.sftp_uri({"protocol": "ssh", "host": "srv", "username": "a b"}), "sftp://a%20b@srv/")
+        for bad in ({"protocol": "rdp", "host": "srv"}, {"protocol": "ssh", "host": "srv\n/x"}, {"protocol": "ssh", "host": "-oX"}):
+            with self.assertRaises(ValueError):
+                session.sftp_uri(bad)
+
+    def test_the_folder_layer_is_found_in_the_mount_table(self):
+        fuse = session.GVFS_FUSE
+        self.assertTrue(session.gvfs_fuse_ready(f"gvfsd-fuse {fuse} fuse.gvfsd-fuse rw 0 0\n"))
+        self.assertFalse(session.gvfs_fuse_ready("proc /proc proc rw 0 0\n"))
+        self.assertFalse(session.gvfs_fuse_ready(f"other {fuse} tmpfs rw 0 0\n"))
+
+    def run_browse(self, fuse=True, mounted_after=True, gio_ok=True):
+        from unittest import mock
+        calls = []
+        mount = mock.Mock()
+        mount.get_default_location.return_value.get_path.return_value = "/run/user/1000/gvfs/sftp:host=srv/home/alice"
+        state = {"mounted": False}
+
+        def gio_mount(uri):
+            return mount if state["mounted"] else None
+
+        def run(args, *a, **k):
+            calls.append(list(args))
+            if args[:2] == ["gio", "mount"] and gio_ok:
+                state["mounted"] = mounted_after
+            return session.subprocess.CompletedProcess(args, 0 if gio_ok else 1, "", "")
+
+        conns = [{"id": "c1", "protocol": "ssh", "host": "srv"}]
+        with mock.patch.object(session, "load_connections", lambda *a: conns), \
+             mock.patch.object(session, "gvfs_fuse_ready", lambda *a: fuse), \
+             mock.patch.object(session, "_gio_mount", gio_mount), \
+             mock.patch.object(session.shutil, "which", lambda n: "/usr/bin/" + n), \
+             mock.patch.object(session.glob, "glob", lambda p: [p]), \
+             mock.patch.object(session.subprocess, "run", run), \
+             mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(list(args))):
+            return session.browse("c1"), calls
+
+    def test_mounted_files_open_in_the_default_file_manager(self):
+        out, calls = self.run_browse()
+        self.assertEqual(out, {"state": "opened"})
+        self.assertIn(["xdg-open", "/run/user/1000/gvfs/sftp:host=srv/home/alice"], calls)
+
+    def test_a_host_that_asks_gets_a_terminal(self):
+        out, calls = self.run_browse(gio_ok=False)
+        self.assertEqual(out, {"state": "terminal"})
+        terminal = next(c for c in calls if c[0] == "omarchy")
+        self.assertIn("gio mount sftp://srv/", terminal[-1])
+
+    def unmount_after(self, setting, others=False, mounted=True):
+        from unittest import mock
+        calls = []
+        sessions = [{"connection": "c1", "state": "connected"}] if others else [{"connection": "c1", "state": "ended"}]
+        with mock.patch.object(session, "load_raw", lambda *a: {"ui": {"sftpOnEnd": setting}}), \
+             mock.patch.object(session, "list_sessions", lambda: sessions), \
+             mock.patch.object(session, "files_mounted", lambda c: mounted), \
+             mock.patch.object(session, "touch_changes", lambda: None), \
+             mock.patch.object(session.subprocess, "run", lambda args, **k: calls.append(list(args))):
+            session.files_after_session({"id": "c1", "protocol": "ssh", "host": "srv"})
+        return calls
+
+    def test_unmount_after_the_last_session_however_it_ended(self):
+        self.assertEqual(self.unmount_after("unmount"), [["gio", "mount", "-u", "sftp://srv/"]])
+
+    def test_ask_and_keep_and_other_sessions_leave_the_files(self):
+        self.assertEqual(self.unmount_after("ask"), [])
+        self.assertEqual(self.unmount_after("keep"), [])
+        self.assertEqual(self.unmount_after("unmount", others=True), [])
+        self.assertEqual(self.unmount_after("unmount", mounted=False), [])
+
+    def test_without_the_folder_layer_nothing_is_mounted_and_the_ui_asks(self):
+        out, calls = self.run_browse(fuse=False)
+        self.assertEqual(out, {"state": "needs-fuse"})
+        self.assertEqual(calls, [])
