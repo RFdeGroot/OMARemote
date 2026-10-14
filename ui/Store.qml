@@ -38,7 +38,7 @@ Singleton {
         display: "fit", width: 1920, height: 1080, scale: "auto", multimon: false,
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
-        gateway: "", gatewayUser: "", gatewayDomain: "", kdc: "",
+        gateway: "", gatewayUser: "", gatewayDomain: "", gatewaySavePassword: false, kdc: "",
         extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, sshArgs: "", sshKey: "", hotkey: "",
         favourite: false, lastConnected: 0
     })
@@ -50,7 +50,8 @@ Singleton {
     readonly property var resolvedOnly: ["credentialSource", "secretKind", "secretId"]
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
-        "gatewayDomain", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert", "security"]
+        "gatewayDomain", "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey",
+        "ignoreCert", "security"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
     readonly property var connections: stored.map(function (c) { return root.resolve(c) })
@@ -371,6 +372,7 @@ Singleton {
         copy.modified = Date.now()
         if ((copy.credential || "custom") === "custom")
             copy.savePassword = false // the password belongs to the original's keyring entry
+        copy.gatewaySavePassword = false // and so does the gateway's
         root.stored = stored.concat([copy])
         edited()
         return copy.id

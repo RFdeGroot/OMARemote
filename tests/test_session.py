@@ -71,6 +71,18 @@ class BuildArgs(unittest.TestCase):
         self.assertEqual([a for a in session.redact(args) if a.startswith("/gateway:")][0],
                          "/gateway:g:gw.corp:443,u:me,p:********")
 
+    def test_gateway_own_credentials(self):
+        c = conn(username="me", domain="CORP", gateway="gw.corp", gatewayUser="gwuser", gatewayDomain="GW")
+        gw = lambda args: [a for a in args if a.startswith("/gateway:")][0]
+        # Its own user and no password of its own: the connection's password is not the gateway's.
+        self.assertEqual(gw(session.build_args(c, password="s3cret")), "/gateway:g:gw.corp,u:gwuser,d:GW")
+        args = session.build_args(c, password="s3cret", gateway_password="gwpw")
+        self.assertEqual(gw(args), "/gateway:g:gw.corp,u:gwuser,d:GW,p:gwpw")
+        self.assertEqual(gw(session.redact(args)), "/gateway:g:gw.corp,u:gwuser,d:GW,p:********")
+        # The gateway's own password wins over the connection's when both sign in as the same user.
+        same = session.build_args(conn(username="me", gateway="gw.corp"), password="s3cret", gateway_password="gwpw")
+        self.assertEqual(gw(same), "/gateway:g:gw.corp,u:me,p:gwpw")
+
     def test_audio_and_redirection(self):
         args = session.build_args(conn(audio="off", clipboard=False, homeDrive=True, microphone=True))
         self.assertIn("/audio-mode:2", args)
@@ -1225,6 +1237,13 @@ class AddressGuard(unittest.TestCase):
         for change in ({"gateway": "gw.example"}, {"kdc": "kdc.example"}, {"port": 3390}):
             _, report = session.merge(local, [self.remote(self.c(modified=200, **change))], 1000)
             self.assertEqual(len(report["pendingAddress"]), 1, change)
+
+    def test_a_saved_gateway_password_waits_too(self):
+        local = self.local(self.c(credential="custom", gateway="gw.lan", gatewaySavePassword=True))
+        for change in ({"gateway": "gw.example"}, {"host": "new.lan"}):
+            data, report = session.merge(local, [self.remote(self.c(modified=200, **dict({"gateway": "gw.lan"}, **change)))], 1000)
+            self.assertEqual(len(report["pendingAddress"]), 1, change)
+            self.assertEqual(data["connections"][0]["gateway"], "gw.lan")
 
     def test_without_credentials_here_the_change_just_arrives(self):
         local = self.local(self.c(credential="custom", savePassword=False))

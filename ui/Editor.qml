@@ -9,8 +9,10 @@ Rectangle {
     property var d: ({})
     property string password: ""
     property bool passwordTouched: false
+    property string gatewayPassword: ""
+    property bool gatewayPasswordTouched: false
     property string error: ""
-    signal saved(var connection, string password, bool passwordTouched)
+    signal saved(var connection, string password, bool passwordTouched, string gatewayPassword, bool gatewayPasswordTouched)
     signal cancelled()
 
     color: Theme.surface
@@ -32,6 +34,8 @@ Rectangle {
     // Fields for user, domain and password show for these two; the rest name a credential set.
     readonly property bool ownCredentials: d.credential === "custom" || d.credential === "new"
     readonly property bool hasStoredPassword: d.credential === "custom" && !!d.id && Sessions.secrets["connection:" + d.id] === true
+    readonly property bool hasGateway: isRdp && !!String(d.gateway || "").trim()
+    readonly property bool hasStoredGatewayPassword: !!d.gatewaySavePassword && !!d.id && Sessions.secrets["gateway:" + d.id] === true
     readonly property var groupInfo: { Store.groupSettings; Store.credentials; return Store.group(d.group) }
 
     // The SSH key picker: ssh's own choice, the keys in ~/.ssh, the one set (wherever it is), Browse.
@@ -106,6 +110,8 @@ Rectangle {
             Hotkeys.refresh()
         password = ""
         passwordTouched = false
+        gatewayPassword = ""
+        gatewayPasswordTouched = false
         error = ""
         flick.contentY = 0
         nameField.forceActiveFocus()
@@ -158,7 +164,7 @@ Rectangle {
         }
         c.width = Math.max(640, parseInt(c.width) || 1920)
         c.height = Math.max(480, parseInt(c.height) || 1080)
-        saved(c, password, passwordTouched)
+        saved(c, password, passwordTouched, gatewayPassword, gatewayPasswordTouched)
     }
 
     Keys.onPressed: function (event) {
@@ -589,11 +595,48 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("gatewayUser")
                     label: "Gateway user"
-                    visible: root.isRdp && (!!(root.d.gateway || "").trim())
+                    visible: root.hasGateway
                     Input {
                         placeholderText: "same as above"
                         text: root.d.gatewayUser || ""
                         onTextEdited: root.set("gatewayUser", text)
+                    }
+                }
+                FormRow {
+                    inherited: root.fromGroup("gatewayDomain")
+                    label: "Gateway domain"
+                    visible: root.hasGateway
+                    Input {
+                        placeholderText: "same as above"
+                        text: root.d.gatewayDomain || ""
+                        onTextEdited: root.set("gatewayDomain", text)
+                    }
+                }
+                FormRow {
+                    label: "Gateway password"
+                    visible: root.hasGateway
+                    Input {
+                        password: true
+                        placeholderText: root.hasStoredGatewayPassword ? "•••••• stored — type to replace"
+                                       : root.d.gatewaySavePassword ? "password"
+                                       : root.d.gatewayUser ? "asked when connecting" : "same as above"
+                        text: root.gatewayPassword
+                        onTextEdited: {
+                            root.gatewayPassword = text
+                            root.gatewayPasswordTouched = true
+                            // Typing a password means keeping it.
+                            if (text !== "" && !root.d.gatewaySavePassword)
+                                root.set("gatewaySavePassword", true)
+                        }
+                    }
+                }
+                FormRow {
+                    label: "Save gateway password"
+                    help: "In your keyring"
+                    visible: root.hasGateway
+                    Check {
+                        checked: !!root.d.gatewaySavePassword
+                        onToggled: root.set("gatewaySavePassword", !checked)
                     }
                 }
                 FormRow {
