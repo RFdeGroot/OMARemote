@@ -1646,6 +1646,27 @@ def check_lines(args):
     return args
 
 
+def _unpassable(what):
+    raise ValueError(f"the {what} cannot hold a quote or end in a backslash (FreeRDP cannot take it)")
+
+
+def gateway_element(key, value):
+    """One element of FreeRDP's /gateway: list ("p:secret"), or None when FreeRDP cannot take it.
+
+    FreeRDP splits that list on commas, takes an element wrapped whole in double quotes as it is
+    (a comma or backslash inside is fine), but counts every quote character, ' and " alike, as an
+    opening or closing quote, and lets a trailing backslash escape the end of the text
+    (winpr/libwinpr/utils/cmdline.c; tried against FreeRDP 3.31). So a value with a quote, or one
+    ending in a backslash, cannot be passed: for the password the caller leaves it out and FreeRDP
+    asks for it at connect, in OMARemote's own sign-in prompt."""
+    element = f"{key}:{value}"
+    if "'" in value or '"' in value or value.endswith("\\"):
+        return None
+    if "," in value:
+        return f'"{element}"'
+    return element
+
+
 def build_args(conn, password=None, auto_scale=100, tab=None, gateway_password=None):
     """FreeRDP arguments for one connection, one argument per entry (fed to /args-from:stdin).
 
@@ -1727,13 +1748,13 @@ def build_args(conn, password=None, auto_scale=100, tab=None, gateway_password=N
         user = c["gatewayUser"] or c["username"]
         domain = c["gatewayDomain"] or c["domain"]
         if user:
-            gw.append(f"u:{user}")
+            gw.append(gateway_element("u", user) or _unpassable("gateway user name"))
         if domain:
-            gw.append(f"d:{domain}")
-        if gateway_password:
-            gw.append(f"p:{gateway_password}")
-        elif password and not c["gatewayUser"]:
-            gw.append(f"p:{password}")
+            gw.append(gateway_element("d", domain) or _unpassable("gateway domain"))
+        # A password FreeRDP's list cannot hold (a quote in it) is left out: FreeRDP then asks.
+        secret = gateway_password or (password if not c["gatewayUser"] else None)
+        if secret and gateway_element("p", secret):
+            gw.append(gateway_element("p", secret))
         args.append("/gateway:" + ",".join(gw))
 
     if c["extraArgs"].strip():
@@ -2002,7 +2023,9 @@ def redact(args):
         elif a.startswith("password="):
             out.append("password=********")
         elif a.startswith("/gateway:"):
-            out.append("/gateway:" + re.sub(r"(^|,)p:[^,]*", r"\1p:********", a[len("/gateway:"):]))
+            # The password element, quoted (gateway_element) or not.
+            out.append("/gateway:" + re.sub(r"""(^|,)(?:"p:[^"]*"|'p:[^']*'|p:[^,]*)""", r"\1p:********",
+                                            a[len("/gateway:"):]))
         else:
             out.append(a)
     return out

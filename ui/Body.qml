@@ -430,13 +430,18 @@ FocusScope {
     function saveEdit(c, password, passwordTouched, gatewayPassword, gatewayPasswordTouched) {
         if (c.credential === "new")
             c.credential = createCredential(c.username.trim(), String(c.domain || "").trim(), !!c.savePassword, password)
+        // Whether a gateway password was saved before this edit: only then can there be one to clear.
+        var before = c.id ? Store.get(c.id) : null
+        var hadGatewayPassword = !!before && !!before.gatewaySavePassword
         var id = Store.upsert(c)
         if (c.credential !== "custom" || !c.savePassword)
             Sessions.clearSecret("connection", id) // no password of its own any more
         else if (passwordTouched && password !== "")
             Sessions.setSecret("connection", id, password)
-        if (!c.gatewaySavePassword || !String(c.gateway || "").trim())
-            Sessions.clearSecret("gateway", id)
+        if (!c.gatewaySavePassword || !String(c.gateway || "").trim()) {
+            if (hadGatewayPassword)
+                Sessions.clearSecret("gateway", id)
+        }
         else if (gatewayPasswordTouched && gatewayPassword !== "")
             Sessions.setSecret("gateway", id, gatewayPassword)
         if (query !== "" && !Format.matches(c, query))

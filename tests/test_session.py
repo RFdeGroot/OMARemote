@@ -83,6 +83,22 @@ class BuildArgs(unittest.TestCase):
         same = session.build_args(conn(username="me", gateway="gw.corp"), password="s3cret", gateway_password="gwpw")
         self.assertEqual(gw(same), "/gateway:g:gw.corp,u:me,p:gwpw")
 
+    def test_gateway_passwords_freerdp_can_and_cannot_take(self):
+        # FreeRDP splits /gateway: on commas, takes a double-quoted element whole, and refuses any
+        # quote character inside (tried against FreeRDP 3.31).
+        c = conn(gateway="gw.corp", gatewayUser="gu")
+        gw = lambda pw: [a for a in session.build_args(c, gateway_password=pw) if a.startswith("/gateway:")][0]
+        self.assertEqual(gw("plain"), "/gateway:g:gw.corp,u:gu,p:plain")
+        self.assertEqual(gw("x,y"), '/gateway:g:gw.corp,u:gu,"p:x,y"')
+        self.assertEqual(session.redact([gw("x,y")]), ["/gateway:g:gw.corp,u:gu,p:********"])
+        # A quote, or a trailing backslash: left out, so FreeRDP asks for it when connecting.
+        self.assertEqual(gw("it's"), "/gateway:g:gw.corp,u:gu")
+        self.assertEqual(gw('say "hi"'), "/gateway:g:gw.corp,u:gu")
+        self.assertEqual(gw("ends\\"), "/gateway:g:gw.corp,u:gu")
+        # The connection's own password, reused by the gateway, gets the same care.
+        same = session.build_args(conn(username="me", gateway="gw.corp"), password="a,b")
+        self.assertIn('/gateway:g:gw.corp,u:me,"p:a,b"', same)
+
     def test_audio_and_redirection(self):
         args = session.build_args(conn(audio="off", clipboard=False, homeDrive=True, microphone=True))
         self.assertIn("/audio-mode:2", args)
