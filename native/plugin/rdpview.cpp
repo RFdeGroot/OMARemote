@@ -510,6 +510,37 @@ void RdpView::wheelEvent(QWheelEvent* e)
 	e->accept();
 }
 
+namespace {
+// The modifiers a key event can carry without its key having been pressed here: evdev codes of
+// the left and right key, and the left one's keysym. Only Shift and Ctrl are ever added (what a
+// sent shortcut needs); Super is only lifted when it was passed on: without the connection's
+// Super key setting the session never gets Super, and a key typed while Super is held must not
+// bring it in. Alt is not among them: AltGr (right Alt) types characters without Qt reporting
+// Alt, and must never be taken away.
+struct ModifierKey
+{
+	Qt::KeyboardModifier mod;
+	quint32 left, right, keysym;
+	bool add;
+};
+constexpr ModifierKey kModifierKeys[] = {
+	{Qt::ShiftModifier, 42, 54, 0xffe1, true},
+	{Qt::ControlModifier, 29, 97, 0xffe3, true},
+	{Qt::MetaModifier, 125, 126, 0xffeb, false},
+};
+
+bool isModifierKey(quint32 evdev)
+{
+	switch (evdev)
+	{
+		case 42: case 54: case 29: case 97: case 56: case 100: case 125: case 126:
+			return true;
+		default:
+			return false;
+	}
+}
+}
+
 void RdpView::keyPressEvent(QKeyEvent* e)
 {
 	// On Wayland (and X11) the native scan code is the XKB keycode: evdev + 8.
@@ -527,6 +558,39 @@ void RdpView::keyPressEvent(QKeyEvent* e)
 		return;
 	}
 	const quint32 evdev = code - 8;
+	// Hyprland's sendshortcut (Omarchy's Super+V: Shift+Insert in a terminal, Ctrl+V elsewhere) sets
+	// the modifier state without pressing the modifier keys, and Super stays physically held. The
+	// session sees keys, not states: press the missing modifiers around this key, and lift a held
+	// Super it was not sent with, so SSH gets Shift+Insert and Windows Ctrl+V, not Win+Ctrl+V.
+	if (!isModifierKey(evdev) && !e->isAutoRepeat())
+	{
+		Chord chord;
+		const Qt::KeyboardModifiers mods = e->modifiers();
+		// The missing Shift and Ctrl first, then a held Super lifted: Windows then sees Win with
+		// another key down, never a lone Win press and release, which opens its Start menu.
+		for (const ModifierKey& m : kModifierKeys)
+		{
+			const bool held = m_pressed.contains(m.left) || m_pressed.contains(m.right);
+			if ((mods & m.mod) && !held && m.add)
+			{
+				send("key 1 " + QByteArray::number(m.left) + ' ' + QByteArray::number(m.keysym));
+				chord.added.append({m.left, m.keysym});
+			}
+		}
+		for (const ModifierKey& m : kModifierKeys)
+		{
+			const bool held = m_pressed.contains(m.left) || m_pressed.contains(m.right);
+			if (!(mods & m.mod) && held && m.mod == Qt::MetaModifier)
+				for (quint32 k : {m.left, m.right})
+					if (m_pressed.contains(k))
+					{
+						send("key 0 " + QByteArray::number(k));
+						chord.lifted.append({k, k == m.left ? m.keysym : m.keysym + 1});
+					}
+		}
+		if (!chord.added.isEmpty() || !chord.lifted.isEmpty())
+			m_chords.insert(evdev, chord);
+	}
 	m_pressed.insert(evdev);
 	// RDP sends the scancode; VNC needs the keysym, which on Wayland and X11 is the native virtual key;
 	// SSH types the text the layout made of it (dead keys included).
@@ -553,6 +617,16 @@ void RdpView::keyReleaseEvent(QKeyEvent* e)
 	const quint32 evdev = code - 8;
 	m_pressed.remove(evdev);
 	send("key 0 " + QByteArray::number(evdev));
+	// Undo what was done around it: the added modifiers go up.
+	const auto chord = m_chords.find(evdev);
+	if (chord != m_chords.end())
+	{
+		for (const auto& [k, sym] : chord->added)
+			send("key 0 " + QByteArray::number(k));
+		// A lifted Super is not pressed again: the session would see a lone Win press and release
+		// when the user lets go. Its release (sent again then) is harmless.
+		m_chords.erase(chord);
+	}
 	e->accept();
 }
 
@@ -561,8 +635,12 @@ void RdpView::releaseAllKeys()
 	// Taken off the list first: a send to a session that just ended detaches, and detaching
 	// releases the keys again (the Enter of an SSH "exit" is still held when the session ends).
 	const QSet<quint32> keys = std::exchange(m_pressed, {});
+	const auto chords = std::exchange(m_chords, {});
 	for (quint32 evdev : keys)
 		send("key 0 " + QByteArray::number(evdev));
+	for (const Chord& chord : chords)
+		for (const auto& [k, sym] : chord.added)
+			send("key 0 " + QByteArray::number(k));
 }
 
 void RdpView::focusInEvent(QFocusEvent* e)

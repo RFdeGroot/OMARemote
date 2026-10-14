@@ -12,7 +12,7 @@
 //   theme      a foot.ini with the theme's terminal colours, followed when it changes
 //   scrollback lines kept above the screen (default 10000)
 //
-// Terminal keys: ctrl+shift+c copies the selection, ctrl+shift+v (or shift+insert, or a middle
+// Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
 // click) pastes, shift+page up/down and the wheel scroll back. Remote programs that ask for the
 // mouse (htop, vim with mouse=a) get it; shift+drag still selects.
 
@@ -761,6 +761,9 @@ static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 	// The terminal's own keys.
 	const uint32_t lower = xkb_keysym_to_lower(sym);
 	if (ctrl && shift && lower == XKB_KEY_c)
+		return copy_selection();
+	// Omarchy's Super+C sends this to a window tagged as a terminal.
+	if (ctrl && !shift && (sym == XKB_KEY_Insert || sym == XKB_KEY_KP_Insert))
 		return copy_selection();
 	if (ctrl && shift && lower == XKB_KEY_v)
 		return paste();

@@ -115,6 +115,11 @@ private:
 	int m_desktopScale = 0;
 	bool m_followSize = true;
 	QSet<quint32> m_pressed;
+	// A key that came with modifiers no modifier key was pressed for (Hyprland's sendshortcut, as
+	// Omarchy's Super+V/C/X use): the modifiers sent around it, and a held Super lifted for it.
+	// evdev code and keysym of each, by the key's evdev code.
+	struct Chord { QList<QPair<quint32, quint32>> added, lifted; };
+	QHash<quint32, Chord> m_chords;
 	QHash<quint32, QCursor> m_cursors;
 	QString m_lastClip;
 	Qt::MouseButtons m_buttons;

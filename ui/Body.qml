@@ -540,6 +540,25 @@ FocusScope {
         return false
     }
 
+    // While an SSH session is shown, the window is tagged as a terminal for Hyprland, so Omarchy's
+    // Super+V and Super+C paste and copy there (Shift+Insert, Ctrl+Insert) instead of sending Ctrl+V
+    // and Ctrl+C, which a terminal reads as a character and an interrupt. RDP and VNC tabs get
+    // Ctrl+V and Ctrl+C, as Windows wants.
+    property bool taggedTerminal: false
+    readonly property bool wantsTerminalTag: root.currentTab !== "home" && root.currentIsSsh
+    onWantsTerminalTagChanged: terminalTagTimer.restart()
+    Timer {
+        id: terminalTagTimer
+        interval: 150
+        onTriggered: {
+            if (root.wantsTerminalTag === root.taggedTerminal)
+                return
+            root.taggedTerminal = root.wantsTerminalTag
+            Quickshell.execDetached([Sessions.bin, "terminal-tag", String(Quickshell.processId),
+                                     root.wantsTerminalTag ? "on" : "off"])
+        }
+    }
+
     // The tab shown holds a session that has ended or failed: its hints are the panel's keys.
     readonly property bool currentEnded: {
         var list = Sessions.sessions

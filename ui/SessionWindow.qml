@@ -44,6 +44,9 @@ FocusScope {
     Component.onCompleted: {
         claim()
         Quickshell.execDetached([Sessions.bin, "place", sessionId, String(Quickshell.processId)])
+        // An SSH session's window is a terminal to Hyprland (Omarchy's Super+V/Super+C), as in a tab.
+        if (session && session.protocol === "ssh")
+            Quickshell.execDetached([Sessions.bin, "terminal-tag", String(Quickshell.processId), "on"])
     }
     onSessionIdChanged: claim()
 

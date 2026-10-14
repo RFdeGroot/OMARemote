@@ -459,7 +459,12 @@ static void handle_line(rdpContext* ctx, const std::string& line)
 	}
 	else if (cmd == "key" && live && w.size() >= 3)
 	{
-		const UINT32 code = rdp_scancode(static_cast<UINT32>(num(2)));
+		// The connection's Super key setting (+grab-keyboard): off, Super stays Hyprland's and
+		// never reaches Windows, where a lone press opens the Start menu.
+		const auto evdev = static_cast<UINT32>(num(2));
+		if ((evdev == 125 || evdev == 126) && !freerdp_settings_get_bool(ctx->settings, FreeRDP_GrabKeyboard))
+			return;
+		const UINT32 code = rdp_scancode(evdev);
 		if (code)
 			freerdp_input_send_keyboard_event_ex(input, num(1) != 0, FALSE, code);
 	}

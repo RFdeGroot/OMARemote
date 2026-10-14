@@ -23,6 +23,7 @@ so closing the window never closes a remote desktop.
   omaremote-session fullscreen           toggle fullscreen for the focused window
   omaremote-session float pid <pid> [%]  float a window at % (90) of its monitor, centred
   omaremote-session summon pid <pid>     move a window to the current workspace and focus it
+  omaremote-session terminal-tag <pid> on|off   tag a window as a terminal for Hyprland (an SSH session shows)
   omaremote-session open-window <name>   a connection in a floating window of its own, here
   omaremote-session toggle [--show] <name>   a hotkey window: show it (connecting if needed) or hide it
   omaremote-session place <session> <pid>    a new own window: float it, and into its special workspace
@@ -1000,6 +1001,20 @@ def summon_window(pid):
         hypr_dispatch('hl.dsp.window.move({ workspace = "%s", follow = false, window = "%s" })' % (workspace, target),
                       "movetoworkspacesilent", "%s,%s" % (workspace, target))
     hypr_dispatch('hl.dsp.focus({ window = "%s" })' % target, "focuswindow", target)
+    return True
+
+
+def terminal_tag(pid, on):
+    """Tags a window as a terminal for Hyprland while it shows an SSH session, and untags it after.
+    Omarchy's universal clipboard keys read that tag (default/hypr/bindings/clipboard.lua): in a
+    terminal Super+V sends Shift+Insert and Super+C Ctrl+Insert, elsewhere Ctrl+V and Ctrl+C, which a
+    terminal reads as a literal character and an interrupt."""
+    window = find_window("pid", pid, wait=5)  # a window just opened is not mapped yet
+    if not window:
+        return False
+    target = "address:" + window["address"]
+    tag = ("+" if on else "-") + "terminal"
+    hypr_dispatch('hl.dsp.window.tag({ tag = "%s", window = "%s" })' % (tag, target), "tagwindow", f"{tag} {target}")
     return True
 
 
@@ -2685,6 +2700,8 @@ def main(argv):
         return 0 if set_view(rest[0], rest[1], rest[2] if len(rest) == 3 else None) else 1
     if cmd == "float" and len(rest) in (2, 3) and rest[0] == "pid":
         return 0 if float_window(rest[1], int(rest[2]) if len(rest) == 3 else 90) else 1
+    if cmd == "terminal-tag" and len(rest) == 2 and rest[1] in ("on", "off"):
+        return 0 if terminal_tag(rest[0], rest[1] == "on") else 1
     if cmd == "summon" and len(rest) == 2 and rest[0] == "pid":
         return 0 if summon_window(rest[1]) else 1
     if cmd == "open-window" and rest:
