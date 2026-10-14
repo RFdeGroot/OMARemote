@@ -459,7 +459,11 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             if g.get("modified", 0) <= gone_groups.get(name, -1):
                 continue  # deleted or renamed here after that change
             theirs_settings = {k: v for k, v in (g.get("settings") or {}).items() if k not in GROUP_LOCAL_SETTINGS}
-            if mine is not None and mine.get("credential") and not address_ok("group:" + name) \
+            # The group's own set signs in through it, and so does every member that signs in here
+            # (its gateway takes the member's saved password, or a saved gateway password).
+            signs_in = mine is not None and (mine.get("credential") or any(
+                _signs_in_here(c, groups) for c in conns if (c.get("group") or "") == name))
+            if signs_in and not address_ok("group:" + name) \
                     and _address({}, theirs_settings) != _address({}, {k: v for k, v in (mine.get("settings") or {}).items()}):
                 report["pendingAddress"].append({
                     "system": system, "id": "group:" + name, "name": "group " + name,
@@ -1545,6 +1549,9 @@ def browse(name):
     folder = mount.get_default_location().get_path() if mount else None  # the remote home
     if not folder:
         return {"state": "needs-fuse"}
+    # Only ever a folder: the default file manager, never whatever app a file would open in.
+    if not os.path.isdir(folder):
+        return {"error": "the remote home is not a folder"}
     subprocess.Popen(["xdg-open", folder], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     return {"state": "opened"}

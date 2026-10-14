@@ -1280,6 +1280,20 @@ class AddressGuard(unittest.TestCase):
         self.assertEqual(data["groups"]["Servers"]["settings"]["gateway"], "gw.lan")
         self.assertEqual(report["pendingAddress"][0]["id"], "group:Servers")
 
+    def test_a_groups_new_gateway_waits_when_a_member_signs_in_here(self):
+        for member in ({"gatewaySavePassword": True}, {"savePassword": True}):
+            local = self.local(self.c(group="G", credential="custom", **member),
+                               groups={"G": {"credential": "", "settings": {"gateway": "gw.lan"}, "modified": 1}})
+            incoming = self.remote(groups={"G": {"settings": {"gateway": "evil.example"}, "modified": 9}})
+            data, report = session.merge(local, [incoming], 1000)
+            self.assertEqual(data["groups"]["G"]["settings"]["gateway"], "gw.lan", member)
+            self.assertEqual(report["pendingAddress"][0]["id"], "group:G")
+        # A group nobody signs in through here: the change just arrives.
+        local = self.local(self.c(group="G", credential="custom"),
+                           groups={"G": {"credential": "", "settings": {"gateway": "gw.lan"}, "modified": 1}})
+        data, report = session.merge(local, [self.remote(groups={"G": {"settings": {"gateway": "gw2.lan"}, "modified": 9}})], 1000)
+        self.assertEqual(data["groups"]["G"]["settings"]["gateway"], "gw2.lan")
+
     def test_certificate_checks_never_travel(self):
         out = json.dumps(session.portable(self.local(self.c(ignoreCert=True, security="rdp")), "here"))
         self.assertNotIn("ignoreCert", out)
@@ -1310,7 +1324,7 @@ class Files(unittest.TestCase):
         self.assertFalse(session.gvfs_fuse_ready("proc /proc proc rw 0 0\n"))
         self.assertFalse(session.gvfs_fuse_ready(f"other {fuse} tmpfs rw 0 0\n"))
 
-    def run_browse(self, fuse=True, mounted_after=True, gio_ok=True):
+    def run_browse(self, fuse=True, mounted_after=True, gio_ok=True, isdir=True):
         from unittest import mock
         calls = []
         mount = mock.Mock()
@@ -1333,7 +1347,8 @@ class Files(unittest.TestCase):
              mock.patch.object(session.shutil, "which", lambda n: "/usr/bin/" + n), \
              mock.patch.object(session.glob, "glob", lambda p: [p]), \
              mock.patch.object(session.subprocess, "run", run), \
-             mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(list(args))):
+             mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(list(args))), \
+             mock.patch.object(session.os.path, "isdir", lambda p: isdir):
             return session.browse("c1"), calls
 
     def test_mounted_files_open_in_the_default_file_manager(self):
@@ -1367,6 +1382,11 @@ class Files(unittest.TestCase):
         self.assertEqual(self.unmount_after("keep"), [])
         self.assertEqual(self.unmount_after("unmount", others=True), [])
         self.assertEqual(self.unmount_after("unmount", mounted=False), [])
+
+    def test_only_a_folder_is_ever_opened(self):
+        out, calls = self.run_browse(isdir=False)
+        self.assertIn("error", out)
+        self.assertFalse(any(c[0] == "xdg-open" for c in calls))
 
     def test_without_the_folder_layer_nothing_is_mounted_and_the_ui_asks(self):
         out, calls = self.run_browse(fuse=False)

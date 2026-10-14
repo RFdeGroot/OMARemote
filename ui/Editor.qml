@@ -165,6 +165,9 @@ Rectangle {
         c.width = Math.max(640, parseInt(c.width) || 1920)
         c.height = Math.max(480, parseInt(c.height) || 1080)
         saved(c, password, passwordTouched, gatewayPassword, gatewayPasswordTouched)
+        // Handed over: the typed passwords do not stay in the editor's memory.
+        password = ""
+        gatewayPassword = ""
     }
 
     Keys.onPressed: function (event) {
