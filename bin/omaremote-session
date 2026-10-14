@@ -403,8 +403,8 @@ def _describe_address(c):
 
 def _signs_in_here(conn, groups):
     """Whether this system would send credentials to wherever the connection points: a saved
-    password, a credential set, or its group's set."""
-    if conn.get("savePassword"):
+    password (the connection's or its gateway's), a credential set, or its group's set."""
+    if conn.get("savePassword") or conn.get("gatewaySavePassword"):
         return True
     mode = conn.get("credential") or "custom"
     if mode == "inherit":

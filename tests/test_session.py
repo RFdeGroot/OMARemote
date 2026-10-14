@@ -1238,6 +1238,13 @@ class AddressGuard(unittest.TestCase):
             _, report = session.merge(local, [self.remote(self.c(modified=200, **change))], 1000)
             self.assertEqual(len(report["pendingAddress"]), 1, change)
 
+    def test_a_saved_gateway_password_waits_too(self):
+        local = self.local(self.c(credential="custom", gateway="gw.lan", gatewaySavePassword=True))
+        for change in ({"gateway": "gw.example"}, {"host": "new.lan"}):
+            data, report = session.merge(local, [self.remote(self.c(modified=200, **dict({"gateway": "gw.lan"}, **change)))], 1000)
+            self.assertEqual(len(report["pendingAddress"]), 1, change)
+            self.assertEqual(data["connections"][0]["gateway"], "gw.lan")
+
     def test_without_credentials_here_the_change_just_arrives(self):
         local = self.local(self.c(credential="custom", savePassword=False))
         data, report = session.merge(local, [self.remote(self.c(host="new.lan", modified=200))], 1000)
