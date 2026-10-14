@@ -432,6 +432,13 @@ issue](https://github.com/RFdeGroot/OMARemote/issues/new/choose) for a bug or a 
 or send a pull request. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to report a bug, how the
 code is laid out, and what a pull request needs.
 
+## How it is made
+
+OMARemote is written with an AI coding assistant ([Claude Code](https://claude.com/claude-code)).
+I decide what it does and how, try every change myself on my own machines, and nothing is released
+without passing the tests and a security review of what changed
+([docs/security-review.md](docs/security-review.md)). Bugs are still mine: please report them.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

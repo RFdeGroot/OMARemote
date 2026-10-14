@@ -36,8 +36,8 @@ git clone https://github.com/RFdeGroot/OMARemote.git && cd OMARemote
 omaremote
 ```
 
-A checkout runs straight from its files: change a `.qml` file and restart the app (`super+w`, then
-`omaremote`); change anything under `native/` and run `ninja -C native/build` first. The README's
+A checkout runs straight from its files: change a `.qml` file and restart the app
+(`omaremote restart`); change anything under `native/` and run `ninja -C native/build` first. The README's
 *How it works* section maps the code.
 
 ### How things are done here
@@ -55,6 +55,11 @@ A checkout runs straight from its files: change a `.qml` file and restart the ap
 ### Before you open the pull request
 
 - Run the tests: `python3 -m unittest discover tests`.
+- Using an AI assistant is fine (OMARemote itself is made with one, see the README). You are
+  responsible for what you send: understand it, test it, and say in the pull request what you tried.
+- Anything that touches connections, credentials, sync, files on disk or the commands OMARemote
+  starts: read [docs/security-review.md](docs/security-review.md). Every release goes through that
+  list, so your change will too.
 - For a change you can see, add a screenshot or a short recording. The app renders offscreen for
   that: `OMAREMOTE_SNAPSHOT=out.png` (with `QT_QPA_PLATFORM=offscreen`) saves the window and quits,
   and `OMAREMOTE_ACTIONS` drives it first (see `debugAction` in `ui/Body.qml`). Point
