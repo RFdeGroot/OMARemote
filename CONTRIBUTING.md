@@ -30,6 +30,8 @@ Small and focused is easiest to review: one feature or fix per pull request. For
 
 ### Getting started
 
+[docs/codemap.md](docs/codemap.md) says where things live: which file and function to start from.
+
 ```bash
 git clone https://github.com/RFdeGroot/OMARemote.git && cd OMARemote
 ./install.sh                 # checks dependencies, builds native/build, links into ~/.local
