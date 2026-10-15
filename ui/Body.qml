@@ -770,6 +770,9 @@ FocusScope {
         case "importRemmina":
             if (Sync.remminaFolders.length > 0) Sync.importRemmina(); else say("No Remmina profiles here (~/.local/share/remmina)")
             break
+        case "import1Remote":
+            if (Sync.noChooser) settingsPanel.open("transfer"); else Sync.import1Remote()
+            break
         case "importSshConfig":
             if (Sync.sshConfigFound) Sync.importSshConfig(); else say("There is no ~/.ssh/config")
             break

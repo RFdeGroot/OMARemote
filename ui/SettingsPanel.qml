@@ -313,18 +313,25 @@ FocusScope {
                         Heading { visible: root.section === "transfer"; text: "FROM ANOTHER CLIENT" }
                         Note {
                             visible: root.section === "transfer"
-                            text: "Import… also takes .rdp files, Remmina profiles and 1Remote's database (1Remote.db), "
+                            text: "Import… also takes .rdp files, Remmina profiles and 1Remote's database (a .db file, 1Remote.db unless renamed), "
                                 + "several at once. Those, Remmina and ~/.ssh/config only add what is not here yet, after showing you the list: "
                                 + "importing again adds nothing twice. Passwords stay behind."
                         }
                         RowLayout {
-                            visible: root.section === "transfer" && (Sync.remminaFolders.length > 0 || Sync.sshConfigFound)
+                            visible: root.section === "transfer"
                             spacing: Theme.gap
                             ActionButton {
                                 visible: Sync.remminaFolders.length > 0
                                 text: "From Remmina"
                                 icon: ""
                                 onClicked: Sync.importRemmina()
+                            }
+                            // Without a chooser, the path field above takes the .db file too.
+                            ActionButton {
+                                visible: !Sync.noChooser
+                                text: "From 1Remote…"
+                                icon: ""
+                                onClicked: Sync.import1Remote()
                             }
                             ActionButton {
                                 visible: Sync.sshConfigFound
