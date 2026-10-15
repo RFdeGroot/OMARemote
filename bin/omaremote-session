@@ -44,7 +44,7 @@ so closing the window never closes a remote desktop.
   omaremote-session watch-folder <dir>   print each *.omaremote.json that arrives or changes there
   omaremote-session ssh-keys             keys in ~/.ssh (files, and agent keys by their .pub), JSON
   omaremote-session ssh-config           write ~/.ssh/omaremote.conf for SSH connections with a key
-  omaremote-session pick folder|open|save [--title T] [--current PATH] [--name NAME]
+  omaremote-session pick folder|open|save|key|import|1remote [--title T] [--current PATH] [--name NAME]
                                          the desktop's file chooser (portal); prints {"path"}, "" if cancelled
 """
 
@@ -763,8 +763,8 @@ def import_file(file_path, path=CONNECTIONS, now=None):
 
 def pick(mode, title="", current="", name=""):
     """The desktop's own file chooser (xdg-desktop-portal: Flea, GTK, …). mode: folder, open, save,
-    key or import (several files: OMARemote's own and other clients'). Returns the chosen paths,
-    [] when cancelled."""
+    key, import (several files: OMARemote's own and other clients') or 1remote (its database: any *.db, as 1Remote lets it be renamed).
+    Returns the chosen paths, [] when cancelled."""
     from urllib.parse import unquote, urlparse
     from gi.repository import Gio, GLib
     bus = Gio.bus_get_sync(Gio.BusType.SESSION)
@@ -794,6 +794,8 @@ def pick(mode, title="", current="", name=""):
             ("Connections (OMARemote, .rdp, Remmina, 1Remote)",
              [(0, "*.json"), (0, "*.rdp"), (0, "*.remmina"), (0, "*.db")]),
             ("All files", [(0, "*")])])
+    elif mode == "1remote":
+        options["filters"] = GLib.Variant("a(sa(us))", [("1Remote database (*.db)", [(0, "*.db")])])
     else:
         options["filters"] = GLib.Variant("a(sa(us))", [("OMARemote connections", [(0, "*.json")]),
                                                          ("All files", [(0, "*")])])
@@ -3177,7 +3179,7 @@ def main(argv):
             print(json.dumps({"error": str(e)}))
             return 1
         return 0
-    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save", "key", "import"):
+    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save", "key", "import", "1remote"):
         opt = lambda flag: rest[rest.index(flag) + 1] if flag in rest[1:-1] else ""
         try:
             paths = pick(rest[0], opt("--title"), opt("--current"), opt("--name"))

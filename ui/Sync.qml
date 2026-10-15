@@ -254,6 +254,10 @@ Singleton {
         else
             browse("import", "import", "Import connections", lastPath, "")
     }
+    // 1Remote lives on Windows: no folder to find, so the chooser shows .db files only (1Remote lets its database be renamed).
+    function import1Remote() {
+        browse("import", "1remote", "Import from 1Remote (*.db)", lastPath, "")
+    }
 
     // What happened last, for Settings › Import & export (this system's own, in ui):
     // lastExport {file, connections, at}, lastImport {what, added, updated, at}; at in seconds.

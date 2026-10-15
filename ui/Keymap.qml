@@ -43,6 +43,7 @@ Singleton {
         // No key of their own: found and run from this sheet (type, then ⏎), or in Settings › Import & export.
         { group: "Connections", context: "app", action: "importConnections", keys: [], label: "Import connections… (a file, .rdp, Remmina profiles, 1Remote)" },
         { group: "Connections", context: "app", action: "importRemmina", keys: [], label: "Import from Remmina" },
+        { group: "Connections", context: "app", action: "import1Remote", keys: [], label: "Import from 1Remote… (its .db file)" },
         { group: "Connections", context: "app", action: "importSshConfig", keys: [], label: "Import hosts from ~/.ssh/config" },
         { group: "Connections", context: "app", action: "exportConnections", keys: [], label: "Export connections… (backup)" },
 

@@ -273,12 +273,18 @@ anything happens: *Move to trash* or *Keep them* (they then go back to that syst
 
 ### Coming from another client
 
-Settings › Import & export takes connections from elsewhere: **Import…** also opens `.rdp` files (several at
-once), Remmina profiles and the database of [1Remote](https://github.com/1Remote/1Remote), the Windows
-client (`1Remote.db`, in `%APPDATA%\1Remote` or beside a portable `1Remote.exe`: copy it over), and
-two buttons read **Remmina** (`~/.local/share/remmina`, Flatpak too) in **~/.ssh/config**
-(Included files too; OMARemote's own `omaremote.conf` is skipped). A list shows what was found before anything is added: the new ones are switched on, the ones you have
-already, listed twice or not usable say so. The keymap sheet (`?`) runs them too: type *import* or
+Settings › Import & export takes connections from elsewhere:   
+**Import…** also opens `.rdp` files (several at once), Remmina profiles and the database of [1Remote](https://github.com/1Remote/1Remote), the Windows
+client.  
+
+Three buttons go straight to one source:   
+**Remmina** (`~/.local/share/remmina`, Flatpak too),  
+**1Remote…** (the file chooser, showing only `.db` files)   
+and the hosts in **~/.ssh/config** (Included files too; OMARemote's own `omaremote.conf` is skipped). 
+
+A list shows what was found before anything is added: the new ones are switched on, the ones you have
+already, listed twice or not usable say so.   
+The keymap sheet (`?`) runs them too: type *import* or
 *export* and press ⏎.
 
 - **Only ever adds.** A connection that is here already (same protocol, host and port) stays exactly
