@@ -185,14 +185,43 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.run_import(folder)["added"], ["b"])
         self.assertEqual(self.run_import(folder, picked=["rdp|old.lan|3389"])["added"], ["a"])
 
-    def test_new_connections_inherit_a_group_set(self):
-        self.save({"connections": [], "groups": {"Imported": {"credential": "k-1", "settings": {}}}})
-        self.write("x/a.rdp", "full address:s:a.lan\n")
-        with open(os.path.join(self.ssh, "config"), "w") as f:
-            f.write("Host s\n")
-        self.run_import(os.path.join(self.root, "x"), "ssh-config")
-        self.assertEqual({c["host"]: c["credential"] for c in self.stored()}, {"a.lan": "inherit", "s": "custom"})
+    def test_never_a_group_credential_set(self):
+        # A file can name your group and its own host: the set's password must not go there.
+        self.save({"connections": [], "groups": {"Office": {"credential": "k-1", "settings": {}},
+                                                 "Imported": {"credential": "k-2", "settings": {}}}})
+        self.write("r/a.remmina", "[remmina]\nprotocol=RDP\nserver=evil.example.net\ngroup=Office\n")
+        self.write("x/b.rdp", "full address:s:b.lan\n")
+        self.run_import(os.path.join(self.root, "r"), os.path.join(self.root, "x"))
+        self.assertEqual({c["host"]: (c["group"], c["credential"]) for c in self.stored()},
+                         {"evil.example.net": ("Office", "custom"), "b.lan": ("Imported", "custom")})
         self.assertTrue(all(session.ID_RE.match(c["id"]) for c in self.stored()))
+
+    def test_the_gateway_is_shown(self):
+        (e,) = self.scan(self.write("a.rdp", RDP))["entries"]
+        self.assertEqual(e["gateway"], "gw.acme.lan")
+        with open(os.path.join(HERE, "..", "ui", "ImportCard.qml"), encoding="utf-8") as f:
+            self.assertIn('"  via gateway " + modelData.gateway', f.read())
+
+    def test_only_ordinary_files(self):
+        fifo = os.path.join(self.root, "x", "pipe.rdp")
+        os.makedirs(os.path.dirname(fifo))
+        os.mkfifo(fifo)
+        scan = self.scan(os.path.dirname(fifo))  # would block forever on open or read
+        self.assertEqual(scan["entries"], [])
+        self.assertIn("not an ordinary file", scan["errors"][0])
+
+    def test_names_and_keys_cannot_add_ssh_options(self):
+        # A synced name with line breaks once became a Host * block with a ProxyCommand in
+        # ~/.ssh/omaremote.conf; a key path with a space would add arguments.
+        text, count = session.ssh_managed_text([
+            {"id": "c-1", "protocol": "ssh", "host": "git.lan", "sshKey": "~/.ssh/id",
+             "name": "Git\nHost *\n    ProxyCommand touch /tmp/pwned"},
+            {"id": "c-2", "protocol": "ssh", "host": "b.lan", "sshKey": "/x ProxyCommand evil", "name": "B"},
+            {"id": "c-3", "protocol": "ssh", "host": "c.lan", "sshKey": "/x\nProxyCommand evil", "name": "C"}])
+        self.assertEqual(count, 1)
+        # What ssh reads: every line not a comment. The name stays, harmless, in its comment line.
+        self.assertNotIn("ProxyCommand", "\n".join(l for l in text.split("\n") if not l.startswith("#")))
+        self.assertEqual([l for l in text.split("\n") if l.startswith("Host")], ["Host git.lan"])
 
     def test_the_ui_passes_sources_and_picks_outside_the_command_line(self):
         # File names are often server names (/proc/<pid>/cmdline is readable by other accounts).

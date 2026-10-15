@@ -56,6 +56,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1973,10 +1974,13 @@ def ssh_managed_text(connections):
     for c in connections:
         key = (c.get("sshKey") or "").strip()
         host = (c.get("host") or "").strip()
-        if c.get("protocol") != "ssh" or not key or not host or host in seen or re.search(r"[\s#]", host):
+        # One line each: a value with a line break or a space would add or bend ssh options (a
+        # ProxyCommand runs commands). Names arrive by sync and import, so they lose control chars.
+        if c.get("protocol") != "ssh" or not key or not host or host in seen or re.search(r"[\s#]", host) \
+                or re.search(r'[\s#"]', key) or CONTROL_RE.search(key):
             continue
         seen.add(host)
-        lines.append(f"# {c.get('name') or host} (OMARemote connection {c.get('id', '?')})")
+        lines.append(f"# {plain(str(c.get('name') or host))} (OMARemote connection {plain(str(c.get('id', '?')))})")
         lines.append(f"Host {host}")
         lines.append(f"    IdentityFile {key}")
         lines.append("    IdentitiesOnly yes")
@@ -2166,7 +2170,10 @@ SSH_WILDCARD_RE = re.compile(r"[*?!]")
 def _read_foreign(path):
     """A small text file in whatever encoding Windows or Linux wrote it: .rdp files are often
     UTF-16 with a byte order mark."""
-    with open(path, "rb") as f:
+    with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK)) as f:
+        # A FIFO or a device named .rdp would never end: only ordinary files.
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError("not an ordinary file")
         raw = f.read(IMPORT_MAX_BYTES + 1)
     if len(raw) > IMPORT_MAX_BYTES:
         raise ValueError("larger than 1 MiB")
@@ -2448,7 +2455,8 @@ def scan_foreign(sources, path=CONNECTIONS, ssh_dir=SSH_DIR):
         entries.append({"ref": "%s|%s|%d" % key, "status": status, "reason": problem,
                         "protocol": conn["protocol"], "name": conn.get("name") or conn.get("host", ""),
                         "host": conn.get("host", ""), "port": key[2], "group": conn["group"],
-                        "username": conn.get("username", ""), "notes": notes, "source": source,
+                        "username": conn.get("username", ""), "gateway": conn.get("gateway", ""),
+                        "notes": notes, "source": source,
                         "_conn": conn})
     return {"entries": entries, "errors": errors}
 
@@ -2461,7 +2469,6 @@ def import_foreign(sources, picked=None, path=CONNECTIONS, ssh_dir=SSH_DIR, now=
     raw = load_raw(path)
     data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted", "deletedGroups") if raw.get(k) is not None}
     conns = data.setdefault("connections", [])
-    groups = data.get("groups") or {}
     report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [],
               "pendingAddress": [], "errors": scan["errors"]}
     wanted = set(picked) if picked is not None else None
@@ -2469,10 +2476,9 @@ def import_foreign(sources, picked=None, path=CONNECTIONS, ssh_dir=SSH_DIR, now=
         ok = e["status"] == "new" or (e["status"] == "trashed" and wanted is not None)
         if not ok or (wanted is not None and e["ref"] not in wanted):
             continue
-        new = dict(e["_conn"], id="c-" + uuid.uuid4().hex[:12], modified=now)
-        # A group's credential set signs desktops in; SSH signs in with keys, never with a set.
-        grouped = (groups.get(new["group"]) or {}).get("credential")
-        new["credential"] = "inherit" if grouped and new["protocol"] != "ssh" else "custom"
+        # Never a group's credential set, even in a group that has one: a file from elsewhere could
+        # name your group and its own host, and the set's password would go there. It asks instead.
+        new = dict(e["_conn"], id="c-" + uuid.uuid4().hex[:12], modified=now, credential="custom")
         conns.append(new)
         report["added"].append(new["name"])
     return {"data": data, "report": report}

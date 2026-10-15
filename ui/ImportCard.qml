@@ -174,7 +174,9 @@ FocusScope {
                                 text: [modelData.protocol.toUpperCase() + "  "
                                        + (modelData.username ? modelData.username + "@" : "") + modelData.host
                                        + (modelData.port !== ({ rdp: 3389, vnc: 5900, ssh: 22 })[modelData.protocol]
-                                          ? ":" + modelData.port : ""),
+                                          ? ":" + modelData.port : "")
+                                       // Where the sign-in goes too: a gateway is shown, never hidden.
+                                       + (modelData.gateway ? "  via gateway " + modelData.gateway : ""),
                                        modelData.group].concat(modelData.notes).join("  ·  ")
                                 color: Theme.muted
                                 font.family: Theme.font
