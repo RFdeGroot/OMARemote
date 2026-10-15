@@ -194,6 +194,15 @@ class ImportTest(unittest.TestCase):
         self.assertEqual({c["host"]: c["credential"] for c in self.stored()}, {"a.lan": "inherit", "s": "custom"})
         self.assertTrue(all(session.ID_RE.match(c["id"]) for c in self.stored()))
 
+    def test_the_ui_passes_sources_and_picks_outside_the_command_line(self):
+        # File names are often server names (/proc/<pid>/cmdline is readable by other accounts).
+        with open(os.path.join(HERE, "..", "ui", "Sync.qml"), encoding="utf-8") as f:
+            qml = f.read()
+        self.assertIn('command: [Sessions.bin, "import-scan"]\n', qml)
+        self.assertIn('command: [Sessions.bin, "import-foreign"]\n', qml)
+        self.assertNotIn(".concat(sources)", qml)
+        self.assertNotIn(".concat(p.sources)", qml)
+
 
 if __name__ == "__main__":
     unittest.main()

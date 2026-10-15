@@ -408,7 +408,6 @@ Singleton {
             return
         scanner.title = title
         scanner.sources = sources
-        scanner.command = [Sessions.bin, "import-scan"].concat(sources)
         scanner.running = true
     }
     function importRemmina() { scanForeign(["remmina"], "Remmina") }
@@ -421,7 +420,7 @@ Singleton {
             return
         root.importStartedAt = Store.localRevision
         foreignImporter.picked = refs
-        foreignImporter.command = [Sessions.bin, "import-foreign"].concat(p.sources)
+        foreignImporter.sources = p.sources
         foreignImporter.running = true
     }
 
@@ -429,6 +428,9 @@ Singleton {
         id: scanner
         property string title: ""
         property var sources: []
+        // File names are often server names: in the environment, never on the command line.
+        command: [Sessions.bin, "import-scan"]
+        environment: ({ OMAREMOTE_IMPORT_SOURCES: JSON.stringify(scanner.sources) })
         stdout: StdioCollector { id: scanOut; waitForEnd: true }
         onExited: function (exitCode) {
             var r
@@ -453,8 +455,11 @@ Singleton {
     Process {
         id: foreignImporter
         property var picked: []
-        // Host names in the environment, never on the command line.
-        environment: ({ OMAREMOTE_IMPORT_PICK: JSON.stringify(foreignImporter.picked) })
+        property var sources: []
+        // Host and file names in the environment, never on the command line.
+        command: [Sessions.bin, "import-foreign"]
+        environment: ({ OMAREMOTE_IMPORT_SOURCES: JSON.stringify(foreignImporter.sources),
+                        OMAREMOTE_IMPORT_PICK: JSON.stringify(foreignImporter.picked) })
         stdout: StdioCollector { id: foreignOut; waitForEnd: true }
         onExited: function (exitCode) {
             var result

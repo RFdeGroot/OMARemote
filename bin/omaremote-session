@@ -3030,18 +3030,22 @@ def main(argv):
     if cmd == "import-sources":
         print(json.dumps(import_sources()))
         return 0
-    # Sources: files, folders, "remmina", "ssh-config". The refs picked come in the environment
-    # (a JSON list), host names never on the command line; without it every new one is added.
-    if cmd in ("import-scan", "import-foreign") and rest:
+    # Sources: files, folders, "remmina", "ssh-config". The UI passes them, and the refs picked, in
+    # the environment (JSON lists): file names are often server names, and host names never go on a
+    # command line. Without picked refs every new one is added.
+    if cmd in ("import-scan", "import-foreign"):
         try:
+            sources = rest or json.loads(os.environ.get("OMAREMOTE_IMPORT_SOURCES") or "[]")
+            if not sources:
+                raise ValueError("nothing to import")
             if cmd == "import-scan":
-                scan = scan_foreign(rest)
+                scan = scan_foreign(sources)
                 for e in scan["entries"]:
                     del e["_conn"]
                 print(json.dumps(scan))
             else:
                 picked = os.environ.get("OMAREMOTE_IMPORT_PICK")
-                print(json.dumps(import_foreign(rest, json.loads(picked) if picked else None)))
+                print(json.dumps(import_foreign(sources, json.loads(picked) if picked else None)))
         except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
             return 1
