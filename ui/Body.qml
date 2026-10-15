@@ -1035,11 +1035,11 @@ FocusScope {
                     selectedId: root.selectedId
                     onPicked: function (id) { if (!root.busy) { root.selectedId = id; root.focusList() } }
                     onActivated: function (id) { if (!root.busy) { root.selectedId = id; root.connect(id) } }
-                    dragging: root.dragging !== null
+                    rowDragging: root.dragging !== null
                     dragGroup: root.dragging ? root.dragging.group || "" : ""
-                    onDragStarted: function (id) { root.dragFrom(id) }
+                    onRowDragStarted: function (id) { root.dragFrom(id) }
                     onDragMoved: function (x, y) { root.dragTo(x, y) }
-                    onDragEnded: root.dragDone()
+                    onRowDragEnded: root.dragDone()
                     onDroppedOnGroup: function (name) { root.dropOnGroup(name) }
                 }
 
@@ -1518,8 +1518,8 @@ FocusScope {
     Item {
         id: dragProxy
         z: 200
-        visible: root.dragging !== null
-        Drag.active: root.dragging !== null
+        visible: root.draggingId !== ""
+        Drag.active: root.draggingId !== ""
         Drag.keys: ["connection"]
         Rectangle {
             x: 14
@@ -1780,6 +1780,12 @@ FocusScope {
             }
         }
         else if (parts[0] === "type") { for (var i = 0; i < parts[1].length; i++) keymapSheet.query += parts[1][i] }
+        else if (parts[0] === "winsize") {
+            // winsize:WxH, a small screen.
+            var wh = parts[1].split("x")
+            root.Window.window.width = parseInt(wh[0])
+            root.Window.window.height = parseInt(wh[1])
+        }
         else if (a === "sidebar") runAction("focusSidebar")
         else if (parts[0] === "group") openGroup(parts.slice(1).join(":"))
         else if (parts[0] === "pick") editor.pickCredential(parts[1])

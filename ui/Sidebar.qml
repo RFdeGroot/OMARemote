@@ -83,6 +83,7 @@ Rectangle {
     }
 
     Flickable {
+        id: pane
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -91,6 +92,8 @@ Rectangle {
         contentHeight: column.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+
+        ScrollHint { flickable: pane }
 
         Column {
             id: column

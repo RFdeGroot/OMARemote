@@ -66,12 +66,15 @@ Rectangle {
     }
 
     Flickable {
+        id: pane
         anchors.fill: parent
         anchors.margins: Theme.gap
         anchors.rightMargin: Theme.gap + 1
         contentHeight: column.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+
+        ScrollHint { flickable: pane }
 
         Column {
             id: column

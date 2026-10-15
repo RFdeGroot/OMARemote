@@ -8,11 +8,11 @@ ListView {
     signal picked(string id)
     signal activated(string id)
     // Dragging a row: the group headings take it (see the drag in Body.qml).
-    property bool dragging: false
+    property bool rowDragging: false
     property string dragGroup: ""
-    signal dragStarted(string id)
+    signal rowDragStarted(string id)
     signal dragMoved(real sceneX, real sceneY)
-    signal dragEnded()
+    signal rowDragEnded()
     signal droppedOnGroup(string name)
 
     clip: true
@@ -26,6 +26,8 @@ ListView {
         return -1
     }
     highlightMoveDuration: 0
+
+    ScrollHint { flickable: root }
 
     // Under group headings when grouped (the model is then sorted by group), in the sidebar's style.
     property bool grouped: false
@@ -66,7 +68,7 @@ ListView {
             DropArea {
                 id: headingDrop
                 anchors.fill: parent
-                enabled: root.dragging && entry.group !== root.dragGroup
+                enabled: root.rowDragging && entry.group !== root.dragGroup
                 keys: ["connection"]
                 onDropped: root.droppedOnGroup(entry.group)
             }
@@ -81,9 +83,9 @@ ListView {
             onClicked: root.picked(modelData.id)
             onActivated: root.activated(modelData.id)
             draggable: !modelData.quickRow && !modelData.quick
-            onDragStarted: root.dragStarted(modelData.id)
+            onDragStarted: root.rowDragStarted(modelData.id)
             onDragMoved: function (x, y) { root.dragMoved(x, y) }
-            onDragEnded: root.dragEnded()
+            onDragEnded: root.rowDragEnded()
         }
     }
 
