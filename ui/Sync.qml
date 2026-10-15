@@ -234,14 +234,32 @@ Singleton {
         picker.running = true
     }
 
+    // The file chooser could not open: Settings › Sync then shows a path field for export and import.
+    property bool noChooser: false
+
     function browseFolder() {
         browse("folder", "folder", "Sync folder for OMARemote", folder, "")
     }
-    function exportVia(current) {
-        browse("export", "save", "Export OMARemote connections", current, "omaremote-connections.json")
+    // Export… and Import…: the file chooser, in the folder used last; without one, the path typed.
+    readonly property string lastPath: Store.ui.exportPath || "~/omaremote-connections.json"
+    function exportVia(typed) {
+        if (noChooser && typed.trim() !== "")
+            chosen("export", typed.trim())
+        else
+            browse("export", "save", "Export OMARemote connections", lastPath, "omaremote-connections.json")
     }
-    function importVia(current) {
-        browse("import", "import", "Import connections", current, "")
+    function importVia(typed) {
+        if (noChooser && typed.trim() !== "")
+            chosen("import", typed.trim())
+        else
+            browse("import", "import", "Import connections", lastPath, "")
+    }
+
+    // What happened last, for Settings › Sync (this system's own, in ui):
+    // lastExport {file, connections, at}, lastImport {what, added, updated, at}; at in seconds.
+    function remember(key, value) {
+        value.at = Math.floor(Date.now() / 1000)
+        Store.setUi(key, value)
     }
 
     function chosen(purpose, path, paths) {
@@ -287,11 +305,9 @@ Singleton {
                 result = { error: "no file chooser" }
             }
             if (result.error) {
-                // No chooser here: a typed path still works.
-                if ((picker.purpose === "export" || picker.purpose === "import") && picker.fallback.trim() !== "")
-                    root.chosen(picker.purpose, picker.fallback.trim())
-                else
-                    root.notice("No file chooser available: type the path in the field", true)
+                // No chooser here (no xdg-desktop-portal): Settings shows a path field instead.
+                root.noChooser = true
+                root.notice("No file chooser available: type the path in the field", true)
                 return
             }
             if (result.path)
@@ -348,6 +364,7 @@ Singleton {
         onExited: function (exitCode) {
             try {
                 var r = JSON.parse(exportOut.text)
+                root.remember("lastExport", { file: r.file, connections: r.connections })
                 root.notice("Exported " + r.connections + " connections to " + r.file, false)
             } catch (e) {
                 root.notice("Export failed: check the path", true)
@@ -361,12 +378,14 @@ Singleton {
         if (!path.trim() || importer.running)
             return
         root.importStartedAt = Store.localRevision
+        importer.what = path.trim().replace(/^.*\//, "")
         importer.command = [Sessions.bin, "import", path.trim()]
         importer.running = true
     }
 
     Process {
         id: importer
+        property string what: ""
         stdout: StdioCollector { id: importOut; waitForEnd: true }
         onExited: function (exitCode) {
             var result
@@ -387,6 +406,8 @@ Singleton {
             Store.applyMerged(result.data)
             // Imported connections are edits here: they reach the sync folder too.
             Store.localRevision++
+            root.remember("lastImport", { what: importer.what, added: result.report.added.length,
+                                          updated: result.report.updated.length })
             var said = root.summary(result.report)
             root.notice(said ? "Imported: " + said : "Import: nothing new", false)
         }
@@ -421,6 +442,7 @@ Singleton {
         root.importStartedAt = Store.localRevision
         foreignImporter.picked = refs
         foreignImporter.sources = p.sources
+        foreignImporter.what = p.title
         foreignImporter.running = true
     }
 
@@ -456,6 +478,7 @@ Singleton {
         id: foreignImporter
         property var picked: []
         property var sources: []
+        property string what: ""
         // Host and file names in the environment, never on the command line.
         command: [Sessions.bin, "import-foreign"]
         environment: ({ OMAREMOTE_IMPORT_SOURCES: JSON.stringify(foreignImporter.sources),
@@ -480,6 +503,7 @@ Singleton {
             Store.applyMerged(result.data)
             Store.localRevision++
             var n = result.report.added.length
+            root.remember("lastImport", { what: foreignImporter.what, added: n, updated: 0 })
             root.notice(n ? "Imported: " + n + " added" : "Import: nothing new", false)
         }
     }

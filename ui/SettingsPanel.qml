@@ -28,6 +28,10 @@ FocusScope {
         opened = true
         rail.forceActiveFocus()
     }
+    // Snapshots (Body.debugAction settingsend): the bottom of the section.
+    function scrollToEnd() {
+        pane.contentY = Math.max(0, pane.contentHeight - pane.height)
+    }
     function close() {
         opened = false
         closed()
@@ -234,10 +238,11 @@ FocusScope {
                                 + "Import… also takes .rdp files and Remmina profiles: those, Remmina and ~/.ssh/config "
                                 + "only add what is not here yet, after showing you the list."
                         }
+                        // Only without a file chooser (no xdg-desktop-portal): the path to export to or import.
                         FormRow {
-                            visible: root.section === "sync"
+                            visible: root.section === "sync" && Sync.noChooser
                             label: "File"
-                            help: "The last one used; the buttons open the file chooser"
+                            help: "No file chooser here: type the path, then Export or Import"
                             Input {
                                 id: exportPath
                                 maximumLength: Limits.path
@@ -253,12 +258,12 @@ FocusScope {
                             ActionButton {
                                 text: "Export…"
                                 icon: ""
-                                onClicked: Sync.exportVia(exportPath.text || "~/omaremote-connections.json")
+                                onClicked: Sync.exportVia(exportPath.text)
                             }
                             ActionButton {
                                 text: "Import…"
                                 icon: ""
-                                onClicked: Sync.importVia(exportPath.text || "~/omaremote-connections.json")
+                                onClicked: Sync.importVia(exportPath.text)
                             }
                             ActionButton {
                                 visible: Sync.remminaFolders.length > 0
@@ -271,6 +276,24 @@ FocusScope {
                                 text: "Hosts from ~/.ssh/config"
                                 icon: ""
                                 onClicked: Sync.importSshConfig()
+                            }
+                        }
+                        // What happened last: whether the backup is recent, and what came in.
+                        Note {
+                            readonly property var ex: Store.ui.lastExport || null
+                            readonly property var im: Store.ui.lastImport || null
+                            visible: root.section === "sync" && (ex !== null || im !== null)
+                            text: {
+                                var home = Quickshell.env("HOME") || ""
+                                var lines = []
+                                if (ex)
+                                    lines.push("Last export: " + (home && ex.file.indexOf(home + "/") === 0 ? "~" + ex.file.slice(home.length) : ex.file)
+                                               + " · " + Format.ago(ex.at) + " (" + ex.connections + " connections)")
+                                if (im)
+                                    lines.push("Last import: " + im.what + " · " + Format.ago(im.at) + " · "
+                                               + (im.added || im.updated ? im.added + " added" + (im.updated ? ", " + im.updated + " updated" : "")
+                                                                         : "nothing new"))
+                                return lines.join("\n")
                             }
                         }
 

@@ -1749,7 +1749,12 @@ FocusScope {
         else if (parts[0] === "quickentry") selectedId = Store.quickConnect(Format.quickSpec(parts.slice(1).join(":"), true))
         else if (a === "gvfscard") gvfsFor = selectedId
         else if (a === "filescard") { Sessions.mountedFiles = [selectedId]; filesAsk = [selectedId] }
-        else if (parts[0] === "ui") Store.setUi(parts[1], parts.slice(2).join(":"))
+        else if (a === "settingsend") settingsPanel.scrollToEnd()
+        else if (parts[0] === "ui") {
+            var v = parts.slice(2).join(":")
+            try { v = JSON.parse(v) } catch (e) {} // a JSON value, else the text
+            Store.setUi(parts[1], v)
+        }
         else if (parts[0] === "importcard") Sync.scanForeign(parts.slice(1).join(":").split(","), "sample")
         else if (a === "addresscard") Sync.pendingAddress = [{ system: "laptop", id: "c-1", name: "File Server", from: "files.acme.lan", to: "files.example.net" }]
         else if (a === "enter") keymapSheet.runPicked()
