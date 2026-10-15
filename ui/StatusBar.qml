@@ -34,8 +34,9 @@ Rectangle {
     }
     FontMetrics { id: keyMetrics; font.family: Theme.font; font.pixelSize: Theme.caption; font.bold: true }
     FontMetrics { id: labelMetrics; font.family: Theme.font; font.pixelSize: Theme.caption }
+    // Session keys are given as ctrl+alt+…; drawn as Settings › Keyboard has them (Keymap.session).
     function hintWidth(h) {
-        return keyMetrics.advanceWidth(h[0]) + 4 + labelMetrics.advanceWidth(h[1])
+        return keyMetrics.advanceWidth(Keymap.session(h[0])) + 4 + labelMetrics.advanceWidth(h[1])
     }
 
     Rectangle { width: parent.width; height: 1; color: Theme.hairline }
@@ -95,7 +96,7 @@ Rectangle {
                 spacing: 4
                 Text {
                     textFormat: Text.PlainText
-                    text: modelData[0]
+                    text: Keymap.session(modelData[0])
                     color: Theme.accent
                     font.family: Theme.font
                     font.pixelSize: Theme.caption

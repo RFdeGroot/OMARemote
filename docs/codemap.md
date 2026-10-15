@@ -51,7 +51,7 @@ Singletons:
 | Sync.qml | export/import, folder sync, the file pickers, import from other clients (`scanForeign`, `importPreview`, `applyForeign`) |
 | Hotkeys.qml | hotkey windows and the Hyprland config they write |
 | Updates.qml | the update check and `omaremote-update` |
-| Keymap.qml | every key binding: the one table the keys, the keymap sheet and the hints read |
+| Keymap.qml | every key binding: the one table the keys, the keymap sheet and the hints read; the session keys (Settings › Keyboard: `session()`, `isHostKey`, `isSessionChord`) |
 | Theme.qml | colours from Omarchy (`Commons.Color`), sizes |
 
 The manager window:
@@ -70,7 +70,7 @@ The manager window:
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
 | Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim scrollbar on panes that scroll; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
 | js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; sources in docs/limits.md |
-| js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels |
+| js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels, `sessionSpec`/`isSessionChord` |
 
 ## native/ (C++)
 
@@ -92,7 +92,8 @@ Build: `ninja -C native/build`.
   PasteGuard, offscreen through tests/qml/paste.qml; needs the native build), test_limits.py (field
   limits: UI and backend equal, every Input names one, import and sync refuse longer),
   test_quick.py (Format.quickCredential through tests/qml/format.qml), test_import.py (.rdp, Remmina,
-  ~/.ssh/config: parsers, refused values, idempotent re-import).
+  ~/.ssh/config: parsers, refused values, idempotent re-import), test_session_keys.py (the session
+  keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

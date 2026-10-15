@@ -172,3 +172,27 @@ function logLines(text, problemsOnly) {
     }
     return out
 }
+
+// The session keys (Settings › Keyboard, ui.sessionKeys): "ctrlalt" (default), "rctrl" (Right Ctrl,
+// a host key) or "ctrlaltshift". Anything else is the default.
+function sessionMode(value) {
+    return ["ctrlalt", "rctrl", "ctrlaltshift"].indexOf(value) >= 0 ? value : "ctrlalt"
+}
+
+// A key as typed with those session keys: "ctrl+alt+home" -> "rctrl+home". Other keys unchanged.
+function sessionSpec(mode, spec) {
+    var prefix = { ctrlalt: "ctrl+alt", rctrl: "rctrl", ctrlaltshift: "ctrl+alt+shift" }[sessionMode(mode)]
+    return spec.indexOf("ctrl+alt+") === 0 ? prefix + spec.slice(8) : spec
+}
+
+// Whether a key comes with the session keys held. hostHeld: Right Ctrl is down. With Right Ctrl,
+// Ctrl must be held as well, so a release missed (the focus gone meanwhile) never leaves every key
+// taken.
+function isSessionChord(mode, ctrl, alt, shift, hostHeld) {
+    mode = sessionMode(mode)
+    if (mode === "rctrl")
+        return !!hostHeld && ctrl
+    if (mode === "ctrlaltshift")
+        return ctrl && alt && shift
+    return ctrl && alt
+}

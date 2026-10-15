@@ -688,8 +688,22 @@ FocusScope {
     property string focusArea: "list"
     property int sidebarCursor: 0
 
+    // Right Ctrl held, when it is the session key (Settings › Keyboard): its chords work here too.
+    property bool hostHeld: false
+    Keys.onReleased: function (event) {
+        if (Keymap.isHostKey(event)) {
+            root.hostHeld = false
+            event.accepted = true
+        }
+    }
+
     // Every key here goes through Keymap.qml, the same table the keymap sheet (?) draws.
     Keys.onPressed: function (event) {
+        if (Keymap.isHostKey(event)) {
+            root.hostHeld = true
+            event.accepted = true
+            return
+        }
         if (root.currentTab !== "home")
             return
         // The settings panel owns the keys while it is open.
@@ -707,7 +721,7 @@ FocusScope {
         }
         // With an editor or the log open only the app-wide keys apply; the rest are theirs.
         var context = root.busy || root.logSession ? "none" : root.focusArea
-        var action = Keymap.match(event, context)
+        var action = Keymap.match(event, context, root.hostHeld)
         if (action === "")
             return
         root.runAction(action)
@@ -1735,6 +1749,7 @@ FocusScope {
         else if (parts[0] === "quickentry") selectedId = Store.quickConnect(Format.quickSpec(parts.slice(1).join(":"), true))
         else if (a === "gvfscard") gvfsFor = selectedId
         else if (a === "filescard") { Sessions.mountedFiles = [selectedId]; filesAsk = [selectedId] }
+        else if (parts[0] === "ui") Store.setUi(parts[1], parts.slice(2).join(":"))
         else if (parts[0] === "importcard") Sync.scanForeign(parts.slice(1).join(":").split(","), "sample")
         else if (a === "addresscard") Sync.pendingAddress = [{ system: "laptop", id: "c-1", name: "File Server", from: "files.acme.lan", to: "files.example.net" }]
         else if (a === "enter") keymapSheet.runPicked()

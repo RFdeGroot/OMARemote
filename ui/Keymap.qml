@@ -2,6 +2,7 @@ pragma Singleton
 
 import QtQuick
 import Quickshell
+import "js/Format.js" as Format
 
 // The one key table. Body.qml dispatches the list, sidebar and app keys through match(), and the
 // keymap sheet (?) draws every row from here, so a key cannot be advertised without working or
@@ -14,7 +15,8 @@ Singleton {
     //   list     the connections list has focus
     //   sidebar  the sidebar has focus
     //   app      anywhere outside a session and outside text entry
-    //   session  inside a remote desktop (always Ctrl+Alt, everything else goes to Windows)
+    //   session  inside a remote desktop, on the session keys (below); everything else goes to Windows
+    // Session keys are written "ctrl+alt+…" here and follow Settings › Keyboard when matched and drawn.
     //   form     an editor (connection, group, credential set)
     //   log      the log viewer
     readonly property var bindings: [
@@ -102,6 +104,29 @@ Singleton {
         { group: "Log", context: "log", action: "close", keys: ["escape"], label: "Close", run: false }
     ]
 
+    // The session keys (Settings › Keyboard, ui.sessionKeys): Ctrl+Alt (default); Right Ctrl, a host
+    // key as in VirtualBox, never sent to the remote side, for layouts where Windows reads Ctrl+Alt
+    // as AltGr; or Ctrl+Alt+Shift, for keyboards without a Right Ctrl.
+    readonly property string sessionKeys: Format.sessionMode(Store.ui.sessionKeys)
+    // Right Ctrl's XKB keycode (evdev 97 + 8): Qt has no left and right modifiers, the scan code does.
+    readonly property int rightCtrlCode: 105
+
+    // A key as it is typed now: "ctrl+alt+home" -> "rctrl+home" with Right Ctrl chosen.
+    function session(spec) {
+        return Format.sessionSpec(sessionKeys, spec)
+    }
+    // Right Ctrl itself, when it is the session key.
+    function isHostKey(event) {
+        return sessionKeys === "rctrl" && event.key === Qt.Key_Control && event.nativeScanCode === rightCtrlCode
+    }
+    // Whether a key event comes with the session keys held. hostHeld: Right Ctrl is down (the
+    // caller follows it through isHostKey, presses and releases).
+    function isSessionChord(event, hostHeld) {
+        return Format.isSessionChord(sessionKeys, (event.modifiers & Qt.ControlModifier) !== 0,
+                                     (event.modifiers & Qt.AltModifier) !== 0,
+                                     (event.modifiers & Qt.ShiftModifier) !== 0, hostHeld)
+    }
+
     readonly property var groups: {
         var out = []
         for (var i = 0; i < bindings.length; i++)
@@ -128,8 +153,8 @@ Singleton {
         return { key: key, ctrl: parts.indexOf("ctrl") >= 0, alt: parts.indexOf("alt") >= 0, shift: parts.indexOf("shift") >= 0 }
     }
 
-    // The action a key event means in a context, or "".
-    function match(event, context) {
+    // The action a key event means in a context, or "". hostHeld: see isSessionChord.
+    function match(event, context, hostHeld) {
         var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
         var alt = (event.modifiers & Qt.AltModifier) !== 0
         var shift = (event.modifiers & Qt.ShiftModifier) !== 0
@@ -143,6 +168,11 @@ Singleton {
                 continue
             for (var j = 0; j < b.keys.length; j++) {
                 var k = parse(b.keys[j])
+                if (b.keys[j].indexOf("ctrl+alt+") === 0) {
+                    if (k.key === key && isSessionChord(event, hostHeld))
+                        return b.action
+                    continue
+                }
                 // ? needs Shift on most layouts; the key itself says which.
                 var shiftOk = k.key === Qt.Key_Question || k.shift === shift
                 if (k.key === key && k.ctrl === ctrl && k.alt === alt && shiftOk)
@@ -157,8 +187,8 @@ Singleton {
         var names = { "return": "⏎", "enter": "⏎", "escape": "Esc", "delete": "Del", "pgup": "PgUp",
                       "pgdown": "PgDn", "up": "↑", "down": "↓", "left": "←", "right": "→", "space": "Space",
                       "tab": "Tab", "home": "Home", "end": "End", "menu": "Menu", "f1": "F1", "f2": "F2",
-                      "ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "super": "Super" }
-        return spec.split("+").map(function (p) { return names[p] || p }).join(" ")
+                      "ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "super": "Super", "rctrl": "Right Ctrl" }
+        return session(spec).split("+").map(function (p) { return names[p] || p }).join(" ")
     }
 
     // The caps of a row, the duplicate ⏎ of Return/Enter folded into one.

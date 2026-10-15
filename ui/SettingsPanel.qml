@@ -16,6 +16,7 @@ FocusScope {
     readonly property var sections: [
         { id: "sync", label: "Sync", icon: "" },
         { id: "ssh", label: "SSH", icon: "" },
+        { id: "keyboard", label: "Keyboard", icon: "\uf084" },
         { id: "hotkeys", label: "Hotkeys", icon: "\uf11c" },
         { id: "updates", label: "Updates", icon: "" },
         { id: "files", label: "Files", icon: "\uf07b" }
@@ -315,12 +316,35 @@ FocusScope {
                             }
                         }
 
+                        // ------------------------------------------------ Keyboard
+                        Heading { visible: root.section === "keyboard"; text: "SESSION KEYS" }
+                        Note {
+                            visible: root.section === "keyboard"
+                            text: "Inside a session every key goes to the remote side, except OMARemote's own: "
+                                + "the session keys with a second key (Home: back to connections, PgUp/PgDn: tabs, "
+                                + "K: the keymap, …). Ctrl+Alt suits most. Where Windows reads Ctrl+Alt as AltGr "
+                                + "(Polish, and German on Windows) or an app needs its Ctrl+Alt shortcuts, take "
+                                + "Right Ctrl: it then never reaches the remote side, as VirtualBox's host key. "
+                                + "Without a Right Ctrl (a MacBook), Ctrl+Alt+Shift."
+                        }
+                        FormRow {
+                            visible: root.section === "keyboard"
+                            label: "Session keys"
+                            help: "Now: " + Keymap.cap("ctrl+alt+home") + " goes back to connections"
+                            Segment {
+                                value: Keymap.sessionKeys
+                                options: [{ value: "ctrlalt", label: "Ctrl+Alt" }, { value: "rctrl", label: "Right Ctrl" },
+                                          { value: "ctrlaltshift", label: "Ctrl+Alt+Shift" }]
+                                onPicked: function (v) { Store.setUi("sessionKeys", v) }
+                            }
+                        }
+
                         // ------------------------------------------------ Hotkeys
                         Heading { visible: root.section === "hotkeys"; text: "HOTKEY WINDOWS" }
                         Note {
                             visible: root.section === "hotkeys"
                             text: "A connection that opens in a Hotkey window (Open in, in its editor) slides in on its "
-                                + "shortcut, on the screen you are on, and out again on the same shortcut or ctrl+alt+h. "
+                                + "shortcut, on the screen you are on, and out again on the same shortcut or " + Keymap.session("ctrl+alt+h") + ". "
                                 + "It stays connected in between. Up to " + Hotkeys.limit + " connections."
                         }
                         Repeater {

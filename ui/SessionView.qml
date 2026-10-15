@@ -84,19 +84,37 @@ Item {
                       ? parseInt(root.connection.scale) : 0
         focus: root.current
 
-        // App chords, all on Ctrl+Alt so nothing a Windows user types is taken.
+        // App chords, all on the session keys (Settings › Keyboard) so nothing a Windows user
+        // types is taken. Right Ctrl as the session key never reaches the remote side.
         Keys.onPressed: function (event) {
-            if (root.chord(event)) {
+            if (root.hostKey(event, true)) {
+                event.accepted = true
+            } else if (root.chord(event)) {
                 view.releaseAllKeys()
                 event.accepted = true
             }
         }
+        Keys.onReleased: function (event) {
+            if (root.hostKey(event, false))
+                event.accepted = true
+        }
+        onActiveFocusChanged: if (!activeFocus) root.hostHeld = false
     }
 
-    // The Ctrl+Alt chords, for the desktop and for the panel of an ended session alike. True when
-    // the key was one of them.
+    // Right Ctrl held, when it is the session key (Keymap.isHostKey).
+    property bool hostHeld: false
+    function hostKey(event, pressed) {
+        if (!Keymap.isHostKey(event))
+            return false
+        hostHeld = pressed
+        return true
+    }
+
+    // The session-key chords (Ctrl+Alt unless Settings › Keyboard says otherwise), for the desktop
+    // and for the panel of an ended session alike. True when the key was one of them; with Right
+    // Ctrl held every key is OMARemote's, a chord or not.
     function chord(event) {
-        if (!((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.AltModifier)))
+        if (!Keymap.isSessionChord(event, hostHeld))
             return false
         if (event.key === Qt.Key_Home) root.navigate("home")
         else if (event.key === Qt.Key_PageDown) root.navigate("next")
@@ -111,7 +129,7 @@ Item {
         else if (event.key === Qt.Key_P) root.togglePinned()
         else if (event.key === Qt.Key_B && root.isSsh) Sessions.browse(root.session.connection)
         else if (event.key === Qt.Key_W) root.closeRequested()
-        else return false
+        else return Keymap.sessionKeys === "rctrl"
         return true
     }
 
@@ -215,8 +233,12 @@ Item {
             ActionButton { text: "Keep"; onClicked: root.filesAsked = true }
         }
         focus: visible && root.current
+        Keys.onReleased: function (event) {
+            if (root.hostKey(event, false))
+                event.accepted = true
+        }
         Keys.onPressed: function (event) {
-            if (root.chord(event)) {
+            if (root.hostKey(event, true) || root.chord(event)) {
                 event.accepted = true
                 return
             }

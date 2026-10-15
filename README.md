@@ -180,7 +180,12 @@ The most used:
 | `p` | pin the connections list beside session tabs |
 | `ctrl+s` / `esc` | save / cancel in an editor; `tab` walks every field |
 
-Inside a session every key goes to the remote desktop, except these:
+Inside a session every key goes to the remote desktop, except these. **Session keys:** they are
+on Ctrl+Alt unless you choose otherwise in Settings › Keyboard: **Right Ctrl** (a host key, as in
+VirtualBox: it never reaches the remote side, so Windows layouts that read Ctrl+Alt as AltGr, such as
+Polish, and apps with Ctrl+Alt shortcuts keep them) or **Ctrl+Alt+Shift** (for keyboards without a
+Right Ctrl, such as a MacBook's). The setting is per system; read `ctrl+alt` below as the one you
+chose. The status bar and the keymap sheet show the keys as they are.
 
 | Key | Action |
 | --- | --- |
