@@ -30,12 +30,13 @@ Sections, in order (`# ------- <name>` lines):
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
 | arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
+| import from other clients | `parse_rdp`, `parse_remmina`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only) |
 | kerberos | private krb5.conf, SRV lookup (Gio.Resolver) |
 | session state | the runtime state files, `list_sessions` |
 | supervisor | `main()`: the command switch (`if cmd == "…"`), launching and watching a session |
 
 Commands (`omaremote-session <cmd>`): list stop forget args export import sync pick ssh-keys
-ssh-config watch-folder system-name paths view float terminal-tag summon open-window toggle place
+import-sources import-scan import-foreign ssh-config watch-folder system-name paths view float terminal-tag summon open-window toggle place
 hide close-key browse unmount mounts restart-gvfs hotkeys hypr-hotkeys fullscreen plugin-check
 update-check focus monitor-scale secret, plus launch.
 
@@ -47,7 +48,7 @@ Singletons:
 | --- | --- |
 | Store.qml | connections.json: `stored`, `connections` (resolved), `quick`, trash, credential sets, groups, `write()`, `upsert`, `quickConnect`, `saveQuick` |
 | Sessions.qml | the running sessions (`omaremote-session list`), `launch`, `launchInTab`, `stop`, secrets, files over SFTP |
-| Sync.qml | export/import, folder sync, the file pickers |
+| Sync.qml | export/import, folder sync, the file pickers, import from other clients (`scanForeign`, `importPreview`, `applyForeign`) |
 | Hotkeys.qml | hotkey windows and the Hyprland config they write |
 | Updates.qml | the update check and `omaremote-update` |
 | Keymap.qml | every key binding: the one table the keys, the keymap sheet and the hints read |
@@ -66,7 +67,7 @@ The manager window:
 | SessionWindow.qml | a session's own or hotkey window |
 | TabBar.qml, PinnedList.qml, StatusBar.qml | chrome |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
-| QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml | cards over the window |
+| QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
 | Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml | small controls (Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
 | js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; sources in docs/limits.md |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels |
@@ -90,7 +91,8 @@ Build: `ninja -C native/build`.
   (the updater), test_qml_palette.py (Commons.Color, PlainText), test_paste.py (Input.qml and
   PasteGuard, offscreen through tests/qml/paste.qml; needs the native build), test_limits.py (field
   limits: UI and backend equal, every Input names one, import and sync refuse longer),
-  test_quick.py (Format.quickCredential through tests/qml/format.qml).
+  test_quick.py (Format.quickCredential through tests/qml/format.qml), test_import.py (.rdp, Remmina,
+  ~/.ssh/config: parsers, refused values, idempotent re-import).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

@@ -227,7 +227,9 @@ FocusScope {
                         Note {
                             visible: root.section === "sync"
                             text: "One file to carry connections and groups by hand, with the same things left "
-                                + "out. Importing adds new connections and updates changed ones; it never removes any."
+                                + "out. Importing adds new connections and updates changed ones; it never removes any. "
+                                + "Import… also takes .rdp files and Remmina profiles: those, Remmina and ~/.ssh/config "
+                                + "only add what is not here yet, after showing you the list."
                         }
                         FormRow {
                             visible: root.section === "sync"
@@ -254,6 +256,18 @@ FocusScope {
                                 text: "Import…"
                                 icon: ""
                                 onClicked: Sync.importVia(exportPath.text || "~/omaremote-connections.json")
+                            }
+                            ActionButton {
+                                visible: Sync.remminaFolders.length > 0
+                                text: "From Remmina"
+                                icon: ""
+                                onClicked: Sync.importRemmina()
+                            }
+                            ActionButton {
+                                visible: Sync.sshConfigFound
+                                text: "Hosts from ~/.ssh/config"
+                                icon: ""
+                                onClicked: Sync.importSshConfig()
                             }
                         }
 

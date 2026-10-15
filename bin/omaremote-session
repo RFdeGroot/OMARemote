@@ -48,6 +48,7 @@ so closing the window never closes a remote desktop.
                                          the desktop's file chooser (portal); prints {"path"}, "" if cancelled
 """
 
+import configparser
 import glob
 import json
 import os
@@ -746,8 +747,9 @@ def import_file(file_path, path=CONNECTIONS, now=None):
 
 
 def pick(mode, title="", current="", name=""):
-    """The desktop's own file chooser (xdg-desktop-portal: Flea, GTK, …). mode: folder, open or save.
-    Returns the chosen path, or "" when cancelled."""
+    """The desktop's own file chooser (xdg-desktop-portal: Flea, GTK, …). mode: folder, open, save,
+    key or import (several files: OMARemote's own and other clients'). Returns the chosen paths,
+    [] when cancelled."""
     from urllib.parse import unquote, urlparse
     from gi.repository import Gio, GLib
     bus = Gio.bus_get_sync(Gio.BusType.SESSION)
@@ -760,7 +762,7 @@ def pick(mode, title="", current="", name=""):
     def on_response(_conn, _sender, _path, _iface, _signal, params):
         code, results = params.unpack()
         uris = (results.get("uris") or []) if code == 0 else []
-        chosen.extend(unquote(urlparse(u).path) for u in uris[:1])
+        chosen.extend(unquote(urlparse(u).path) for u in (uris if mode == "import" else uris[:1]))
         loop.quit()
 
     # Subscribed before the call, on the handle the token makes predictable: no response is missed.
@@ -771,6 +773,11 @@ def pick(mode, title="", current="", name=""):
         options["directory"] = GLib.Variant("b", True)
     elif mode == "key":
         pass  # any file: keys have no common extension
+    elif mode == "import":
+        options["multiple"] = GLib.Variant("b", True)
+        options["filters"] = GLib.Variant("a(sa(us))", [
+            ("Connections (OMARemote, .rdp, Remmina)", [(0, "*.json"), (0, "*.rdp"), (0, "*.remmina")]),
+            ("All files", [(0, "*")])])
     else:
         options["filters"] = GLib.Variant("a(sa(us))", [("OMARemote connections", [(0, "*.json")]),
                                                          ("All files", [(0, "*")])])
@@ -787,7 +794,7 @@ def pick(mode, title="", current="", name=""):
                   GLib.Variant("(ssa{sv})", ("", title or "OMARemote", options)), GLib.VariantType("(o)"),
                   Gio.DBusCallFlags.NONE, -1, None)
     loop.run()
-    return chosen[0] if chosen else ""
+    return chosen
 
 
 def export_file(file_path, path=CONNECTIONS, now=None):
@@ -2137,6 +2144,340 @@ def describe_exit(code, log_tail, protocol="rdp"):
     return f"{message} ({errors[-1]})" if errors else message
 
 
+# ---------------------------------------------------------------- import from other clients
+#
+# .rdp files, Remmina and ~/.ssh/config. A scan lists what a source holds and whether it is here
+# already; the UI shows that list, and an apply adds the ones picked. Foreign files only ever add:
+# a connection that is here already (the same protocol, host and port, whatever its name) is left
+# exactly as it is, so importing a file twice, or two files that overlap, changes nothing the
+# second time, and a downloaded .rdp can never redirect a saved connection. Who signs in comes
+# along (user name, domain, SSH key: the user's own files), passwords never do, and nothing turns
+# a check off or shares a folder: those stay the user's to switch on.
+
+IMPORT_GROUP = "Imported"   # where connections go whose source names no group
+IMPORT_MAX_BYTES = 1 << 20
+IMPORT_MAX_FILES = 500
+IMPORT_MAX_ENTRIES = 2000
+IMPORT_SUFFIXES = (".rdp", ".remmina")
+REMMINA_DIRS = ("~/.local/share/remmina", "~/.var/app/org.remmina.Remmina/data/remmina")
+SSH_WILDCARD_RE = re.compile(r"[*?!]")
+
+
+def _read_foreign(path):
+    """A small text file in whatever encoding Windows or Linux wrote it: .rdp files are often
+    UTF-16 with a byte order mark."""
+    with open(path, "rb") as f:
+        raw = f.read(IMPORT_MAX_BYTES + 1)
+    if len(raw) > IMPORT_MAX_BYTES:
+        raise ValueError("larger than 1 MiB")
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw[3:].decode("utf-8", "replace")
+    if raw[1:2] == b"\0":
+        return raw.decode("utf-16-le", "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
+def _clean(value):
+    return plain(str(value or "")).strip()
+
+
+def _split_address(value, protocol):
+    """host and port from host, host:port or [v6]:port; port None when not given."""
+    value = _clean(value)
+    m = re.match(r"^\[([^\]]+)\](?::(\d+))?$", value) or re.match(r"^([^:]*)(?::(\d+))?$", value)
+    if not m:
+        return value, None  # a bare IPv6 address
+    host, port = m.group(1), m.group(2)
+    port = int(port) if port else None
+    if protocol == "vnc" and port is not None and port < 100:
+        port += 5900  # host:1 is VNC display 1
+    return host, port
+
+
+def parse_rdp(text, name=""):
+    """A Windows .rdp file (key:type:value lines) as a connection."""
+    v = {}
+    for line in text.splitlines():
+        parts = line.strip().split(":", 2)
+        if len(parts) == 3:
+            v[parts[0].strip().lower()] = parts[2].strip()
+    host, port = _split_address(v.get("full address", ""), "rdp")
+    conn = {"protocol": "rdp", "name": _clean(name) or host, "host": host}
+    if port is None and v.get("server port", "").isdigit():
+        port = int(v["server port"])
+    if port:
+        conn["port"] = port
+    user = _clean(v.get("username"))
+    if "\\" in user:
+        conn["domain"], user = user.split("\\", 1)
+    if user:
+        conn["username"] = user
+    if _clean(v.get("domain")):
+        conn["domain"] = _clean(v["domain"])
+    # 1: always through the gateway, 2: when a direct connection fails (FreeRDP: always).
+    if _clean(v.get("gatewayhostname")) and v.get("gatewayusagemethod") in ("1", "2"):
+        conn["gateway"] = _clean(v["gatewayhostname"])
+    if v.get("redirectclipboard") == "0":
+        conn["clipboard"] = False
+    audio = {"0": "local", "1": "remote", "2": "off"}.get(v.get("audiomode", ""))
+    if audio:
+        conn["audio"] = audio
+    if v.get("audiocapturemode") == "1":
+        conn["microphone"] = True
+    notes = []
+    if v.get("remoteapplicationmode") == "1":
+        notes.append("a RemoteApp: imported as the whole desktop")
+    if v.get("drivestoredirect") or v.get("redirectdrives") == "1":
+        notes.append("asks to share drives: not taken over")
+    return conn, notes
+
+
+def parse_remmina(text, name=""):
+    """A Remmina profile ([remmina] section) as a connection; passwords stay behind (Remmina
+    encrypts them with a key of its own)."""
+    parser = configparser.RawConfigParser(strict=False, interpolation=None)
+    parser.read_string(text)
+    if not parser.has_section("remmina"):
+        raise ValueError("not a Remmina profile")
+    v = {k.lower(): val for k, val in parser.items("remmina")}
+    remote = (v.get("protocol") or "").strip()
+    protocol = remote.lower()
+    if protocol not in DEFAULT_PORTS:
+        raise ValueError(f"Remmina {remote or 'unknown'} connections are not supported")
+    host, port = _split_address(v.get("server", ""), protocol)
+    conn = {"protocol": protocol, "name": _clean(v.get("name")) or _clean(name) or host, "host": host}
+    if port:
+        conn["port"] = port
+    if _clean(v.get("group")):
+        conn["group"] = _clean(v["group"])
+    user = _clean(v.get("username"))
+    if protocol == "rdp" and "\\" in user:
+        conn["domain"], user = user.split("\\", 1)
+    if user:
+        conn["username"] = user
+    if protocol == "rdp":
+        if _clean(v.get("domain")):
+            conn["domain"] = _clean(v["domain"])
+        if _clean(v.get("gateway_server")) and v.get("gateway_usage", "1") != "0":
+            conn["gateway"] = _clean(v["gateway_server"])
+        if v.get("disableclipboard") == "1":
+            conn["clipboard"] = False
+        if v.get("sound") in ("local", "remote", "off"):
+            conn["audio"] = v["sound"]
+        if v.get("microphone") not in (None, "", "0"):
+            conn["microphone"] = True
+    elif protocol == "vnc":
+        if v.get("viewonly") == "1":
+            conn["viewOnly"] = True
+        if v.get("disableclipboard") == "1":
+            conn["clipboard"] = False
+    elif protocol == "ssh" and _clean(v.get("ssh_privatekey")):
+        conn["sshKey"] = _tilde(os.path.expanduser(_clean(v["ssh_privatekey"])))
+    notes = ["asks to share a folder: not taken over"] if _clean(v.get("sharefolder")) else []
+    return conn, notes
+
+
+def parse_ssh_config(path, ssh_dir=SSH_DIR):
+    """Every Host alias without wildcards in an ssh config, Included files too. Returns
+    [(conn, notes, also)]: the alias is the host, so ssh's config keeps applying (HostName, port,
+    user, keys, ProxyJump); also is the key of the server it names, to find it here under its
+    real name. OMARemote's own omaremote.conf is never read: those are connections here already."""
+    result = []
+    for conn, notes, extra in _ssh_hosts(path, ssh_dir, set()):
+        also = None
+        hostname = _clean(extra.get("hostname"))
+        if hostname and "%" not in hostname:
+            port = int(extra["port"]) if str(extra.get("port") or "").isdigit() else 22
+            also = connection_key({"protocol": "ssh", "host": hostname, "port": port})
+            notes = notes + [f"{hostname}" + (f":{port}" if port != 22 else "")]
+        result.append((conn, notes, also))
+    return result
+
+
+def _ssh_hosts(path, ssh_dir, seen):
+    """(conn, notes, {hostname, port}) per Host alias in path and what it Includes."""
+    real = os.path.realpath(path)
+    if real in seen or len(seen) > 64 or os.path.basename(real) == SSH_MANAGED:
+        return []
+    seen.add(real)
+    out, block = [], []
+    for line in _read_foreign(path).splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^(\S+?)\s*(?:=\s*|\s+)(.*)$", line)
+        if not m:
+            continue
+        key, rest = m.group(1).lower(), m.group(2)
+        try:
+            args = shlex.split(rest, comments=True)
+        except ValueError:
+            args = rest.split()
+        if key == "host":
+            block = []
+            for alias in args:
+                if SSH_WILDCARD_RE.search(alias):
+                    continue
+                entry = ({"protocol": "ssh", "name": _clean(alias), "host": _clean(alias)}, [], {})
+                out.append(entry)
+                block.append(entry)
+        elif key == "match":
+            block = []
+        elif key in ("hostname", "port"):
+            for entry in block:
+                entry[2].setdefault(key, args[0] if args else "")
+        elif key == "include":
+            for pattern in args:
+                pattern = os.path.expanduser(pattern)
+                if not os.path.isabs(pattern):
+                    pattern = os.path.join(ssh_dir, pattern)
+                for name in sorted(glob.glob(pattern)):
+                    if os.path.isfile(name):
+                        out += _ssh_hosts(name, ssh_dir, seen)
+    return out
+
+
+def import_sources():
+    """What the Import buttons can offer here."""
+    remmina = [os.path.expanduser(d) for d in REMMINA_DIRS if os.path.isdir(os.path.expanduser(d))]
+    return {"remmina": remmina, "sshConfig": os.path.isfile(os.path.join(SSH_DIR, "config"))}
+
+
+def _foreign_entries(sources, ssh_dir=SSH_DIR):
+    """(conn, notes, also, source) per connection the sources hold, in their order, and the errors
+    on the way. A source is a file, a folder (its .rdp and .remmina files), "remmina" or
+    "ssh-config"."""
+    entries, errors, files = [], [], 0
+    for source in sources:
+        if source == "ssh-config":
+            try:
+                entries += [(c, n, a, "~/.ssh/config")
+                            for c, n, a in parse_ssh_config(os.path.join(ssh_dir, "config"), ssh_dir)]
+            except (OSError, ValueError) as e:
+                errors.append(f"~/.ssh/config: {e}")
+            continue
+        if source == "remmina":
+            paths = [os.path.join(d, n) for d in import_sources()["remmina"] for n in sorted(os.listdir(d))
+                     if n.endswith(".remmina")]
+        elif os.path.isdir(os.path.expanduser(source)):
+            folder = os.path.expanduser(source)
+            paths = [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+                     if n.lower().endswith(IMPORT_SUFFIXES)]
+        else:
+            paths = [os.path.expanduser(source)]
+        for path in paths:
+            files += 1
+            if files > IMPORT_MAX_FILES:
+                errors.append(f"only the first {IMPORT_MAX_FILES} files")
+                return entries[:IMPORT_MAX_ENTRIES], errors
+            base = os.path.basename(path)
+            stem, ext = os.path.splitext(base)
+            try:
+                if ext.lower() == ".rdp":
+                    conn, notes = parse_rdp(_read_foreign(path), stem)
+                elif ext.lower() == ".remmina":
+                    conn, notes = parse_remmina(_read_foreign(path), stem)
+                else:
+                    raise ValueError("not an .rdp or .remmina file")
+            except (OSError, ValueError, configparser.Error, UnicodeError) as e:
+                errors.append(f"{plain(base)[:60]}: {e}")
+                continue
+            entries.append((conn, notes, None, base))
+    return entries[:IMPORT_MAX_ENTRIES], errors
+
+
+def _foreign_problem(conn):
+    """Why a parsed connection cannot be taken in, or ""."""
+    if not conn.get("host"):
+        return "no address"
+    if not HOST_RE.match(conn["host"]):
+        return "not a valid host"
+    if conn.get("gateway") and not HOST_RE.match(conn["gateway"]):
+        return "not a valid gateway"
+    if "port" in conn and not 0 < conn["port"] < 65536:
+        return "not a valid port"
+    over = too_long(conn)
+    if over:
+        return f"its {over[0]} is longer than {over[1]} characters"
+    return ""
+
+
+def scan_foreign(sources, path=CONNECTIONS, ssh_dir=SSH_DIR):
+    """What the sources hold, each with a status against what is here:
+    new        not here yet (picked by default)
+    here       the same server is here already (never changed)
+    trashed    the same server is in Recently deleted (imported anew only when picked)
+    twice      listed earlier in this import already
+    invalid    cannot be taken in (reason says why)
+    Returns {"entries": [...], "errors": [...]}; an entry's ref picks it for apply."""
+    raw = load_raw(path)
+    # An SSH connection here whose host is an alias in ~/.ssh/config is also the server it names.
+    try:
+        aliases = {c["host"].lower(): also for c, _n, also in parse_ssh_config(os.path.join(ssh_dir, "config"), ssh_dir)
+                   if also}
+    except (OSError, ValueError):
+        aliases = {}
+
+    def keys_of(conns):
+        out = set()
+        for c in conns:
+            if isinstance(c, dict):
+                key = connection_key(c)
+                out.add(key)
+                if key[0] == "ssh" and key[2] == 22 and key[1] in aliases:
+                    out.add(aliases[key[1]])
+        return out
+    here = keys_of(raw.get("connections") or [])
+    binned = keys_of(t.get("connection") for t in raw.get("trash") or [] if isinstance(t, dict))
+    found, errors = _foreign_entries(sources, ssh_dir)
+    entries, listed = [], set()
+    for conn, notes, also, source in found:
+        conn["group"] = conn.get("group") or IMPORT_GROUP
+        key = connection_key(conn)
+        keys = {key} | ({also} if also else set())
+        problem = _foreign_problem(conn)
+        status = "invalid" if problem else "here" if keys & here else "twice" if keys & listed \
+            else "trashed" if keys & binned else "new"
+        if not problem:
+            listed |= keys
+        entries.append({"ref": "%s|%s|%d" % key, "status": status, "reason": problem,
+                        "protocol": conn["protocol"], "name": conn.get("name") or conn.get("host", ""),
+                        "host": conn.get("host", ""), "port": key[2], "group": conn["group"],
+                        "username": conn.get("username", ""), "notes": notes, "source": source,
+                        "_conn": conn})
+    return {"entries": entries, "errors": errors}
+
+
+def import_foreign(sources, picked=None, path=CONNECTIONS, ssh_dir=SSH_DIR, now=None):
+    """Adds the scanned connections whose ref is in picked (None: every new one), checked again
+    against what is here now. Returns {"data", "report"} like import_file."""
+    now = now if now is not None else now_ms()
+    scan = scan_foreign(sources, path, ssh_dir)
+    raw = load_raw(path)
+    data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted", "deletedGroups") if raw.get(k) is not None}
+    conns = data.setdefault("connections", [])
+    groups = data.get("groups") or {}
+    report = {"added": [], "updated": [], "restored": [], "trashed": [], "pendingDeletions": [],
+              "pendingAddress": [], "errors": scan["errors"]}
+    wanted = set(picked) if picked is not None else None
+    for e in scan["entries"]:
+        ok = e["status"] == "new" or (e["status"] == "trashed" and wanted is not None)
+        if not ok or (wanted is not None and e["ref"] not in wanted):
+            continue
+        new = dict(e["_conn"], id="c-" + uuid.uuid4().hex[:12], modified=now)
+        # A group's credential set signs desktops in; SSH signs in with keys, never with a set.
+        grouped = (groups.get(new["group"]) or {}).get("credential")
+        new["credential"] = "inherit" if grouped and new["protocol"] != "ssh" else "custom"
+        conns.append(new)
+        report["added"].append(new["name"])
+    return {"data": data, "report": report}
+
+
 # ---------------------------------------------------------------- kerberos
 #
 # MIT Kerberos reads every KDC the realm publishes in DNS and tries them in order, one second
@@ -2686,8 +3027,27 @@ def main(argv):
             print(json.dumps({"error": str(e)}))
             return 1
         return 0
+    if cmd == "import-sources":
+        print(json.dumps(import_sources()))
+        return 0
+    # Sources: files, folders, "remmina", "ssh-config". The refs picked come in the environment
+    # (a JSON list), host names never on the command line; without it every new one is added.
+    if cmd in ("import-scan", "import-foreign") and rest:
+        try:
+            if cmd == "import-scan":
+                scan = scan_foreign(rest)
+                for e in scan["entries"]:
+                    del e["_conn"]
+                print(json.dumps(scan))
+            else:
+                picked = os.environ.get("OMAREMOTE_IMPORT_PICK")
+                print(json.dumps(import_foreign(rest, json.loads(picked) if picked else None)))
+        except (OSError, ValueError) as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        return 0
     if cmd == "sync":
-        allow = rest[rest.index("--allow-deletions") + 1].split(",") if "--allow-deletions" in rest[:-1] else ()
+        allow =rest[rest.index("--allow-deletions") + 1].split(",") if "--allow-deletions" in rest[:-1] else ()
         address = rest[rest.index("--allow-address") + 1].split(",") if "--allow-address" in rest[:-1] else ()
         # The UI passes them in the environment (JSON lists): system and group names never go on a
         # command line, which other accounts can read.
@@ -2702,10 +3062,11 @@ def main(argv):
             print(json.dumps({"error": str(e)}))
             return 1
         return 0
-    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save", "key"):
+    if cmd == "pick" and rest and rest[0] in ("folder", "open", "save", "key", "import"):
         opt = lambda flag: rest[rest.index(flag) + 1] if flag in rest[1:-1] else ""
         try:
-            print(json.dumps({"path": pick(rest[0], opt("--title"), opt("--current"), opt("--name"))}))
+            paths = pick(rest[0], opt("--title"), opt("--current"), opt("--name"))
+            print(json.dumps({"path": paths[0] if paths else "", "paths": paths}))
         except Exception as e:  # no portal, no D-Bus, no python-gobject: the field still takes a typed path
             print(json.dumps({"error": f"no file chooser: {e}"}))
             return 1

@@ -266,6 +266,25 @@ name and password, and `r` brings it back; a deletion on another system arrives 
 straight out. When one system's file would delete many connections at once, OMARemote asks before
 anything happens: *Move to trash* or *Keep them* (they then go back to that system).
 
+### Coming from another client
+
+Settings › Sync takes connections from elsewhere: **Import…** also opens `.rdp` files (several at
+once) and Remmina profiles, and two buttons read **Remmina** (`~/.local/share/remmina`, Flatpak too)
+and the hosts in **~/.ssh/config** (Included files too; OMARemote's own `omaremote.conf` is skipped).
+A list shows what was found before anything is added: the new ones are switched on, the ones you have
+already, listed twice or not usable say so.
+
+- **Only ever adds.** A connection that is here already (same protocol, host and port) stays exactly
+  as it is, so importing the same files again, or a second file that overlaps the first, adds nothing
+  twice. An ssh alias and the host name it stands for count as the same server.
+- **Groups:** Remmina's group is kept; everything else goes into the group *Imported*.
+- **What comes along:** address, port, gateway, user name and domain, SSH key (Remmina), clipboard,
+  sound and microphone. Passwords stay behind (Windows and Remmina encrypt them), and nothing turns
+  off certificate checks or shares a folder, whatever the file asks: a downloaded `.rdp` is a
+  well-known phishing trick.
+- **Hosts from ~/.ssh/config** keep the alias as their host, so ssh's own config (HostName, port,
+  user, keys, ProxyJump) keeps applying.
+
 ## Credentials and groups
 
 - **All connections** lists them under their group headings once any group exists, favourites first

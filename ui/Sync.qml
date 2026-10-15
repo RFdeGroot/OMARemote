@@ -241,10 +241,10 @@ Singleton {
         browse("export", "save", "Export OMARemote connections", current, "omaremote-connections.json")
     }
     function importVia(current) {
-        browse("import", "open", "Import OMARemote connections", current, "")
+        browse("import", "import", "Import connections", current, "")
     }
 
-    function chosen(purpose, path) {
+    function chosen(purpose, path, paths) {
         if (purpose === "sshKey") {
             var home = Quickshell.env("HOME")
             keyPicked(path.indexOf(home + "/") === 0 ? "~" + path.slice(home.length) : path)
@@ -258,7 +258,20 @@ Singleton {
         if (purpose === "export")
             exportTo(path)
         else
-            importFrom(path)
+            importChosen(paths || [path])
+    }
+
+    // OMARemote's own files merge as before; .rdp and Remmina files go through the preview.
+    function importChosen(paths) {
+        var own = paths.filter(function (p) { return /\.json$/i.test(p) })
+        var foreign = paths.filter(function (p) { return !/\.json$/i.test(p) })
+        if (foreign.length > 0) {
+            scanForeign(foreign, foreign.length === 1 ? foreign[0].replace(/^.*\//, "") : foreign.length + " files")
+            if (own.length > 0)
+                notice("OMARemote's own files import on their own: pick them separately", true)
+        } else if (own.length > 0) {
+            importFrom(own[0])
+        }
     }
 
     Process {
@@ -282,7 +295,7 @@ Singleton {
                 return
             }
             if (result.path)
-                root.chosen(picker.purpose, result.path)
+                root.chosen(picker.purpose, result.path, result.paths)
         }
     }
 
@@ -376,6 +389,108 @@ Singleton {
             Store.localRevision++
             var said = root.summary(result.report)
             root.notice(said ? "Imported: " + said : "Import: nothing new", false)
+        }
+    }
+
+    // ---------------------------------------------------------------- other clients
+
+    // .rdp files, Remmina and ~/.ssh/config: a scan first (bin/omaremote-session scan_foreign),
+    // shown in ImportCard; the connections picked there are then added. Only ever adds: what is
+    // here already stays as it is, so importing again changes nothing.
+    // {title, sources, entries: [{ref, status, reason, protocol, name, host, port, group, username,
+    // notes, source}], errors}, or null.
+    property var importPreview: null
+    property var remminaFolders: []
+    property bool sshConfigFound: false
+
+    function scanForeign(sources, title) {
+        if (scanner.running || foreignImporter.running)
+            return
+        scanner.title = title
+        scanner.sources = sources
+        scanner.command = [Sessions.bin, "import-scan"].concat(sources)
+        scanner.running = true
+    }
+    function importRemmina() { scanForeign(["remmina"], "Remmina") }
+    function importSshConfig() { scanForeign(["ssh-config"], "~/.ssh/config") }
+
+    function applyForeign(refs) {
+        var p = importPreview
+        root.importPreview = null
+        if (!p || refs.length === 0 || foreignImporter.running)
+            return
+        root.importStartedAt = Store.localRevision
+        foreignImporter.picked = refs
+        foreignImporter.command = [Sessions.bin, "import-foreign"].concat(p.sources)
+        foreignImporter.running = true
+    }
+
+    Process {
+        id: scanner
+        property string title: ""
+        property var sources: []
+        stdout: StdioCollector { id: scanOut; waitForEnd: true }
+        onExited: function (exitCode) {
+            var r
+            try {
+                r = JSON.parse(scanOut.text)
+            } catch (e) {
+                root.notice("Import failed: no answer", true)
+                return
+            }
+            if (r.error) {
+                root.notice("Import failed: " + r.error, true)
+                return
+            }
+            if (r.entries.length === 0) {
+                root.notice(r.errors.length ? "Import: " + r.errors[0] : "Import: no connections found", true)
+                return
+            }
+            root.importPreview = { title: scanner.title, sources: scanner.sources, entries: r.entries, errors: r.errors }
+        }
+    }
+
+    Process {
+        id: foreignImporter
+        property var picked: []
+        // Host names in the environment, never on the command line.
+        environment: ({ OMAREMOTE_IMPORT_PICK: JSON.stringify(foreignImporter.picked) })
+        stdout: StdioCollector { id: foreignOut; waitForEnd: true }
+        onExited: function (exitCode) {
+            var result
+            try {
+                result = JSON.parse(foreignOut.text)
+            } catch (e) {
+                root.notice("Import failed: no answer", true)
+                return
+            }
+            if (result.error) {
+                root.notice("Import failed: " + result.error, true)
+                return
+            }
+            if (Store.localRevision !== root.importStartedAt) {
+                root.notice("Changed while importing: import again", true)
+                return
+            }
+            Store.applyMerged(result.data)
+            Store.localRevision++
+            var n = result.report.added.length
+            root.notice(n ? "Imported: " + n + " added" : "Import: nothing new", false)
+        }
+    }
+
+    Process {
+        id: sourcesProbe
+        command: [Sessions.bin, "import-sources"]
+        running: true
+        stdout: StdioCollector { id: sourcesOut; waitForEnd: true }
+        onExited: {
+            try {
+                var r = JSON.parse(sourcesOut.text)
+                root.remminaFolders = r.remmina || []
+                root.sshConfigFound = !!r.sshConfig
+            } catch (e) {
+            }
         }
     }
 

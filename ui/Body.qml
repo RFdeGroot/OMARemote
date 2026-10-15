@@ -693,7 +693,7 @@ FocusScope {
         if (root.currentTab !== "home")
             return
         // The settings panel owns the keys while it is open.
-        if (settingsPanel.opened || aboutCard.opened || groupPicker.opened || quickCard.opened) {
+        if (settingsPanel.opened || aboutCard.opened || groupPicker.opened || quickCard.opened || importCard.opened) {
             event.accepted = true
             return
         }
@@ -1471,6 +1471,13 @@ FocusScope {
         }
     }
 
+    ImportCard {
+        id: importCard
+        anchors.fill: parent
+        z: 96
+        onClosed: settingsPanel.opened ? settingsPanel.forceActiveFocus() : root.takeKeys()
+    }
+
     GroupPicker {
         id: groupPicker
         anchors.fill: parent
@@ -1728,6 +1735,7 @@ FocusScope {
         else if (parts[0] === "quickentry") selectedId = Store.quickConnect(Format.quickSpec(parts.slice(1).join(":"), true))
         else if (a === "gvfscard") gvfsFor = selectedId
         else if (a === "filescard") { Sessions.mountedFiles = [selectedId]; filesAsk = [selectedId] }
+        else if (parts[0] === "importcard") Sync.scanForeign(parts.slice(1).join(":").split(","), "sample")
         else if (a === "addresscard") Sync.pendingAddress = [{ system: "laptop", id: "c-1", name: "File Server", from: "files.acme.lan", to: "files.example.net" }]
         else if (a === "enter") keymapSheet.runPicked()
         else if (parts[0] === "walk") {
