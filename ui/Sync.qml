@@ -234,7 +234,7 @@ Singleton {
         picker.running = true
     }
 
-    // The file chooser could not open: Settings › Sync then shows a path field for export and import.
+    // The file chooser could not open: Settings › Import & export then shows a path field for export and import.
     property bool noChooser: false
 
     function browseFolder() {
@@ -255,7 +255,7 @@ Singleton {
             browse("import", "import", "Import connections", lastPath, "")
     }
 
-    // What happened last, for Settings › Sync (this system's own, in ui):
+    // What happened last, for Settings › Import & export (this system's own, in ui):
     // lastExport {file, connections, at}, lastImport {what, added, updated, at}; at in seconds.
     function remember(key, value) {
         value.at = Math.floor(Date.now() / 1000)

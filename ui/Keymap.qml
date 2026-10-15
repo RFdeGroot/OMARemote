@@ -40,6 +40,11 @@ Singleton {
         { group: "Connections", context: "list", action: "unmount", keys: ["u"], label: "Unmount its files (SSH)" },
         { group: "Connections", context: "list", action: "search", keys: ["/", "ctrl+f"], label: "Search connections" },
         { group: "Connections", context: "list", action: "clear", keys: ["escape"], label: "Clear search, then filter" },
+        // No key of their own: found and run from this sheet (type, then ⏎), or in Settings › Import & export.
+        { group: "Connections", context: "app", action: "importConnections", keys: [], label: "Import connections… (a file, .rdp, Remmina profiles)" },
+        { group: "Connections", context: "app", action: "importRemmina", keys: [], label: "Import from Remmina" },
+        { group: "Connections", context: "app", action: "importSshConfig", keys: [], label: "Import hosts from ~/.ssh/config" },
+        { group: "Connections", context: "app", action: "exportConnections", keys: [], label: "Export connections… (backup)" },
 
         // Views
         { group: "Views", context: "list", action: "filterAll", keys: ["1"], label: "All connections" },
@@ -65,7 +70,7 @@ Singleton {
         { group: "Tabs", context: "list", action: "pin", keys: ["p"], label: "Pin or unpin the connections list" },
         { group: "Tabs", context: "app", action: "pluginOffer", keys: [], label: "Show the bar plugin offer again" },
         { group: "Tabs", context: "app", action: "keys", keys: ["?", "f1"], label: "This keymap" },
-        { group: "Tabs", context: "app", action: "settings", keys: [","], label: "Settings (sync, SSH, updates, files)" },
+        { group: "Tabs", context: "app", action: "settings", keys: [","], label: "Settings (sync, import, SSH, keyboard, updates, files)" },
         // Hyprland's own close key (Omarchy's super+w, or what the user bound instead) closes the
         // window; listed here, never caught here.
         { group: "Tabs", context: "app", action: "close", keys: [Sessions.closeKey], label: "Close OMARemote (disconnects its tabs)", run: false },

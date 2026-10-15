@@ -243,7 +243,7 @@ running sessions and favourite connections, a click away
 Open **settings** with `,` (or the sliders at the top right). Two ways to get your connections onto
 another system:
 
-- **Export and import** (Settings › Sync): one file with your connections and groups. Import it on
+- **Export and import** (Settings › Import & export): one file with your connections and groups. Import it on
   the other system; importing again later adds new connections and updates changed ones, and never
   removes any. A connection that already exists there (same protocol, host and port) is updated,
   not added twice.
@@ -273,11 +273,12 @@ anything happens: *Move to trash* or *Keep them* (they then go back to that syst
 
 ### Coming from another client
 
-Settings › Sync takes connections from elsewhere: **Import…** also opens `.rdp` files (several at
+Settings › Import & export takes connections from elsewhere: **Import…** also opens `.rdp` files (several at
 once) and Remmina profiles, and two buttons read **Remmina** (`~/.local/share/remmina`, Flatpak too)
 and the hosts in **~/.ssh/config** (Included files too; OMARemote's own `omaremote.conf` is skipped).
 A list shows what was found before anything is added: the new ones are switched on, the ones you have
-already, listed twice or not usable say so.
+already, listed twice or not usable say so. The keymap sheet (`?`) runs them too: type *import* or
+*export* and press ⏎.
 
 - **Only ever adds.** A connection that is here already (same protocol, host and port) stays exactly
   as it is, so importing the same files again, or a second file that overlaps the first, adds nothing

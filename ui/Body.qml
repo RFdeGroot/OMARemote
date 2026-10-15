@@ -760,6 +760,19 @@ FocusScope {
         }
         switch (action) {
         case "settings": settingsPanel.open(); break
+        // Straight to the file chooser; without one, to the path field in Settings › Import & export.
+        case "importConnections":
+            if (Sync.noChooser) settingsPanel.open("transfer"); else Sync.importVia("")
+            break
+        case "exportConnections":
+            if (Sync.noChooser) settingsPanel.open("transfer"); else Sync.exportVia("")
+            break
+        case "importRemmina":
+            if (Sync.remminaFolders.length > 0) Sync.importRemmina(); else say("No Remmina profiles here (~/.local/share/remmina)")
+            break
+        case "importSshConfig":
+            if (Sync.sshConfigFound) Sync.importSshConfig(); else say("There is no ~/.ssh/config")
+            break
         case "restore": if (inTrash) restoreSelected(); else say("Restore works in Recently deleted (5)"); break
         case "filterTrash":
             if (trashCount > 0) filter = "trash"

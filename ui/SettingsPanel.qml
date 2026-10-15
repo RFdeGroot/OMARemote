@@ -15,6 +15,7 @@ FocusScope {
 
     readonly property var sections: [
         { id: "sync", label: "Sync", icon: "" },
+        { id: "transfer", label: "Import & export", icon: "\uf0ec" },
         { id: "ssh", label: "SSH", icon: "" },
         { id: "keyboard", label: "Keyboard", icon: "\uf084" },
         { id: "hotkeys", label: "Hotkeys", icon: "\uf11c" },
@@ -117,7 +118,7 @@ FocusScope {
                 // Sections: j/k or the arrows move, tab goes into the pane.
                 FocusScope {
                     id: rail
-                    Layout.preferredWidth: 150
+                    Layout.preferredWidth: 172
                     Layout.fillHeight: true
                     Keys.onPressed: function (event) {
                         var at = 0
@@ -253,17 +254,17 @@ FocusScope {
                             }
                         }
 
-                        Heading { visible: root.section === "sync"; text: "EXPORT AND IMPORT" }
+                        // ------------------------------------------------ Import and export
+                        Heading { visible: root.section === "transfer"; text: "IMPORT AND EXPORT" }
                         Note {
-                            visible: root.section === "sync"
-                            text: "One file to carry connections and groups by hand, with the same things left "
-                                + "out. Importing adds new connections and updates changed ones; it never removes any. "
-                                + "Import… also takes .rdp files and Remmina profiles: those, Remmina and ~/.ssh/config "
-                                + "only add what is not here yet, after showing you the list."
+                            visible: root.section === "transfer"
+                            text: "Export writes your connections and groups to one file, as a backup or to carry "
+                                + "them by hand, with the same things left out as sync leaves out. Importing that file "
+                                + "adds new connections and updates changed ones; it never removes any."
                         }
                         // Only without a file chooser (no xdg-desktop-portal): the path to export to or import.
                         FormRow {
-                            visible: root.section === "sync" && Sync.noChooser
+                            visible: root.section === "transfer" && Sync.noChooser
                             label: "File"
                             help: "No file chooser here: type the path, then Export or Import"
                             Input {
@@ -276,7 +277,7 @@ FocusScope {
                             }
                         }
                         RowLayout {
-                            visible: root.section === "sync"
+                            visible: root.section === "transfer"
                             spacing: Theme.gap
                             ActionButton {
                                 text: "Export…"
@@ -288,24 +289,13 @@ FocusScope {
                                 icon: ""
                                 onClicked: Sync.importVia(exportPath.text)
                             }
-                            ActionButton {
-                                visible: Sync.remminaFolders.length > 0
-                                text: "From Remmina"
-                                icon: ""
-                                onClicked: Sync.importRemmina()
-                            }
-                            ActionButton {
-                                visible: Sync.sshConfigFound
-                                text: "Hosts from ~/.ssh/config"
-                                icon: ""
-                                onClicked: Sync.importSshConfig()
-                            }
                         }
+
                         // What happened last: whether the backup is recent, and what came in.
                         Note {
                             readonly property var ex: Store.ui.lastExport || null
                             readonly property var im: Store.ui.lastImport || null
-                            visible: root.section === "sync" && (ex !== null || im !== null)
+                            visible: root.section === "transfer" && (ex !== null || im !== null)
                             text: {
                                 var home = Quickshell.env("HOME") || ""
                                 var lines = []
@@ -320,6 +310,29 @@ FocusScope {
                             }
                         }
 
+                        Heading { visible: root.section === "transfer"; text: "FROM ANOTHER CLIENT" }
+                        Note {
+                            visible: root.section === "transfer"
+                            text: "Import… also takes .rdp files and Remmina profiles, several at once. Those, Remmina "
+                                + "and ~/.ssh/config only add what is not here yet, after showing you the list: "
+                                + "importing again adds nothing twice. Passwords stay behind."
+                        }
+                        RowLayout {
+                            visible: root.section === "transfer" && (Sync.remminaFolders.length > 0 || Sync.sshConfigFound)
+                            spacing: Theme.gap
+                            ActionButton {
+                                visible: Sync.remminaFolders.length > 0
+                                text: "From Remmina"
+                                icon: ""
+                                onClicked: Sync.importRemmina()
+                            }
+                            ActionButton {
+                                visible: Sync.sshConfigFound
+                                text: "Hosts from ~/.ssh/config"
+                                icon: ""
+                                onClicked: Sync.importSshConfig()
+                            }
+                        }
                         // ------------------------------------------------ SSH
                         Heading { visible: root.section === "ssh"; text: "KEYS IN THE TERMINAL" }
                         Note {
