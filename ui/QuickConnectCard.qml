@@ -17,6 +17,8 @@ FocusScope {
     property string protocol: "rdp"
     property bool protocolPicked: false
     property string credential: "custom"
+    // The host a credential set was filled in for (fill), "" when picked by hand or none.
+    property string credentialFor: ""
     property string sshUser: ""
     property bool sshUserTyped: false
     property string sshKey: ""
@@ -71,6 +73,7 @@ FocusScope {
         protocol = "rdp"
         protocolPicked = false
         credential = "custom"
+        credentialFor = ""
         sshUser = ""
         sshUserTyped = false
         sshKey = ""
@@ -93,6 +96,9 @@ FocusScope {
             protocol = p.protocol
         if (!sshUserTyped)
             sshUser = p.username
+        var kept = Format.quickCredential(credential, credentialFor, p.host)
+        credential = kept.credential
+        credentialFor = kept.filledFor
     }
     function pickProtocol(v) {
         protocol = v
@@ -104,6 +110,7 @@ FocusScope {
         protocol = c.protocol
         protocolPicked = true
         credential = c.protocol !== "ssh" && c.credential && c.credential !== "custom" ? c.credential : "custom"
+        credentialFor = credential !== "custom" ? c.host : ""
         sshUser = c.protocol === "ssh" ? (c.username || "") : ""
         sshUserTyped = false
         sshKey = c.sshKey || ""
@@ -201,7 +208,7 @@ FocusScope {
                     showLabel: false
                     value: root.credential
                     options: root.credentialOptions
-                    onChanged: function (v) { root.credential = v }
+                    onChanged: function (v) { root.credential = v; root.credentialFor = "" }
                 }
                 // A credential set goes to whatever server was typed: said where it is chosen.
                 Item { width: 1; height: 1; visible: credentialNote.visible }

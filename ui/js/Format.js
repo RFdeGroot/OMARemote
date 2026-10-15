@@ -89,6 +89,16 @@ function matches(c, query) {
 
 // What a search reads as, to connect to straight away: {protocol, host, port, username}, or null.
 // "pc.lan", "rdp://pc.lan:3390", "vnc://10.0.0.5", "ssh://alice@srv", "alice@srv:2222", "[fe80::1]".
+// The quick connect card's credential set once the address changes. A set filled in from a recent
+// quick connection (filledFor: its host) belongs to that host: typed to another, the set is let
+// go, or its password would go to a server nobody chose it for. A set picked by hand (filledFor
+// "") stays. Returns {credential, filledFor}.
+function quickCredential(credential, filledFor, host) {
+    if (!filledFor || String(host || "").toLowerCase() === filledFor.toLowerCase())
+        return { credential: credential, filledFor: filledFor }
+    return { credential: "custom", filledFor: "" }
+}
+
 // The protocol is the scheme's, else RDP for DOMAIN\user@, SSH for user@ or :22, VNC for
 // :5900-5999, else RDP. A bare
 // word (no dot, scheme, user or port) only counts when `alone` (nothing in the list matched it).
