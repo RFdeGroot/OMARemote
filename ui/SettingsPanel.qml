@@ -313,8 +313,8 @@ FocusScope {
                         Heading { visible: root.section === "transfer"; text: "FROM ANOTHER CLIENT" }
                         Note {
                             visible: root.section === "transfer"
-                            text: "Import… also takes .rdp files and Remmina profiles, several at once. Those, Remmina "
-                                + "and ~/.ssh/config only add what is not here yet, after showing you the list: "
+                            text: "Import… also takes .rdp files, Remmina profiles and 1Remote's database (1Remote.db), "
+                                + "several at once. Those, Remmina and ~/.ssh/config only add what is not here yet, after showing you the list: "
                                 + "importing again adds nothing twice. Passwords stay behind."
                         }
                         RowLayout {

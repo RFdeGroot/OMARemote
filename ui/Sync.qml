@@ -279,7 +279,7 @@ Singleton {
             importChosen(paths || [path])
     }
 
-    // OMARemote's own files merge as before; .rdp and Remmina files go through the preview.
+    // OMARemote's own files merge as before; .rdp, Remmina and 1Remote files go through the preview.
     function importChosen(paths) {
         var own = paths.filter(function (p) { return /\.json$/i.test(p) })
         var foreign = paths.filter(function (p) { return !/\.json$/i.test(p) })

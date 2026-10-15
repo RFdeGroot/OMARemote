@@ -231,6 +231,80 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual([l for l in text.split("\n") if l.startswith("Host")], ["Host ok.lan"])
 
+    def oneremote(self, *servers, name="1Remote.db"):
+        """A 1Remote database as 1Remote writes it: (Protocol, Json) per server."""
+        import sqlite3
+        path = os.path.join(self.root, name)
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE Configs (Key VARCHAR(64) PRIMARY KEY NOT NULL UNIQUE, Value TEXT NOT NULL)")
+        db.execute("CREATE TABLE Servers (Id VARCHAR(64) PRIMARY KEY NOT NULL UNIQUE, Protocol VARCHAR(32) NOT NULL,"
+                   " ClassVersion VARCHAR(32) NOT NULL, Json TEXT NOT NULL)")
+        for i, (protocol, fields) in enumerate(servers):
+            db.execute("INSERT INTO Servers VALUES (?, ?, ?, ?)",
+                       (str(i), protocol, protocol + ".V1", fields if isinstance(fields, str) else json.dumps(fields)))
+        db.commit()
+        db.close()
+        return path
+
+    def test_1remote_servers_tags_and_gateway(self):
+        path = self.oneremote(
+            ("RDP", {"DisplayName": "Files", "Address": "files.acme.lan", "Port": "3390", "UserName": "ACME\\jan",
+                     "Password": "encrypted", "Tags": ["office", "eu"], "GatewayMode": 1,
+                     "GatewayHostName": "gw.acme.lan", "GatewayUserName": "EDGE\\gwuser", "GatewayPassword": "x",
+                     "EnableClipboard": False, "AudioRedirectionMode": 2, "EnableAudioCapture": True,
+                     "EnableDiskDrives": True, "CommandBeforeConnected": "calc.exe"}),
+            ("RDP", {"DisplayName": "Direct", "Address": "app.acme.lan", "Port": "3389", "Domain": "ACME",
+                     "UserName": "jan", "GatewayMode": 2, "GatewayHostName": "gw.acme.lan", "Tags": []}),
+            ("SSH", {"DisplayName": "Git", "Address": "git.acme.lan", "Port": "2222", "UserName": "git",
+                     "PrivateKey": "C:\\Users\\jan\\.ssh\\id_ed25519"}),
+            ("VNC", {"DisplayName": "Screen", "Address": "screen.acme.lan", "Port": "5901"}),
+            ("FTP", {"DisplayName": "Upload", "Address": "ftp.acme.lan", "Port": "21"}))
+        scan = self.scan(path)
+        self.assertEqual(len(scan["entries"]), 4)
+        self.assertEqual(scan["errors"], ["1Remote.db: Upload: 1Remote FTP connections are not supported"])
+        report = self.run_import(path)
+        self.assertEqual(report["added"], ["Files", "Direct", "Git", "Screen"])
+        files, direct, git, screen = self.stored()
+        self.assertEqual((files["host"], files["port"], files["group"]), ("files.acme.lan", 3390, "office"))
+        self.assertEqual((files["domain"], files["username"]), ("ACME", "jan"))
+        self.assertEqual((files["gateway"], files["gatewayDomain"], files["gatewayUser"]), ("gw.acme.lan", "EDGE", "gwuser"))
+        self.assertEqual((files["clipboard"], files["audio"], files["microphone"]), (False, "off", True))
+        self.assertNotIn("Password", json.dumps(files))
+        self.assertNotIn("encrypted", json.dumps(self.stored()))
+        self.assertNotIn("homeDrive", files)
+        self.assertEqual(scan["entries"][0]["notes"], ["asks to share drives: not taken over",
+                                                       "runs commands around connecting: not taken over"])
+        self.assertEqual((direct["group"], direct["domain"]), ("Imported", "ACME"))
+        self.assertNotIn("gateway", direct)
+        self.assertEqual((git["protocol"], git["port"], git["username"]), ("ssh", 2222, "git"))
+        self.assertNotIn("sshKey", git)
+        self.assertEqual((screen["protocol"], screen["port"]), ("vnc", 5901))
+        self.assertEqual(self.run_import(path)["added"], [])
+
+    def test_1remote_bent_rows_and_not_a_database(self):
+        path = self.oneremote(("RDP", "{not json"), ("RDP", '["a list"]'),
+                              ("RDP", {"DisplayName": "Bad", "Address": "a.lan;rm -rf ~", "Port": "3389"}))
+        scan = self.scan(path)
+        self.assertEqual(len(scan["errors"]), 2)
+        self.assertEqual([e["status"] for e in scan["entries"]], ["invalid"])
+        other = self.write("Thumbs.db", "not a database at all")
+        scan = self.scan(other)
+        self.assertEqual(scan["entries"], [])
+        self.assertIn("not a 1Remote database", scan["errors"][0])
+        empty = os.path.join(self.root, "empty.db")
+        import sqlite3
+        sqlite3.connect(empty).execute("CREATE TABLE x (y)").connection.close()
+        self.assertIn("not a 1Remote database", self.scan(empty)["errors"][0])
+
+    def test_1remote_database_is_never_changed(self):
+        path = self.oneremote(("RDP", {"DisplayName": "Files", "Address": "files.acme.lan", "Port": "3389"}))
+        with open(path, "rb") as f:
+            before = f.read()
+        self.run_import(path)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(sorted(os.listdir(self.root)), ["1Remote.db", "connections.json", "ssh"])
+
     def test_the_ui_passes_sources_and_picks_outside_the_command_line(self):
         # File names are often server names (/proc/<pid>/cmdline is readable by other accounts).
         with open(os.path.join(HERE, "..", "ui", "Sync.qml"), encoding="utf-8") as f:

@@ -791,7 +791,8 @@ def pick(mode, title="", current="", name=""):
     elif mode == "import":
         options["multiple"] = GLib.Variant("b", True)
         options["filters"] = GLib.Variant("a(sa(us))", [
-            ("Connections (OMARemote, .rdp, Remmina)", [(0, "*.json"), (0, "*.rdp"), (0, "*.remmina")]),
+            ("Connections (OMARemote, .rdp, Remmina, 1Remote)",
+             [(0, "*.json"), (0, "*.rdp"), (0, "*.remmina"), (0, "*.db")]),
             ("All files", [(0, "*")])])
     else:
         options["filters"] = GLib.Variant("a(sa(us))", [("OMARemote connections", [(0, "*.json")]),
@@ -2165,7 +2166,7 @@ def describe_exit(code, log_tail, protocol="rdp"):
 
 # ---------------------------------------------------------------- import from other clients
 #
-# .rdp files, Remmina and ~/.ssh/config. A scan lists what a source holds and whether it is here
+# .rdp files, Remmina, 1Remote and ~/.ssh/config. A scan lists what a source holds and whether it is here
 # already; the UI shows that list, and an apply adds the ones picked. Foreign files only ever add:
 # a connection that is here already (the same protocol, host and port, whatever its name) is left
 # exactly as it is, so importing a file twice, or two files that overlap, changes nothing the
@@ -2179,6 +2180,8 @@ IMPORT_MAX_FILES = 500
 IMPORT_MAX_ENTRIES = 2000
 IMPORT_SUFFIXES = (".rdp", ".remmina")
 REMMINA_DIRS = ("~/.local/share/remmina", "~/.var/app/org.remmina.Remmina/data/remmina")
+ONEREMOTE_MAX_BYTES = 64 << 20
+ONEREMOTE_PROTOCOLS = {"RDP": "rdp", "VNC": "vnc", "SSH": "ssh"}
 SSH_WILDCARD_RE = re.compile(r"[*?!]")
 
 
@@ -2304,6 +2307,87 @@ def parse_remmina(text, name=""):
     return conn, notes
 
 
+def parse_1remote(path):
+    """A 1Remote database (SQLite, %APPDATA%\\1Remote\\1Remote.db on Windows): one connection per
+    server it holds. Returns ([(conn, notes)], errors). Passwords stay behind (1Remote encrypts
+    them), and so do the commands it runs around a connection."""
+    import sqlite3
+    from urllib.parse import quote
+    with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK)) as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("not an ordinary file")
+        if st.st_size > ONEREMOTE_MAX_BYTES:
+            raise ValueError("larger than 64 MiB")
+        if f.read(16) != b"SQLite format 3\0":
+            raise ValueError("not a 1Remote database")
+    try:
+        # Read-only and immutable: a copied database is never changed, nor its journal touched.
+        db = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(os.path.abspath(path)), uri=True)
+        try:
+            rows = db.execute("SELECT Protocol, Json FROM Servers LIMIT ?", (IMPORT_MAX_ENTRIES,)).fetchall()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        raise ValueError("not a 1Remote database") from None
+    out, errors = [], []
+    for remote, text in rows:
+        try:
+            v = json.loads(text) if isinstance(text, str) else None
+        except ValueError:
+            v = None
+        if not isinstance(v, dict):
+            errors.append("a server 1Remote's database cannot be read")
+            continue
+        label = _clean(v.get("DisplayName"))[:60] or _clean(v.get("Address"))[:60]
+        protocol = ONEREMOTE_PROTOCOLS.get(_clean(remote).upper())
+        if not protocol:
+            errors.append(f"{label}: 1Remote {_clean(remote)[:20] or 'unknown'} connections are not supported")
+            continue
+        host, port = _split_address(v.get("Address"), protocol)
+        conn = {"protocol": protocol, "name": _clean(v.get("DisplayName")) or host, "host": host}
+        if port is None and str(v.get("Port") or "").strip().isdigit():
+            port = int(str(v["Port"]).strip())
+        if port:
+            conn["port"] = port
+        # Tags are 1Remote's groups; a connection here has one.
+        tags = [_clean(t) for t in v.get("Tags") or [] if isinstance(t, str) and _clean(t)]
+        if tags:
+            conn["group"] = tags[0]
+        user = _clean(v.get("UserName"))
+        if protocol == "rdp" and "\\" in user:
+            conn["domain"], user = user.split("\\", 1)
+        if user and protocol != "vnc":
+            conn["username"] = user
+        notes = []
+        if protocol == "rdp":
+            if _clean(v.get("Domain")):
+                conn["domain"] = _clean(v["Domain"])
+            # GatewayMode 0: detect automatically, 1: these settings, 2: no gateway (FreeRDP: always).
+            if _clean(v.get("GatewayHostName")) and v.get("GatewayMode") in (0, 1):
+                conn["gateway"] = _clean(v["GatewayHostName"])
+                gateway_user = _clean(v.get("GatewayUserName"))
+                if "\\" in gateway_user:
+                    conn["gatewayDomain"], gateway_user = gateway_user.split("\\", 1)
+                if gateway_user:
+                    conn["gatewayUser"] = gateway_user
+            if v.get("EnableClipboard") is False:
+                conn["clipboard"] = False
+            audio = {0: "local", 1: "remote", 2: "off"}.get(v.get("AudioRedirectionMode"))
+            if audio:
+                conn["audio"] = audio
+            if v.get("EnableAudioCapture") is True:
+                conn["microphone"] = True
+            if v.get("EnableDiskDrives") is True:
+                notes.append("asks to share drives: not taken over")
+        elif protocol == "ssh" and _clean(v.get("PrivateKey")):
+            notes.append("its key is a file on Windows: not taken over")
+        if _clean(v.get("CommandBeforeConnected")) or _clean(v.get("CommandAfterDisconnected")):
+            notes.append("runs commands around connecting: not taken over")
+        out.append((conn, notes))
+    return out, errors
+
+
 def parse_ssh_config(path, ssh_dir=SSH_DIR):
     """Every Host alias without wildcards in an ssh config, Included files too. Returns
     [(conn, notes, also)]: the alias is the host, so ssh's config keeps applying (HostName, port,
@@ -2400,12 +2484,17 @@ def _foreign_entries(sources, ssh_dir=SSH_DIR):
             base = os.path.basename(path)
             stem, ext = os.path.splitext(base)
             try:
+                if ext.lower() == ".db":
+                    found, problems = parse_1remote(path)
+                    entries += [(conn, notes, None, base) for conn, notes in found]
+                    errors += [f"{plain(base)[:60]}: {p}" for p in problems]
+                    continue
                 if ext.lower() == ".rdp":
                     conn, notes = parse_rdp(_read_foreign(path), stem)
                 elif ext.lower() == ".remmina":
                     conn, notes = parse_remmina(_read_foreign(path), stem)
                 else:
-                    raise ValueError("not an .rdp or .remmina file")
+                    raise ValueError("not an .rdp, .remmina or 1Remote file")
             except (OSError, ValueError, configparser.Error, UnicodeError) as e:
                 errors.append(f"{plain(base)[:60]}: {e}")
                 continue

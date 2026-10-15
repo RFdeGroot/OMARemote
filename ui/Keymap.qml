@@ -41,7 +41,7 @@ Singleton {
         { group: "Connections", context: "list", action: "search", keys: ["/", "ctrl+f"], label: "Search connections" },
         { group: "Connections", context: "list", action: "clear", keys: ["escape"], label: "Clear search, then filter" },
         // No key of their own: found and run from this sheet (type, then ⏎), or in Settings › Import & export.
-        { group: "Connections", context: "app", action: "importConnections", keys: [], label: "Import connections… (a file, .rdp, Remmina profiles)" },
+        { group: "Connections", context: "app", action: "importConnections", keys: [], label: "Import connections… (a file, .rdp, Remmina profiles, 1Remote)" },
         { group: "Connections", context: "app", action: "importRemmina", keys: [], label: "Import from Remmina" },
         { group: "Connections", context: "app", action: "importSshConfig", keys: [], label: "Import hosts from ~/.ssh/config" },
         { group: "Connections", context: "app", action: "exportConnections", keys: [], label: "Export connections… (backup)" },
