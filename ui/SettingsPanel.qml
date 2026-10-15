@@ -24,10 +24,25 @@ FocusScope {
 
     // Opens on the section asked for, else on the first one: never where it was last left.
     function open(which) {
+        measure()
         section = which || sections[0].id
         opened = true
         rail.forceActiveFocus()
     }
+    // The tallest section's form, measured once on opening: the card keeps that height whichever
+    // section is shown, so switching never resizes it.
+    property real tallest: 0
+    function measure() {
+        var was = section
+        var most = 0
+        for (var i = 0; i < sections.length; i++) {
+            section = sections[i].id
+            most = Math.max(most, form.implicitHeight)
+        }
+        section = was
+        tallest = most
+    }
+
     // Snapshots (Body.debugAction settingsend): the bottom of the section.
     function scrollToEnd() {
         pane.contentY = Math.max(0, pane.contentHeight - pane.height)
@@ -56,9 +71,15 @@ FocusScope {
     Rectangle {
         id: card
         anchors.centerIn: parent
-        // Grows with the window, so a section mostly fits without scrolling.
+        // As tall as the tallest section needs (measure), never more than the window has: a big
+        // screen gets no empty card, a small one scrolls (ScrollHint shows it). The same height for
+        // every section.
         width: Math.min(760, parent.width - 2 * Theme.panelPad)
-        height: Math.min(Math.max(560, parent.height * 0.85), parent.height - 2 * Theme.panelPad)
+        height: Math.min(parent.height - 2 * Theme.panelPad,
+                         header.implicitHeight + Theme.panelPad + Theme.gap + 1
+                         + Math.max(railColumn.implicitHeight + 2 * Theme.gap, root.tallest + 2 * Theme.panelPad))
+        // A new width rewraps the notes: measured again.
+        onWidthChanged: if (root.opened) root.measure()
         radius: Theme.radius
         color: Theme.surface
         border.width: 1
@@ -70,6 +91,7 @@ FocusScope {
             spacing: 0
 
             RowLayout {
+                id: header
                 Layout.fillWidth: true
                 Layout.margins: Theme.panelPad
                 Layout.bottomMargin: Theme.gap
@@ -111,6 +133,7 @@ FocusScope {
                         event.accepted = true
                     }
                     Column {
+                        id: railColumn
                         anchors.fill: parent
                         anchors.topMargin: Theme.gap
                         spacing: 2
