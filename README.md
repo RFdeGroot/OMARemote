@@ -274,18 +274,21 @@ anything happens: *Move to trash* or *Keep them* (they then go back to that syst
 ### Coming from another client
 
 Settings › Import & export takes connections from elsewhere: **Import…** also opens `.rdp` files (several at
-once) and Remmina profiles, and two buttons read **Remmina** (`~/.local/share/remmina`, Flatpak too)
-and the hosts in **~/.ssh/config** (Included files too; OMARemote's own `omaremote.conf` is skipped).
-A list shows what was found before anything is added: the new ones are switched on, the ones you have
+once), Remmina profiles and the database of [1Remote](https://github.com/1Remote/1Remote), the Windows
+client (`1Remote.db`, in `%APPDATA%\1Remote` or beside a portable `1Remote.exe`: copy it over), and
+two buttons read **Remmina** (`~/.local/share/remmina`, Flatpak too) in **~/.ssh/config**
+(Included files too; OMARemote's own `omaremote.conf` is skipped). A list shows what was found before anything is added: the new ones are switched on, the ones you have
 already, listed twice or not usable say so. The keymap sheet (`?`) runs them too: type *import* or
 *export* and press ⏎.
 
 - **Only ever adds.** A connection that is here already (same protocol, host and port) stays exactly
   as it is, so importing the same files again, or a second file that overlaps the first, adds nothing
   twice. An ssh alias and the host name it stands for count as the same server.
-- **Groups:** Remmina's group is kept; everything else goes into the group *Imported*.
-- **What comes along:** address, port, gateway, user name and domain, SSH key (Remmina), clipboard,
-  sound and microphone. Passwords stay behind (Windows and Remmina encrypt them), and nothing turns
+- **Groups:** Remmina's group and 1Remote's first tag are kept; everything else goes into the group
+  *Imported*.
+- **What comes along:** address, port, gateway (with 1Remote its user and domain too), user name and
+  domain, SSH key (Remmina), clipboard, sound and microphone. Passwords stay behind (Windows, Remmina
+  and 1Remote encrypt them), and so do the commands 1Remote runs around a connection, and nothing turns
   off certificate checks or shares a folder, whatever the file asks: a downloaded `.rdp` is a
   well-known phishing trick.
 - **Hosts from ~/.ssh/config** keep the alias as their host, so ssh's own config (HostName, port,

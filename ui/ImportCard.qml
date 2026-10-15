@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 
-// What an import from another client (.rdp files, Remmina, ~/.ssh/config) would add, before it
+// What an import from another client (.rdp files, Remmina, 1Remote, ~/.ssh/config) would add, before it
 // does: one row per connection found, the new ones switched on. What is here already, listed
 // twice or cannot be taken in shows why and stays off. j/k or the arrows move, space switches,
 // enter imports, esc cancels.

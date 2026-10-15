@@ -30,7 +30,7 @@ Sections, in order (`# ------- <name>` lines):
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
 | arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
-| import from other clients | `parse_rdp`, `parse_remmina`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only) |
+| import from other clients | `parse_rdp`, `parse_remmina`, `parse_1remote`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only) |
 | kerberos | private krb5.conf, SRV lookup (Gio.Resolver) |
 | session state | the runtime state files, `list_sessions` |
 | supervisor | `main()`: the command switch (`if cmd == "…"`), launching and watching a session |
@@ -92,7 +92,7 @@ Build: `ninja -C native/build`.
   PasteGuard, offscreen through tests/qml/paste.qml; needs the native build), test_limits.py (field
   limits: UI and backend equal, every Input names one, import and sync refuse longer),
   test_quick.py (Format.quickCredential through tests/qml/format.qml), test_import.py (.rdp, Remmina,
-  ~/.ssh/config: parsers, refused values, idempotent re-import), test_session_keys.py (the session
+  1Remote, ~/.ssh/config: parsers, refused values, idempotent re-import), test_session_keys.py (the session
   keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
