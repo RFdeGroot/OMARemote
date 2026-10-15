@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui as Kit
+import "js/Limits.js" as Limits
 
 // Create or edit one connection. Works on a copy (`d`); nothing is stored until save.
 Rectangle {
@@ -240,6 +241,7 @@ Rectangle {
                     label: "Name"
                     Input {
                         id: nameField
+                        maximumLength: Limits.name
                         placeholderText: "Work PC"
                         text: root.d.name || ""
                         onTextEdited: root.set("name", text)
@@ -252,6 +254,7 @@ Rectangle {
                         spacing: Theme.gap
                         Input {
                             id: hostField
+                            maximumLength: Limits.host
                             Layout.fillWidth: true
                             placeholderText: root.isSsh ? "server.example.com or a Host from ~/.ssh/config" : "pc.example.com"
                             text: root.d.host || ""
@@ -259,10 +262,11 @@ Rectangle {
                         }
                         Input {
                             id: portField
+                            maximumLength: Limits.port
                             Layout.preferredWidth: 72
                             width: 72
                             placeholderText: String(root.defaultPorts[root.d.protocol || "rdp"])
-                            text: String(root.d.port || root.defaultPorts[root.d.protocol || "rdp"])
+                            text: root.d.port ? String(root.d.port) : ""
                             validator: IntValidator { bottom: 1; top: 65535 }
                             onTextEdited: root.set("port", text)
                         }
@@ -273,6 +277,7 @@ Rectangle {
                     help: "Shown in the sidebar"
                     Input {
                         id: groupField
+                        maximumLength: Limits.name
                         placeholderText: "optional"
                         text: root.d.group || ""
                         onTextEdited: root.changeGroup(text.trim())
@@ -298,6 +303,7 @@ Rectangle {
                     help: root.isSsh ? "Keys and ssh-agent sign in; ssh asks for anything else" : ""
                     Input {
                         id: userField
+                        maximumLength: Limits.user
                         placeholderText: root.isSsh ? "from ~/.ssh/config, else yours"
                                        : root.d.credential === "new" ? "administrator" : "asks when connecting"
                         text: root.d.username || ""
@@ -330,6 +336,7 @@ Rectangle {
                     visible: root.isRdp && (root.ownCredentials)
                     Input {
                         id: domainField
+                        maximumLength: Limits.domain
                         placeholderText: "optional, e.g. corp.lan"
                         text: root.d.domain || ""
                         onTextEdited: root.set("domain", text)
@@ -340,6 +347,7 @@ Rectangle {
                     visible: root.ownCredentials && !root.isSsh
                     Input {
                         id: passwordField
+                        maximumLength: Limits.password
                         password: true
                         placeholderText: root.hasStoredPassword ? "•••••• stored — type to replace"
                                        : root.d.savePassword ? "password" : "asked when connecting"
@@ -463,17 +471,21 @@ Rectangle {
                         width: parent.width
                         spacing: Theme.gap
                         Input {
+                            maximumLength: Limits.size
                             Layout.preferredWidth: 80
                             width: 80
-                            text: String(root.d.width || 1920)
+                            placeholderText: "1920"
+                            text: root.d.width ? String(root.d.width) : ""
                             validator: IntValidator { bottom: 640; top: 8192 }
                             onTextEdited: root.set("width", text)
                         }
                         Text { textFormat: Text.PlainText; text: "×"; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.body }
                         Input {
+                            maximumLength: Limits.size
                             Layout.preferredWidth: 80
                             width: 80
-                            text: String(root.d.height || 1080)
+                            placeholderText: "1080"
+                            text: root.d.height ? String(root.d.height) : ""
                             validator: IntValidator { bottom: 480; top: 8192 }
                             onTextEdited: root.set("height", text)
                         }
@@ -590,6 +602,7 @@ Rectangle {
                     visible: root.isRdp
                     help: "RD Gateway, optional"
                     Input {
+                        maximumLength: Limits.host
                         placeholderText: "gateway.example.com"
                         text: root.d.gateway || ""
                         onTextEdited: root.set("gateway", text)
@@ -600,6 +613,7 @@ Rectangle {
                     label: "Gateway user"
                     visible: root.hasGateway
                     Input {
+                        maximumLength: Limits.user
                         placeholderText: "same as above"
                         text: root.d.gatewayUser || ""
                         onTextEdited: root.set("gatewayUser", text)
@@ -610,6 +624,7 @@ Rectangle {
                     label: "Gateway domain"
                     visible: root.hasGateway
                     Input {
+                        maximumLength: Limits.domain
                         placeholderText: "same as above"
                         text: root.d.gatewayDomain || ""
                         onTextEdited: root.set("gatewayDomain", text)
@@ -619,6 +634,7 @@ Rectangle {
                     label: "Gateway password"
                     visible: root.hasGateway
                     Input {
+                        maximumLength: Limits.password
                         password: true
                         placeholderText: root.hasStoredGatewayPassword ? "•••••• stored — type to replace"
                                        : root.d.gatewaySavePassword ? "password"
@@ -648,6 +664,7 @@ Rectangle {
                     visible: root.isRdp
                     help: "Found automatically; list DCs to pin them"
                     Input {
+                        maximumLength: Limits.hostList
                         placeholderText: "auto  (dc1.corp.lan, dc2.corp.lan)"
                         text: root.d.kdc || ""
                         onTextEdited: root.set("kdc", text)
@@ -658,6 +675,7 @@ Rectangle {
                     visible: root.isSsh
                     help: "Passed to ssh as-is"
                     Input {
+                        maximumLength: Limits.args
                         placeholderText: "-J jump.example.com  -A"
                         text: root.d.sshArgs || ""
                         onTextEdited: root.set("sshArgs", text)
@@ -669,6 +687,7 @@ Rectangle {
                     visible: root.isRdp
                     help: "Passed to FreeRDP as-is"
                     Input {
+                        maximumLength: Limits.args
                         placeholderText: "/kbd:layout:0x409"
                         text: root.d.extraArgs || ""
                         onTextEdited: root.set("extraArgs", text)

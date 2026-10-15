@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 import qs.Ui as Kit
+import "js/Limits.js" as Limits
 
 // A group of connections: its name, a credential set and any connection setting. A setting left at
 // "—" is not set by the group; its connections decide it themselves. Also makes new groups (load
@@ -177,6 +178,7 @@ Rectangle {
                     help: root.isNew || root.name.trim() === root.originalName ? "" : "Renames it for its connections too"
                     Input {
                         id: nameField
+                        maximumLength: Limits.name
                         placeholderText: "Servers"
                         text: root.name
                         onTextEdited: { root.name = text; root.error = "" }
@@ -205,17 +207,18 @@ Rectangle {
                 FormRow {
                     label: "User name"
                     visible: root.credential === "new"
-                    Input { text: root.newUser; placeholderText: "administrator"; onTextEdited: root.newUser = text }
+                    Input { maximumLength: Limits.user; text: root.newUser; placeholderText: "administrator"; onTextEdited: root.newUser = text }
                 }
                 FormRow {
                     label: "Domain"
                     visible: root.credential === "new"
-                    Input { text: root.newDomain; placeholderText: "optional, e.g. corp.lan"; onTextEdited: root.newDomain = text }
+                    Input { maximumLength: Limits.domain; text: root.newDomain; placeholderText: "optional, e.g. corp.lan"; onTextEdited: root.newDomain = text }
                 }
                 FormRow {
                     label: "Password"
                     visible: root.credential === "new"
                     Input {
+                        maximumLength: Limits.password
                         password: true
                         text: root.newPassword
                         placeholderText: root.newSave ? "password" : "asked when connecting"
@@ -253,17 +256,21 @@ Rectangle {
                         width: parent.width
                         spacing: Theme.gap
                         Input {
+                            maximumLength: Limits.size
                             Layout.preferredWidth: 80
                             width: 80
-                            text: root.value("width") || "1920"
+                            placeholderText: "1920"
+                            text: root.value("width")
                             validator: IntValidator { bottom: 640; top: 8192 }
                             onTextEdited: root.set("width", parseInt(text) || "")
                         }
                         Text { textFormat: Text.PlainText; text: "×"; color: Theme.muted; font.family: Theme.font; font.pixelSize: Theme.body }
                         Input {
+                            maximumLength: Limits.size
                             Layout.preferredWidth: 80
                             width: 80
-                            text: root.value("height") || "1080"
+                            placeholderText: "1080"
+                            text: root.value("height")
                             validator: IntValidator { bottom: 480; top: 8192 }
                             onTextEdited: root.set("height", parseInt(text) || "")
                         }
@@ -353,12 +360,12 @@ Rectangle {
                 FormRow {
                     label: "Gateway"
                     help: "Empty: not set"
-                    Input { text: root.value("gateway"); placeholderText: "gateway.example.com"; onTextEdited: root.set("gateway", text.trim()) }
+                    Input { maximumLength: Limits.host; text: root.value("gateway"); placeholderText: "gateway.example.com"; onTextEdited: root.set("gateway", text.trim()) }
                 }
                 FormRow {
                     label: "Kerberos KDC"
                     help: "Empty: not set"
-                    Input { text: root.value("kdc"); placeholderText: "dc1.corp.lan, dc2.corp.lan"; onTextEdited: root.set("kdc", text.trim()) }
+                    Input { maximumLength: Limits.hostList; text: root.value("kdc"); placeholderText: "dc1.corp.lan, dc2.corp.lan"; onTextEdited: root.set("kdc", text.trim()) }
                 }
             }
         }

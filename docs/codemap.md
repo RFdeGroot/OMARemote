@@ -67,7 +67,8 @@ The manager window:
 | TabBar.qml, PinnedList.qml, StatusBar.qml | chrome |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml | cards over the window |
-| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml | small controls (Input wraps Omarchy's TextField) |
+| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml | small controls (Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
+| js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; sources in docs/limits.md |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels |
 
 ## native/ (C++)
@@ -75,6 +76,7 @@ The manager window:
 | Path | What |
 | --- | --- |
 | plugin/rdpview.cpp | the QML item drawing a session: frame, keys (`keyPressEvent`, chords for sent shortcuts), mouse, clipboard, cursor |
+| plugin/pasteguard.cpp | `PasteGuard.guard` (cuts a field loose from clipboard changes), `paste` (wl-paste, 16 KiB, 2 s, one line; refused whole when it does not fit `maximumLength`) |
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode` |
 | vnc/main.cpp | libvncclient client |
 | ssh/main.cpp | libssh + libvterm terminal: keys, selection/copy, scrollback |
@@ -85,7 +87,9 @@ Build: `ninja -C native/build`.
 ## Tests, tools, docs
 
 - `python3 -m unittest discover tests`: test_session.py (the supervisor, by section), test_update.py
-  (the updater), test_qml_palette.py (Commons.Color, PlainText).
+  (the updater), test_qml_palette.py (Commons.Color, PlainText), test_paste.py (Input.qml and
+  PasteGuard, offscreen through tests/qml/paste.qml; needs the native build), test_limits.py (field
+  limits: UI and backend equal, every Input names one, import and sync refuse longer).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

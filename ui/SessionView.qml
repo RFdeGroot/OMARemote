@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import OMARemote
 import "js/Format.js" as Format
+import "js/Limits.js" as Limits
 
 // One session tab: the remote desktop, and whatever stands in front of it (connecting, a question
 // from the session, or why it ended).
@@ -304,15 +305,16 @@ Item {
                     readonly property bool userFirst: needsUser && !root.prompt.user
                     readonly property bool needsDomain: root.hasPrompt && String(root.prompt.reason).indexOf("vnc") !== 0
                     Text { textFormat: Text.PlainText; visible: parent.needsUser; text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Input { id: authUser; visible: parent.needsUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : ""
+                    Input { id: authUser; maximumLength: Limits.user; visible: parent.needsUser; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.user || "") : ""
                             focus: root.hasPrompt && root.prompt.kind === "auth" && parent.userFirst
                             onAccepted: (parent.needsDomain ? authDomain : authPassword).forceActiveFocus() }
                     Text { textFormat: Text.PlainText; visible: parent.needsDomain; text: "Domain"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
-                    Input { id: authDomain; visible: parent.needsDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : ""
+                    Input { id: authDomain; maximumLength: Limits.domain; visible: parent.needsDomain; Layout.fillWidth: true; text: root.hasPrompt ? (root.prompt.domain || "") : ""
                             onAccepted: authPassword.forceActiveFocus() }
                     Text { textFormat: Text.PlainText; text: "Password"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                     Input {
                         id: authPassword
+                        maximumLength: Limits.password
                         Layout.fillWidth: true
                         password: true
                         focus: root.hasPrompt && root.prompt.kind === "auth" && !parent.userFirst

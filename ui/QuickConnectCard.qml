@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui as Kit
 import "js/Format.js" as Format
+import "js/Limits.js" as Limits
 
 // Quick connect (o, ctrl+l, the button beside New, `omaremote quick`): an address, its protocol
 // (guessed while typing until picked by hand) and how to sign in, connected without saving.
@@ -175,6 +176,7 @@ FocusScope {
                 Text { textFormat: Text.PlainText; text: "Address"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                 Input {
                     id: addressField
+                    maximumLength: Limits.address
                     Layout.fillWidth: true
                     placeholderText: "pc.acme.lan, alex@server, vnc://10.0.0.5"
                     text: root.address
@@ -217,6 +219,7 @@ FocusScope {
 
                 Text { textFormat: Text.PlainText; visible: root.isSsh; text: "User name"; color: Theme.foreground; font.family: Theme.font; font.pixelSize: Theme.small }
                 Input {
+                    maximumLength: Limits.user
                     visible: root.isSsh
                     Layout.fillWidth: true
                     placeholderText: "from ~/.ssh/config, else yours"

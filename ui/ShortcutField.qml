@@ -1,12 +1,15 @@
 import QtQuick
+import "js/Limits.js" as Limits
 
 // A shortcut, typed ("SUPER + ALT + W") or recorded: with the field focused, press the keys. A
 // combination Hyprland binds already never reaches the field; Hotkeys.conflict names it then.
 Input {
     id: root
+    maximumLength: Limits.shortcut
     signal recorded(string text)
 
     placeholderText: "press the keys, e.g. SUPER + ALT + W"
+    keepsChords: true
 
     // Hyprland's names for the keys that are not a letter, digit or F-key.
     readonly property var names: ({

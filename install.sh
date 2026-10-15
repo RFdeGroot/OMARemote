@@ -72,6 +72,9 @@ need_command "SSH" ssh openssh
 need_pkgconfig "SSH" vterm libvterm
 need_pkgconfig "SSH" xkbcommon libxkbcommon
 
+# Pasting into text fields: wl-paste, with a size and time limit (ui/Input.qml, PasteGuard).
+need_command "paste" wl-paste wl-clipboard
+
 # Nice to have: a desktop notification when a session started from the command line fails.
 if ! command -v notify-send >/dev/null 2>&1; then
   echo "note: notify-send not found (package libnotify): no desktop notification when a session fails" >&2

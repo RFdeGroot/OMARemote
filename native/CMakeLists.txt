@@ -41,7 +41,7 @@ qt_add_qml_module(omaremote_plugin
   VERSION 1.0
   PLUGIN_TARGET omaremote_plugin
   OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml/OMARemote
-  SOURCES plugin/rdpview.h plugin/rdpview.cpp
+  SOURCES plugin/rdpview.h plugin/rdpview.cpp plugin/pasteguard.h plugin/pasteguard.cpp
 )
 target_link_libraries(omaremote_plugin PRIVATE Qt6::Quick)
 target_include_directories(omaremote_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/plugin)

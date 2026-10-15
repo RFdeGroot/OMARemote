@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import "js/Format.js" as Format
+import "js/Limits.js" as Limits
 
 // The settings, Flea's panel in shape: one floating card over the window, a rail of sections and
 // a pane beside it. Opened with "," or the sliders button in the top bar; esc closes it.
@@ -156,6 +157,7 @@ FocusScope {
                                 width: parent.width
                                 spacing: Theme.gap
                                 Input {
+                                    maximumLength: Limits.path
                                     Layout.fillWidth: true
                                     placeholderText: "~/Nextcloud/OMARemote"
                                     text: Sync.folder
@@ -169,6 +171,7 @@ FocusScope {
                             label: "This system"
                             help: "Its file: " + (Store.ui.sync && Store.ui.sync.system || Sync.systemName) + ".omaremote.json"
                             Input {
+                                maximumLength: Limits.name
                                 width: parent.width
                                 placeholderText: Sync.systemName
                                 text: Store.ui.sync && Store.ui.sync.system || ""
@@ -232,6 +235,7 @@ FocusScope {
                             help: "The last one used; the buttons open the file chooser"
                             Input {
                                 id: exportPath
+                                maximumLength: Limits.path
                                 width: parent.width
                                 placeholderText: "~/omaremote-connections.json"
                                 text: Store.ui.exportPath || ""

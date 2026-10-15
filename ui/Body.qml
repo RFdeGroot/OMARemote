@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import "js/Format.js" as Format
+import "js/Limits.js" as Limits
 
 // The whole window: header with search, sidebar, connection list, and the detail or editor pane.
 // Keyboard first: every action has a key, listed in the status bar.
@@ -910,6 +911,7 @@ FocusScope {
                 }
                 Input {
                     id: search
+                    maximumLength: Limits.address
                     visible: root.currentTab === "home"
                     Layout.preferredWidth: Math.min(260, root.width * 0.22)
                     Layout.preferredHeight: Theme.chrome - 6

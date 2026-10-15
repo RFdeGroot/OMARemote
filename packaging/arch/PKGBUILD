@@ -8,7 +8,8 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/RFdeGroot/OMARemote"
 license=('MIT')
 depends=('omarchy' 'quickshell' 'hyprland' 'qt6-declarative' 'freerdp' 'libvncserver'
-         'libvterm' 'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils' 'gnupg')
+         'libvterm' 'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils' 'gnupg'
+         'wl-clipboard')
 makedepends=('git' 'cmake' 'ninja' 'pkgconf')
 optdepends=('libnotify: a desktop notification when a session started from the command line fails')
 options=('!debug')

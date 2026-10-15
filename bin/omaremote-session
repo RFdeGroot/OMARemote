@@ -382,6 +382,28 @@ def _with_aliases(new, *others):
 # would read as an option.
 ID_RE = re.compile(r"^(?!-)[A-Za-z0-9_-]{1,64}$")
 
+# The most characters a field takes: the same numbers as the UI's (ui/js/Limits.js; the test keeps
+# them equal), for what arrives by import and sync rather than through a field. Where they come
+# from: docs/limits.md.
+LIMITS = {"name": 256, "host": 253, "address": 1024, "hostList": 2048, "user": 1024, "domain": 512,
+          "password": 2048, "port": 5, "size": 5, "args": 4096, "path": 4096, "shortcut": 128,
+          "standard": 256}
+FIELD_LIMITS = {"name": "name", "group": "name", "host": "host", "gateway": "host", "port": "port",
+                "username": "user", "gatewayUser": "user", "domain": "domain",
+                "gatewayDomain": "domain", "kdc": "hostList", "sshArgs": "args", "extraArgs": "args",
+                "sshKey": "path", "hotkey": "shortcut", "width": "size", "height": "size"}
+
+
+def too_long(fields):
+    """(key, limit) for the first field of a connection or group settings over its limit, else None.
+    Counted as Qt counts maximumLength: in UTF-16 units."""
+    for key, kind in FIELD_LIMITS.items():
+        value = fields.get(key)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            if len(str(value).encode("utf-16-le")) // 2 > LIMITS[kind]:
+                return key, LIMITS[kind]
+    return None
+
 
 def _drop_aliases(conn, ids):
     """conn without the aliases in ids (ids that belong to connections of their own)."""
@@ -458,6 +480,11 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
         for name, g in (inc.get("groups") or {}).items():
             if not isinstance(g, dict):
                 continue
+            over = too_long({"name": name, **(g.get("settings") or {})})
+            if over:
+                report["errors"].append(f"{system}: skipped group {plain(str(name))[:40]!r}: its {over[0]} is "
+                                        f"longer than {over[1]} characters")
+                continue
             mine = groups.get(name)
             if mine is not None and g.get("modified", 0) <= mine.get("modified", 0):
                 continue
@@ -500,6 +527,12 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
         if odd:
             report["errors"].append(f"{system}: skipped {len(odd)} connection(s) with an invalid id or host")
             listed = [ic for ic in listed if ic not in odd]
+        # A field longer than the UI takes would be cut short when edited: not taken in either.
+        for ic in [ic for ic in listed if too_long(ic)]:
+            key, limit = too_long(ic)
+            report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic['host']))[:40]!r}: "
+                                    f"its {key} is longer than {limit} characters")
+            listed.remove(ic)
         # Ids that are connections of their own in that file: never the same connection as another
         # one there, whatever host they share (a duplicate keeps its original's host).
         separate = {ic["id"] for ic in listed}

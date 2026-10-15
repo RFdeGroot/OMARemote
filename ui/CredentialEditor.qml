@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import "js/Limits.js" as Limits
 
 // One shared credential set: user name, domain, and optionally a password in the keyring.
 Rectangle {
@@ -101,6 +102,7 @@ Rectangle {
                 label: "User name"
                 Input {
                     id: userField
+                    maximumLength: Limits.user
                     placeholderText: "administrator"
                     text: root.cred.username || ""
                     onTextEdited: { root.set("username", text); root.error = "" }
@@ -110,6 +112,7 @@ Rectangle {
                 label: "Domain"
                 Input {
                     id: domainField
+                    maximumLength: Limits.domain
                     placeholderText: "optional, e.g. corp.lan"
                     text: root.cred.domain || ""
                     onTextEdited: root.set("domain", text)
@@ -119,6 +122,7 @@ Rectangle {
                 label: "Password"
                 Input {
                     id: passwordField
+                    maximumLength: Limits.password
                     password: true
                     placeholderText: root.hasStoredPassword ? "•••••• stored — type to replace"
                                    : root.cred.savePassword ? "password" : "asked when connecting"
