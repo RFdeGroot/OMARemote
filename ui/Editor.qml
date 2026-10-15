@@ -221,6 +221,7 @@ Rectangle {
             contentHeight: form.implicitHeight + Theme.panelPad
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            ScrollHint { flickable: flick }
 
             ColumnLayout {
                 id: form

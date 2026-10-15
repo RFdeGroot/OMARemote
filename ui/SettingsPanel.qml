@@ -51,8 +51,9 @@ FocusScope {
     Rectangle {
         id: card
         anchors.centerIn: parent
-        width: Math.min(680, parent.width - 2 * Theme.panelPad)
-        height: Math.min(560, parent.height - 2 * Theme.panelPad)
+        // Grows with the window, so a section mostly fits without scrolling.
+        width: Math.min(760, parent.width - 2 * Theme.panelPad)
+        height: Math.min(Math.max(560, parent.height * 0.85), parent.height - 2 * Theme.panelPad)
         radius: Theme.radius
         color: Theme.surface
         border.width: 1
@@ -131,6 +132,7 @@ FocusScope {
                     contentHeight: form.implicitHeight + 2 * Theme.panelPad
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
+                    ScrollHint { flickable: pane }
 
                     ColumnLayout {
                         id: form

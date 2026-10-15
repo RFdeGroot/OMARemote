@@ -157,12 +157,14 @@ FocusScope {
             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairline }
 
             Flickable {
+                id: scrollPane
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: grid.implicitHeight
                 contentHeight: grid.implicitHeight
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
+                ScrollHint { flickable: scrollPane }
 
                 RowLayout {
                     id: grid

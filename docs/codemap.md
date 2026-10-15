@@ -68,7 +68,7 @@ The manager window:
 | TabBar.qml, PinnedList.qml, StatusBar.qml | chrome |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
-| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml | small controls (Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
+| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim scrollbar on panes that scroll; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
 | js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; sources in docs/limits.md |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels |
 

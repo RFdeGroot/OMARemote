@@ -94,12 +94,14 @@ Rectangle {
     }
 
     Flickable {
+        id: scrollPane
         visible: root.connection !== null
         anchors.fill: parent
         anchors.margins: Theme.panelPad
         contentHeight: body.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        ScrollHint { flickable: scrollPane }
 
         ColumnLayout {
             id: body
