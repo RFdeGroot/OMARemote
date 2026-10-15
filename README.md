@@ -31,7 +31,7 @@ The screenshots use made-up sample data and a mock desktop.
 
 ## Install
 
-> **Early development.** OMARemote 0.6.1 works day to day, but it is young: expect rough edges,
+> **Early development.** OMARemote 0.7.0 works day to day, but it is young: expect rough edges,
 > and please [report what you run into](https://github.com/RFdeGroot/OMARemote/issues).
 
 ### From a release (recommended)
@@ -136,7 +136,7 @@ the packages to install:
 
 | For | Needs (Arch package) |
 | --- | --- |
-| the app | `quickshell`, `python`, `libsecret`, `hyprland`, Omarchy's shell |
+| the app | `quickshell`, `python`, `libsecret`, `wl-clipboard`, `hyprland`, Omarchy's shell |
 | building the tab renderers | `cmake`, `ninja`, `gcc`, `pkgconf`, `qt6-declarative` |
 | RDP | `freerdp` (3.x) |
 | VNC | `libvncserver` (for libvncclient) |

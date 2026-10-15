@@ -89,7 +89,8 @@ Build: `ninja -C native/build`.
 - `python3 -m unittest discover tests`: test_session.py (the supervisor, by section), test_update.py
   (the updater), test_qml_palette.py (Commons.Color, PlainText), test_paste.py (Input.qml and
   PasteGuard, offscreen through tests/qml/paste.qml; needs the native build), test_limits.py (field
-  limits: UI and backend equal, every Input names one, import and sync refuse longer).
+  limits: UI and backend equal, every Input names one, import and sync refuse longer),
+  test_quick.py (Format.quickCredential through tests/qml/format.qml).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every
