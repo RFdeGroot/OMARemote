@@ -2183,6 +2183,7 @@ IMPORT_MAX_ENTRIES = 2000
 IMPORT_SUFFIXES = (".rdp", ".remmina")
 REMMINA_DIRS = ("~/.local/share/remmina", "~/.var/app/org.remmina.Remmina/data/remmina")
 ONEREMOTE_MAX_BYTES = 64 << 20
+ONEREMOTE_SECONDS = 5
 ONEREMOTE_PROTOCOLS = {"RDP": "rdp", "VNC": "vnc", "SSH": "ssh"}
 SSH_WILDCARD_RE = re.compile(r"[*?!]")
 
@@ -2309,6 +2310,15 @@ def parse_remmina(text, name=""):
     return conn, notes
 
 
+def _oneremote_mode(value):
+    """One of 1Remote's numbered choices, None when the value is anything else (a bool, a list, …)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _oneremote_list(value):
+    return value if isinstance(value, list) else []
+
+
 def parse_1remote(path):
     """A 1Remote database (SQLite, %APPDATA%\\1Remote\\1Remote.db on Windows): one connection per
     server it holds. Returns ([(conn, notes)], errors). Passwords stay behind (1Remote encrypts
@@ -2327,6 +2337,13 @@ def parse_1remote(path):
         # Read-only and immutable: a copied database is never changed, nor its journal touched.
         db = sqlite3.connect("file:%s?mode=ro&immutable=1" % quote(os.path.abspath(path)), uri=True)
         try:
+            # The file is someone else's: Servers must be a plain table (a view could run any query
+            # the file holds), nothing in its schema runs functions, and a read stops after a few seconds.
+            db.execute("PRAGMA trusted_schema = OFF")
+            deadline = time.monotonic() + ONEREMOTE_SECONDS
+            db.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'Servers'").fetchone():
+                raise sqlite3.DatabaseError("no Servers table")
             rows = db.execute("SELECT Protocol, Json FROM Servers LIMIT ?", (IMPORT_MAX_ENTRIES,)).fetchall()
         finally:
             db.close()
@@ -2353,7 +2370,7 @@ def parse_1remote(path):
         if port:
             conn["port"] = port
         # Tags are 1Remote's groups; a connection here has one.
-        tags = [_clean(t) for t in v.get("Tags") or [] if isinstance(t, str) and _clean(t)]
+        tags = [_clean(t) for t in _oneremote_list(v.get("Tags")) if isinstance(t, str) and _clean(t)]
         if tags:
             conn["group"] = tags[0]
         user = _clean(v.get("UserName"))
@@ -2366,7 +2383,7 @@ def parse_1remote(path):
             if _clean(v.get("Domain")):
                 conn["domain"] = _clean(v["Domain"])
             # GatewayMode 0: detect automatically, 1: these settings, 2: no gateway (FreeRDP: always).
-            if _clean(v.get("GatewayHostName")) and v.get("GatewayMode") in (0, 1):
+            if _clean(v.get("GatewayHostName")) and _oneremote_mode(v.get("GatewayMode")) in (0, 1):
                 conn["gateway"] = _clean(v["GatewayHostName"])
                 gateway_user = _clean(v.get("GatewayUserName"))
                 if "\\" in gateway_user:
@@ -2375,7 +2392,7 @@ def parse_1remote(path):
                     conn["gatewayUser"] = gateway_user
             if v.get("EnableClipboard") is False:
                 conn["clipboard"] = False
-            audio = {0: "local", 1: "remote", 2: "off"}.get(v.get("AudioRedirectionMode"))
+            audio = {0: "local", 1: "remote", 2: "off"}.get(_oneremote_mode(v.get("AudioRedirectionMode")))
             if audio:
                 conn["audio"] = audio
             if v.get("EnableAudioCapture") is True:
