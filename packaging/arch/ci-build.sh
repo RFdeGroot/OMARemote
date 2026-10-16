@@ -21,7 +21,7 @@ case $(uname -m) in
     pacman -Syu --noconfirm --needed base-devel
     ;;
 esac
-pacman -S --noconfirm --needed git cmake ninja pkgconf qt6-declarative freerdp libvncserver libvterm libxkbcommon ffmpeg wayland wayland-protocols
+pacman -S --noconfirm --needed git cmake ninja pkgconf qt6-declarative qt6-shadertools freerdp libvncserver libvterm libxkbcommon ffmpeg libva libdrm libglvnd wayland wayland-protocols
 pacman -Q qt6-base qt6-declarative freerdp libvncserver libvterm
 
 useradd -m builder
