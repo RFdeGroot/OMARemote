@@ -118,7 +118,7 @@ Rectangle {
                     color: Theme.selection
                     Glyph {
                         anchors.centerIn: parent
-                        text: root.connection && root.connection.protocol === "ssh" ? "" : ""
+                        text: root.connection && root.connection.protocol === "ssh" ? "" : root.connection && root.connection.protocol === "gliff" ? "" : ""
                         size: Theme.display
                         color: Theme.accent
                     }
@@ -375,7 +375,7 @@ Rectangle {
                         var c = root.connection
                         if (!c)
                             return ""
-                        if (c.protocol === "ssh")
+                        if (c.protocol === "ssh" || c.protocol === "gliff")
                             return c.username ? c.username : "from ~/.ssh/config, else yours"
                         var who = Format.account(c) || "asks when connecting"
                         if (c.credentialSource === "group")
@@ -385,7 +385,7 @@ Rectangle {
                         return who
                     }
                 }
-                readonly property bool ssh: !!root.connection && root.connection.protocol === "ssh"
+                readonly property bool ssh: !!root.connection && (root.connection.protocol === "ssh" || root.connection.protocol === "gliff")
                 Fact {
                     label: parent.ssh ? "Sign in" : "Password"
                     value: !root.connection ? "" : parent.ssh ? "keys and ssh-agent; ssh asks for anything else"
@@ -393,11 +393,12 @@ Rectangle {
                          : Sessions.passwordStored(root.connection) === false ? "not stored yet" : "stored in keyring"
                 }
                 Fact {
-                    label: parent.ssh ? "Opens in" : "Display"
-                    value: !root.connection ? "" : parent.ssh ? Format.openInLabel(root.connection)
+                    readonly property bool terminal: parent.ssh && root.connection.protocol === "ssh"
+                    label: terminal ? "Opens in" : "Display"
+                    value: !root.connection ? "" : terminal ? Format.openInLabel(root.connection)
                          : Format.displayLabel(root.connection, Sessions.monitorScale)
                 }
-                Fact { label: "Devices"; value: root.connection && !parent.ssh ? Format.devicesLabel(root.connection) : "" }
+                Fact { label: "Devices"; value: root.connection && (!parent.ssh || root.connection.protocol === "gliff") ? Format.devicesLabel(root.connection) : "" }
                 Fact { label: "Key"; value: parent.ssh ? (root.connection.sshKey || "default (agent and ~/.ssh)") : "" }
                 Fact { label: "ssh options"; value: parent.ssh ? (root.connection.sshArgs || "") : "" }
                 Fact { label: "Gateway"; value: root.connection && !parent.ssh ? root.connection.gateway : "" }

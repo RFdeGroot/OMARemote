@@ -9,8 +9,8 @@ url="https://github.com/RFdeGroot/OMARemote"
 license=('MIT')
 depends=('omarchy' 'quickshell' 'hyprland' 'qt6-declarative' 'freerdp' 'libvncserver'
          'libvterm' 'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils' 'gnupg'
-         'wl-clipboard')
-makedepends=('git' 'cmake' 'ninja' 'pkgconf')
+         'wl-clipboard' 'ffmpeg' 'wayland')
+makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'wayland-protocols')
 optdepends=('libnotify: a desktop notification when a session started from the command line fails')
 options=('!debug')
 source=("git+$url.git#tag=$_tag")
@@ -34,6 +34,7 @@ package() {
   install -Dm755 ../build/omaremote-rdp "$pkgdir/usr/lib/omaremote/omaremote-rdp"
   install -Dm755 ../build/omaremote-vnc "$pkgdir/usr/lib/omaremote/omaremote-vnc"
   install -Dm755 ../build/omaremote-ssh "$pkgdir/usr/lib/omaremote/omaremote-ssh"
+  install -Dm755 ../build/omaremote-gliff "$pkgdir/usr/lib/omaremote/omaremote-gliff"
   local qml="$pkgdir/usr/lib/omaremote/qml/OMARemote"
   install -Dm755 ../build/qml/OMARemote/libomaremote_plugin.so "$qml/libomaremote_plugin.so"
   install -Dm644 -t "$qml" ../build/qml/OMARemote/qmldir ../build/qml/OMARemote/omaremote_plugin.qmltypes

@@ -12,7 +12,7 @@ omaremote (bin/omaremote, bash)          entry point: open, connect, toggle, qui
 omaremote-session (bin/omaremote-session, Python)
                                           every command the UI and the plugin run, and the detached
                                           supervisor that keeps one session alive
- └ omaremote-rdp / -vnc / -ssh (native/)  the session processes: a line protocol over a socket to
+ └ omaremote-rdp / -vnc / -ssh / -gliff  the session processes (native/): a line protocol over a socket to
                                           RdpView, the frame in shared memory
 ```
 
@@ -28,7 +28,7 @@ Sections, in order (`# ------- <name>` lines):
 | scaling | monitor scale, desktop scale |
 | hotkey windows | `toggle`, `place_window`, `hide_window`, `terminal_tag`, `find_window`, `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
-| arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `gateway_element`, `check_host`, `check_lines` |
+| arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `build_gliff_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
 | import from other clients | `parse_rdp`, `parse_remmina`, `parse_1remote`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only) |
 | kerberos | private krb5.conf, SRV lookup (Gio.Resolver) |
@@ -77,10 +77,16 @@ The manager window:
 | Path | What |
 | --- | --- |
 | plugin/rdpview.cpp | the QML item drawing a session: frame, keys (`keyPressEvent`, chords for sent shortcuts), mouse, clipboard, cursor |
+| plugin/shortcutinhibit.cpp | keyboard-shortcuts-inhibit for Gliff tabs (`captureShortcuts`, release key in rdpview.cpp `keyPressEvent`) |
 | plugin/pasteguard.cpp | `PasteGuard.guard` (cuts a field loose from clipboard changes), `paste` (wl-paste, 16 KiB, 2 s, one line; refused whole when it does not fit `maximumLength`) |
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode` |
 | vnc/main.cpp | libvncclient client |
 | ssh/main.cpp | libssh + libvterm terminal: keys, selection/copy, scrollback |
+| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU), UI lines to Gliff input, `send_stats` |
+| gliff/msg.hpp, cbor.hpp | Gliff's protocol v1 by hand (gliff-proto's msg.rs/frame.rs, clipboard messages); test.cpp = gliff-proto-test, its fixtures |
+| gliff/video.hpp | `convert420` / `convert444` (Dual420 recombined on the fly), BT.709 into BGRX, per damaged rectangle, OpenMP |
+| gliff/seat.cpp | the session process's own Wayland connection: keymap (wl_keyboard) and clipboard (ext-data-control, `OWN_MARK`) |
+| gliff/clipboard.cpp | Gliff's clipboard: lazy offers, 256 KiB chunks with acks, files into ~/.cache/omaremote/clipboard; shared only while focused |
 | common/link.cpp | the socket and shared-memory frame shared by all three |
 
 Build: `ninja -C native/build`.
@@ -92,7 +98,8 @@ Build: `ninja -C native/build`.
   PasteGuard, offscreen through tests/qml/paste.qml; needs the native build), test_limits.py (field
   limits: UI and backend equal, every Input names one, import and sync refuse longer),
   test_quick.py (Format.quickCredential through tests/qml/format.qml), test_import.py (.rdp, Remmina,
-  1Remote, ~/.ssh/config: parsers, refused values, idempotent re-import), test_session_keys.py (the session
+  1Remote, ~/.ssh/config: parsers, refused values, idempotent re-import), test_gliff.py (the protocol
+  against gliff-proto's fixtures via gliff-proto-test, the ssh command, exit messages), test_session_keys.py (the session
   keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).

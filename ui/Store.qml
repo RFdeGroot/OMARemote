@@ -50,7 +50,7 @@ Singleton {
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", gatewaySavePassword: false, kdc: "",
-        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, sshArgs: "", sshKey: "", hotkey: "",
+        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, sshArgs: "", sshKey: "", gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
         favourite: false, lastConnected: 0
     })
     // Settings a group can set (SETTING_KEYS in bin/omaremote-session).
@@ -533,7 +533,7 @@ Singleton {
     // asks when connecting if the new group has none. SSH signs in with keys, never with a set.
     function credentialAfterMove(c, name) {
         var mode = c.credential || "custom"
-        if (c.protocol === "ssh")
+        if (c.protocol === "ssh" || c.protocol === "gliff")
             return mode
         var groupSet = group(name).credential
         if (groupSet && mode === "custom" && !c.username)

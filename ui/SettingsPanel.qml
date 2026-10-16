@@ -405,6 +405,25 @@ FocusScope {
                             }
                         }
 
+                        Heading { visible: root.section === "keyboard"; text: "GLIFF" }
+                        Note {
+                            visible: root.section === "keyboard"
+                            text: "A Gliff tab takes Hyprland's shortcuts while it has the keyboard, Super included, "
+                                + "as Gliff's own client does. This key gives them back; a click on the picture takes "
+                                + "them again. Double Esc: the first Esc still reaches the remote, a quick second gives "
+                                + "them back."
+                        }
+                        FormRow {
+                            visible: root.section === "keyboard"
+                            label: "Give shortcuts back"
+                            Segment {
+                                value: Store.ui.gliffReleaseKey || "shift+escape"
+                                options: [{ value: "shift+escape", label: "Shift+Esc" }, { value: "ctrlalt-q", label: "Ctrl+Alt+Q" },
+                                          { value: "double-escape", label: "Double Esc" }, { value: "none", label: "Never" }]
+                                onPicked: function (v) { Store.setUi("gliffReleaseKey", v) }
+                            }
+                        }
+
                         // ------------------------------------------------ Hotkeys
                         Heading { visible: root.section === "hotkeys"; text: "HOTKEY WINDOWS" }
                         Note {

@@ -75,14 +75,23 @@ Item {
         socketPath: root.live && root.session.socket ? root.session.socket : ""
         // RDP: the desktop follows the tab unless fixed. VNC: fit scales the picture to the tab,
         // native shows it pixel for pixel, resize asks the server to follow the tab. SSH: the
-        // terminal always fills the tab, at the screen's own scale.
+        // terminal always fills the tab, at the screen's own scale. Gliff: a private screen follows
+        // the tab, at the screen's own scale; a mirrored one is fitted by the server.
         followSize: !root.connection ? true
                   : root.connection.protocol === "vnc" ? root.connection.vncScaling !== "fit"
-                  : root.connection.protocol === "ssh" ? true
+                  : root.connection.protocol === "ssh" || root.connection.protocol === "gliff" ? true
                   : root.connection.display !== "fixed"
         desktopScale: root.connection && (root.connection.protocol || "rdp") === "rdp" && root.connection.scale !== "auto"
                       ? parseInt(root.connection.scale) : 0
         focus: root.current
+        captureShortcuts: !!root.session && root.session.protocol === "gliff"
+        releaseKey: Store.ui.gliffReleaseKey || "shift+escape"
+        onShortcutsCapturedChanged: {
+            if (shortcutsCaptured)
+                Sessions.capturedSession = root.session.id
+            else if (root.session && Sessions.capturedSession === root.session.id)
+                Sessions.capturedSession = ""
+        }
 
         // App chords, all on the session keys (Settings › Keyboard) so nothing a Windows user
         // types is taken. Right Ctrl as the session key never reaches the remote side.
@@ -99,6 +108,47 @@ Item {
                 event.accepted = true
         }
         onActiveFocusChanged: if (!activeFocus) root.hostHeld = false
+        onPasteProgress: function (job, got, total, what) {
+            root.paste = { job: job, got: got, total: total, what: what }
+        }
+        onStatsChanged: function (text) {
+            if (root.session)
+                Sessions.setStats(root.session.id, text)
+        }
+        onPasteDone: function (job) {
+            if (root.paste && root.paste.job === job)
+                root.paste = null
+        }
+    }
+
+    // A paste from the remote that takes more than a second (Gliff): how far, and a way out.
+    property var paste: null
+    Rectangle {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.panelPad
+        visible: root.current && !!root.paste
+        width: pasteRow.implicitWidth + 2 * Theme.padX
+        height: pasteRow.implicitHeight + Theme.gap * 2
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.accent
+        RowLayout {
+            id: pasteRow
+            anchors.centerIn: parent
+            spacing: Theme.gap * 2
+            Text {
+                textFormat: Text.PlainText
+                text: !root.paste ? ""
+                    : "Pasting " + root.paste.what + " · " + Format.bytes(root.paste.got)
+                      + (root.paste.total > 0 ? " of " + Format.bytes(root.paste.total) : "")
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+            }
+            ActionButton { text: "Cancel"; icon: ""; danger: true; onClicked: if (root.paste) view.cancelPaste(root.paste.job) }
+        }
     }
 
     // Right Ctrl held, when it is the session key (Keymap.isHostKey).
@@ -141,7 +191,7 @@ Item {
         spacing: Theme.gap * 1.5
         Glyph {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: root.session && root.session.protocol === "ssh" ? "" : ""
+            text: root.session && root.session.protocol === "ssh" ? "" : root.session && root.session.protocol === "gliff" ? "" : ""
             size: Theme.display * 2
             color: Theme.accent
             SequentialAnimation on opacity {

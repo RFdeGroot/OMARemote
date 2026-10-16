@@ -21,8 +21,11 @@ Rectangle {
     readonly property bool isNew: !d.id
     readonly property bool isVnc: d.protocol === "vnc"
     readonly property bool isSsh: d.protocol === "ssh"
-    readonly property bool isRdp: !isVnc && !isSsh
-    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22 })
+    readonly property bool isGliff: d.protocol === "gliff"
+    // SSH and Gliff both sign in through ssh: a user, a key, extra options, no passwords.
+    readonly property bool viaSsh: isSsh || isGliff
+    readonly property bool isRdp: !isVnc && !viaSsh
+    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22, gliff: 22 })
 
     // Switching protocol moves the port along when it is still the old protocol's default.
     function pickProtocol(value) {
@@ -156,8 +159,18 @@ Rectangle {
         var port = parseInt(c.port)
         c.port = port > 0 && port < 65536 ? port : defaultPorts[c.protocol || "rdp"]
         // SSH signs in with keys and the agent (ssh asks for anything else): no credential sets.
-        if (c.protocol === "ssh")
+        if (c.protocol === "ssh" || c.protocol === "gliff")
             c.credential = "custom"
+        // Gliff: these reach the remote shell, so only plain names (bin/omaremote-session checks
+        // the same: GLIFF_OUTPUT_RE, GLIFF_SERVER_RE).
+        if (c.protocol === "gliff" && c.gliffOutput && !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(c.gliffOutput)) {
+            error = "A screen name has letters, digits, dots, dashes and underscores only (DP-1)."
+            return
+        }
+        if (c.protocol === "gliff" && c.gliffServer && !/^[A-Za-z0-9_.~\/][A-Za-z0-9_.~\/+-]{0,255}$/.test(c.gliffServer)) {
+            error = "The server path has no spaces or shell characters (~/bin/gliff-server)."
+            return
+        }
         if (c.credential === "new" && !String(c.username || "").trim()) {
             error = "A credential set needs a user name."
             userField.forceActiveFocus()
@@ -234,7 +247,8 @@ Rectangle {
                     label: "Protocol"
                     Segment {
                         value: root.d.protocol || "rdp"
-                        options: [{ value: "rdp", label: "RDP" }, { value: "vnc", label: "VNC" }, { value: "ssh", label: "SSH" }]
+                        options: [{ value: "rdp", label: "RDP" }, { value: "vnc", label: "VNC" }, { value: "ssh", label: "SSH" },
+                                  { value: "gliff", label: "Gliff" }]
                         onPicked: function (v) { root.pickProtocol(v) }
                     }
                 }
@@ -257,7 +271,7 @@ Rectangle {
                             id: hostField
                             maximumLength: Limits.host
                             Layout.fillWidth: true
-                            placeholderText: root.isSsh ? "server.example.com or a Host from ~/.ssh/config" : "pc.example.com"
+                            placeholderText: root.viaSsh ? "server.example.com or a Host from ~/.ssh/config" : "pc.example.com"
                             text: root.d.host || ""
                             onTextEdited: { root.set("host", text); root.error = "" }
                         }
@@ -288,7 +302,7 @@ Rectangle {
                 Section { text: "SIGN IN" }
                 FormRow {
                     label: "Credentials"
-                    visible: !root.isSsh
+                    visible: !root.viaSsh
                     Kit.Dropdown {
                         id: credentialPicker
                         width: parent.width
@@ -300,12 +314,13 @@ Rectangle {
                 }
                 FormRow {
                     label: "User name"
-                    visible: root.ownCredentials || root.isSsh
-                    help: root.isSsh ? "Keys and ssh-agent sign in; ssh asks for anything else" : ""
+                    visible: root.ownCredentials || root.viaSsh
+                    help: root.isSsh ? "Keys and ssh-agent sign in; ssh asks for anything else"
+                        : root.isGliff ? "Keys and ssh-agent sign in" : ""
                     Input {
                         id: userField
                         maximumLength: Limits.user
-                        placeholderText: root.isSsh ? "from ~/.ssh/config, else yours"
+                        placeholderText: root.viaSsh ? "from ~/.ssh/config, else yours"
                                        : root.d.credential === "new" ? "administrator" : "asks when connecting"
                         text: root.d.username || ""
                         onTextEdited: root.set("username", text)
@@ -313,8 +328,9 @@ Rectangle {
                 }
                 FormRow {
                     label: "Key"
-                    visible: root.isSsh
-                    help: Sync.sshConfigMode === "off" ? "Used by OMARemote; Settings › SSH can make a terminal use it too"
+                    visible: root.viaSsh
+                    help: root.isGliff ? "Used by OMARemote"
+                        : Sync.sshConfigMode === "off" ? "Used by OMARemote; Settings › SSH can make a terminal use it too"
                                                        : "Also in ~/.ssh/omaremote.conf: a terminal uses it too"
                     Kit.Dropdown {
                         id: keyPicker
@@ -345,7 +361,7 @@ Rectangle {
                 }
                 FormRow {
                     label: "Password"
-                    visible: root.ownCredentials && !root.isSsh
+                    visible: root.ownCredentials && !root.viaSsh
                     Input {
                         id: passwordField
                         maximumLength: Limits.password
@@ -365,7 +381,7 @@ Rectangle {
                 FormRow {
                     label: "Save credentials"
                     help: root.d.credential === "new" ? "As a set others can use" : "Password in your keyring"
-                    visible: root.ownCredentials && !root.isSsh
+                    visible: root.ownCredentials && !root.viaSsh
                     Check {
                         checked: !!root.d.savePassword
                         onToggled: root.set("savePassword", !checked)
@@ -373,7 +389,7 @@ Rectangle {
                 }
                 FormRow {
                     label: "Password"
-                    visible: !root.ownCredentials && !root.isSsh
+                    visible: !root.ownCredentials && !root.viaSsh
                     Text {
                         textFormat: Text.PlainText
                         width: parent.width
@@ -395,6 +411,50 @@ Rectangle {
                 }
 
                 Section { text: "DISPLAY" }
+                FormRow {
+                    label: "Screen"
+                    visible: root.isGliff
+                    help: root.d.gliffScreen === "private"
+                          ? "A screen of its own on the remote, following this tab" : "The remote's main screen, as it is"
+                    Segment {
+                        value: root.d.gliffScreen || "mirror"
+                        options: [{ value: "mirror", label: "Mirror" }, { value: "private", label: "Private screen" }]
+                        onPicked: function (v) { root.set("gliffScreen", v) }
+                    }
+                }
+                FormRow {
+                    label: "Screen name"
+                    visible: root.isGliff && root.d.gliffScreen !== "private"
+                    help: "Which remote screen to mirror; empty: the focused one"
+                    Input {
+                        maximumLength: Limits.standard
+                        placeholderText: "focused screen  (DP-1, HDMI-A-1)"
+                        text: root.d.gliffOutput || ""
+                        onTextEdited: { root.set("gliffOutput", text.trim()); root.error = "" }
+                    }
+                }
+                FormRow {
+                    label: "Colour"
+                    visible: root.isGliff
+                    help: root.d.gliffColour === "low" ? "4:2:0 from the start: less bandwidth, softer text"
+                        : root.d.gliffColour === "full" ? "4:4:4 even when the remote encodes on the CPU"
+                        : "Sharp 4:4:4 text when both ends can; less on a slow link"
+                    Segment {
+                        value: root.d.gliffColour || "auto"
+                        options: [{ value: "auto", label: "Auto" }, { value: "low", label: "Low bandwidth" }, { value: "full", label: "Full 4:4:4" }]
+                        onPicked: function (v) { root.set("gliffColour", v) }
+                    }
+                }
+                FormRow {
+                    label: "Decoding"
+                    visible: root.isGliff
+                    help: root.d.gliffVideo === "cpu" ? "On the CPU here, for a GPU driver that misbehaves" : "The GPU (VA-API) when it works, else the CPU"
+                    Segment {
+                        value: root.d.gliffVideo || "auto"
+                        options: [{ value: "auto", label: "Auto" }, { value: "cpu", label: "CPU" }]
+                        onPicked: function (v) { root.set("gliffVideo", v) }
+                    }
+                }
                 FormRow {
                     inherited: root.fromGroup("vncScaling")
                     label: "Scaling"
@@ -521,6 +581,7 @@ Rectangle {
                     inherited: root.fromGroup("clipboard")
                     label: "Clipboard"
                     visible: !root.isSsh
+                    help: root.isGliff ? "Shared while the tab has the keyboard; data moves only when pasted" : ""
                     Check {
                         checked: !!root.d.clipboard
                         onToggled: root.set("clipboard", !checked)
@@ -672,8 +733,30 @@ Rectangle {
                     }
                 }
                 FormRow {
+                    label: "Capture"
+                    visible: root.isGliff
+                    help: root.d.gliffCapture === "shm" ? "Frames read back by the compositor: for a VM whose screen stays black"
+                                                        : "GPU buffers, falling back by itself"
+                    Segment {
+                        value: root.d.gliffCapture || "auto"
+                        options: [{ value: "auto", label: "Auto" }, { value: "shm", label: "Read back" }]
+                        onPicked: function (v) { root.set("gliffCapture", v) }
+                    }
+                }
+                FormRow {
+                    label: "Server"
+                    visible: root.isGliff
+                    help: "gliff-server's path on the remote, when it is not on its PATH"
+                    Input {
+                        maximumLength: Limits.path
+                        placeholderText: "gliff-server"
+                        text: root.d.gliffServer || ""
+                        onTextEdited: { root.set("gliffServer", text.trim()); root.error = "" }
+                    }
+                }
+                FormRow {
                     label: "Extra ssh options"
-                    visible: root.isSsh
+                    visible: root.viaSsh
                     help: "Passed to ssh as-is"
                     Input {
                         maximumLength: Limits.args

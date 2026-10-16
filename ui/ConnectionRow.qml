@@ -42,7 +42,7 @@ Rectangle {
         x: Theme.padX + 2
         width: Theme.icon * 1.6
         anchors.verticalCenter: parent.verticalCenter
-        text: root.modelData.quickRow ? "󰉁" : root.modelData.protocol === "ssh" ? "" : ""
+        text: root.modelData.quickRow ? "󰉁" : root.modelData.protocol === "ssh" ? "" : root.modelData.protocol === "gliff" ? "" : ""
         size: Theme.title
         color: root.stateColor
         SequentialAnimation on opacity {

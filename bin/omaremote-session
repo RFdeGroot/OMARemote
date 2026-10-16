@@ -123,6 +123,12 @@ DEFAULTS = {
     "viewOnly": False,
     "sshArgs": "",           # SSH: extra ssh options, the connection's own (never a group's)
     "sshKey": "",            # SSH: the key to sign in with (~/.ssh/…); also written to ~/.ssh/omaremote.conf
+    "gliffScreen": "mirror",   # Gliff: mirror (the main screen, as Gliff's own client does) | private (one of its own)
+    "gliffOutput": "",       # Gliff, mirror: the remote screen to show (DP-1); empty: the focused one
+    "gliffColour": "auto",   # Gliff: auto | low (4:2:0, --low-bandwidth) | full (4:4:4 on a CPU server, --full-chroma)
+    "gliffCapture": "auto",  # Gliff: auto | shm (frames read back, --capture shm: a VM whose screen stays black)
+    "gliffVideo": "auto",    # Gliff: auto (VA-API when it works) | cpu (decode on the CPU here)
+    "gliffServer": "",       # Gliff: gliff-server's path on the remote; empty: gliff-server on its PATH
     "favourite": False,
     "lastConnected": 0,
 }
@@ -193,7 +199,7 @@ SETTING_KEYS = ("display", "width", "height", "scale", "multimon", "clipboard", 
                 "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn",
                 "vncScaling", "vncQuality", "viewOnly")
 
-DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22}
+DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22, "gliff": 22}
 
 
 def load_data(path=CONNECTIONS):
@@ -396,7 +402,8 @@ LIMITS = {"name": 256, "host": 253, "address": 1024, "hostList": 2048, "user": 1
 FIELD_LIMITS = {"name": "name", "group": "name", "host": "host", "gateway": "host", "port": "port",
                 "username": "user", "gatewayUser": "user", "domain": "domain",
                 "gatewayDomain": "domain", "kdc": "hostList", "sshArgs": "args", "extraArgs": "args",
-                "sshKey": "path", "hotkey": "shortcut", "width": "size", "height": "size"}
+                "sshKey": "path", "hotkey": "shortcut", "width": "size", "height": "size",
+                "gliffOutput": "standard", "gliffServer": "path"}
 
 
 def too_long(fields):
@@ -602,7 +609,7 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             new = portable_connection(ic)
             # A group's credential set signs desktops in; SSH signs in with keys, never with a set.
             grouped = (groups.get(new.get("group") or "") or {}).get("credential")
-            new["credential"] = "inherit" if grouped and new.get("protocol") != "ssh" else "custom"
+            new["credential"] = "inherit" if grouped and new.get("protocol") not in ("ssh", "gliff") else "custom"
             conns.append(new)
             report["added"].append(new.get("name") or new.get("host"))
 
@@ -2095,6 +2102,55 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
         changed = True
     return {"mode": mode, "keys": count, "changed": changed}
 
+GLIFF_SSH_OPTIONS = ["-T", "-o", "Compression=no", "-o", "IPQoS=lowdelay"]
+# What may reach the remote command line. ssh hands that line to the remote shell, so these are the
+# only words from a connection that go into it, and none of them can hold a shell character.
+GLIFF_OUTPUT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")          # DP-1, HDMI-A-1, eDP-1
+GLIFF_SERVER_RE = re.compile(r"[A-Za-z0-9_.~/][A-Za-z0-9_.~/+-]{0,255}")  # ~/bin/gliff-server
+
+
+def gliff_server_args(conn):
+    """gliff-server's own arguments for a connection: the screen, colour and capture choices, each a
+    fixed word or a checked screen name. ValueError for a screen name that is not one."""
+    if conn.get("gliffScreen") == "private":
+        args = ["--headless"]
+    else:
+        output = (conn.get("gliffOutput") or "").strip()
+        if output and not GLIFF_OUTPUT_RE.fullmatch(output):
+            raise ValueError(f"not a screen name: {output!r}")
+        args = ["--output", output or "auto"]
+    colour = conn.get("gliffColour")
+    if colour == "low":
+        args.append("--low-bandwidth")
+    elif colour == "full":
+        args.append("--full-chroma")
+    if conn.get("gliffCapture") == "shm":
+        args += ["--capture", "shm"]
+    return args
+
+
+def build_gliff_command(conn):
+    """ssh to the host running gliff-server --stdio, as Gliff's own client does
+    (crates/gliff-transport/src/ssh.rs). The remote command is checked words only (gliff_server_args,
+    GLIFF_SERVER_RE): ssh hands it to the remote shell."""
+    args = build_ssh_command(conn)
+    host = args.pop()
+    server = (conn.get("gliffServer") or "").strip() or "gliff-server"
+    if not GLIFF_SERVER_RE.fullmatch(server):
+        raise ValueError(f"not a gliff-server path: {server!r}")
+    return [args[0], *GLIFF_SSH_OPTIONS, *args[1:], "--", host, server, "--stdio", *gliff_server_args(conn)]
+
+
+def build_gliff_config(conn):
+    """Settings for omaremote-gliff, as key=value lines (fed on stdin)."""
+    lines = [f"arg={a}" for a in build_gliff_command(conn)]
+    lines += [f"host={check_host(conn['host'])}",
+              f"headless={1 if conn.get('gliffScreen') == 'private' else 0}",
+              f"video={'cpu' if conn.get('gliffVideo') == 'cpu' else 'auto'}",
+              f"clipboard={0 if conn.get('clipboard') is False else 1}"]
+    return check_lines(lines)
+
+
 def build_ssh_config(conn):
     """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
     lines = [f"arg={a}" for a in build_ssh_command(conn)]
@@ -2144,6 +2200,14 @@ SSH_FAILED_RE = re.compile(r"^\[omaremote\] connection failed: (.+)$", re.M)
 
 def describe_exit(code, log_tail, protocol="rdp"):
     """A sentence for the UI, or None when the session simply ended."""
+    if protocol == "gliff":
+        # omaremote-gliff says why it failed (ssh's or the server's words); 11 is a disconnect.
+        if code is None or code < 0 or code in (0, 11, 145):
+            return None
+        said = SSH_FAILED_RE.findall(log_tail or "")
+        if said and said[-1].strip():
+            return said[-1].strip()
+        return EXIT_MESSAGES.get(code) or f"The session ended with code {code}"
     if protocol == "ssh":
         # A shell ends with its last command's status; only ssh's own 255 means it could not connect.
         if code != 255:
@@ -2886,8 +2950,8 @@ def session_socket(sid):
 def supervise(conn, sid, tab=None):
     """Runs detached: starts the session's client, follows its log, records state until it exits."""
     protocol = conn.get("protocol") or "rdp"
-    if protocol in ("vnc", "ssh") and not tab:
-        tab = {"width": 1280, "height": 800, "scale": 100}  # VNC and SSH sessions always live in a tab
+    if protocol in ("vnc", "ssh", "gliff") and not tab:
+        tab = {"width": 1280, "height": 800, "scale": 100}  # VNC, SSH and Gliff sessions always live in a tab
     log_path = os.path.join(SESSIONS_DIR, sid + ".log")
     socket_path = session_socket(sid) if tab else None
     state = {
@@ -2901,7 +2965,7 @@ def supervise(conn, sid, tab=None):
         # or, for a session without a tab renderer, FreeRDP's own window.
         "view": "tab" if tab else "window", "viewer": None,
     }
-    if protocol in ("vnc", "ssh"):
+    if protocol in ("vnc", "ssh", "gliff"):
         state["stage"] = "Connecting"
     write_session(state)
     krb_env = {}
@@ -2919,6 +2983,8 @@ def supervise(conn, sid, tab=None):
             args = build_vnc_config(conn, password=password)
         elif protocol == "ssh":
             args = build_ssh_config(conn)
+        elif protocol == "gliff":
+            args = build_gliff_config(conn)
         else:
             gateway_password = None
             if conn.get("gatewaySavePassword") and conn.get("gateway", "").strip() and conn.get("id"):
@@ -2980,7 +3046,7 @@ def supervise(conn, sid, tab=None):
             if state["state"] != "connecting":
                 continue
             # gdi_init_ex runs in post-connect: the session is up and drawing.
-            # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc and -ssh say so themselves.
+            # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc, -ssh and -gliff say so themselves.
             if "gdi_init_ex" in line or line.startswith("[omaremote] connected to"):
                 state.update(state="connected", stage=None)
                 write_session(state)
@@ -3146,6 +3212,9 @@ def main(argv):
             return 0
         if conn.get("protocol") == "ssh":
             print(" ".join(shlex.quote(a) for a in build_ssh_command(conn)))
+            return 0
+        if conn.get("protocol") == "gliff":
+            print(" ".join(shlex.quote(a) for a in build_gliff_command(conn)))
             return 0
         print(" ".join(shlex.quote(a) for a in redact(build_args(
             conn, "x" if conn["savePassword"] else None, monitor_scale(),

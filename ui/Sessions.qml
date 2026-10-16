@@ -12,6 +12,16 @@ Singleton {
     readonly property string bin: Quickshell.env("OMAREMOTE_BIN") || (Quickshell.shellDir + "/../../bin/omaremote-session")
 
     property var sessions: []
+    // The session whose view holds Hyprland's shortcuts right now (a Gliff tab with the focus), or
+    // "": the bottom bars say how to give them back.
+    property string capturedSession: ""
+    // Each Gliff session's stream, a line a second from its view (frames, bandwidth, decoding).
+    property var stats: ({})
+    function setStats(id, text) {
+        var next = Object.assign({}, stats)
+        next[id] = text
+        stats = next
+    }
     property string changesPath: ""
     // "connection:<id>" or "credential:<id>" -> true when the keyring holds that password.
     property var secrets: ({})

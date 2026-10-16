@@ -5,6 +5,8 @@ Rectangle {
     id: root
     property string notice: ""
     property bool noticeIsError: false
+    // Shown, muted, where the notice goes while there is none (a Gliff stream's stats).
+    property string info: ""
     property var hints: []
     // The connection and session counts on the left; an own session window has no use for them.
     property bool showCounts: true
@@ -72,12 +74,12 @@ Rectangle {
         Text {
             textFormat: Text.PlainText
             id: noticeText
-            text: root.notice
+            text: root.notice || root.info
             visible: text !== ""
             // Whatever room the hints leave; a long notice elides rather than running into them.
             width: Math.min(implicitWidth, Math.max(0, root.width - hintRow.width - 3 * Theme.padX - x))
             elide: Text.ElideRight
-            color: root.noticeIsError ? Theme.urgent : Theme.foreground
+            color: root.noticeIsError ? Theme.urgent : root.notice ? Theme.foreground : Theme.muted
             font.family: Theme.font
             font.pixelSize: Theme.caption
         }

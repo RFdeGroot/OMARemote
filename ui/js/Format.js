@@ -28,7 +28,7 @@ function address(c) {
     if (!c)
         return ""
     var host = c.host || ""
-    var standard = c.protocol === "vnc" ? 5900 : 3389
+    var standard = c.protocol === "vnc" ? 5900 : c.protocol === "ssh" || c.protocol === "gliff" ? 22 : 3389
     return (c.port && Number(c.port) !== standard) ? host + ":" + c.port : host
 }
 
@@ -39,6 +39,8 @@ function account(c) {
 }
 
 function displayLabel(c, monitorScale) {
+    if (c.protocol === "gliff")
+        return openInLabel(c) + " · " + (c.gliffScreen === "private" ? "Private screen, follows the size" : "Mirrors the main screen")
     if (c.protocol === "vnc") {
         var how = c.vncScaling === "native" ? "Native pixels" : c.vncScaling === "resize" ? "Remote follows tab size" : "Scaled to fit"
         var quality = c.vncQuality === "high" ? "high quality" : c.vncQuality === "low" ? "low bandwidth" : "auto quality"
@@ -58,6 +60,8 @@ function openInLabel(c) {
 }
 
 function devicesLabel(c) {
+    if (c.protocol === "gliff")
+        return c.clipboard === false ? "none" : "clipboard"
     if (c.protocol === "vnc")
         return c.clipboard ? "clipboard" : "none"
     var out = []
@@ -195,4 +199,24 @@ function isSessionChord(mode, ctrl, alt, shift, hostHeld) {
     if (mode === "ctrlaltshift")
         return ctrl && alt && shift
     return ctrl && alt
+}
+
+// A size for people: "512 B", "3.4 MB", "1.2 GB".
+function bytes(n) {
+    n = Number(n) || 0
+    if (n < 1000)
+        return Math.round(n) + " B"
+    var units = ["kB", "MB", "GB", "TB"]
+    var i = -1
+    do { n /= 1000; i++ } while (n >= 1000 && i < units.length - 1)
+    return (n < 10 ? n.toFixed(1) : Math.round(n)) + " " + units[i]
+}
+
+// The bottom-bar hint for a Gliff tab: how to give Hyprland's shortcuts back while they are taken,
+// or how to take them again. Written so StatusBar never reads it as a session key (ctrl+alt+…).
+function gliffKeyHint(releaseKey, captured) {
+    if (!captured)
+        return ["click", "capture super"]
+    var key = { "shift+escape": "shift+esc", "ctrlalt-q": "Ctrl+Alt+Q", "double-escape": "esc esc" }[releaseKey || "shift+escape"]
+    return key ? [key, "release super"] : ["leave the tab", "release super"]
 }

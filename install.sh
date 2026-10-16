@@ -72,6 +72,13 @@ need_command "SSH" ssh openssh
 need_pkgconfig "SSH" vterm libvterm
 need_pkgconfig "SSH" xkbcommon libxkbcommon
 
+# Gliff: Omarchy desktops over ssh (H.264 through FFmpeg's libavcodec); its clipboard and the
+# shortcut capture of its tabs speak Wayland protocols generated from wayland-protocols.
+need_pkgconfig "Gliff" libavcodec ffmpeg
+need_pkgconfig "Gliff" wayland-client wayland
+need_pkgconfig "Gliff" wayland-protocols wayland-protocols
+need_command "Gliff" wayland-scanner wayland
+
 # Pasting into text fields: wl-paste, with a size and time limit (ui/Input.qml, PasteGuard).
 need_command "paste" wl-paste wl-clipboard
 

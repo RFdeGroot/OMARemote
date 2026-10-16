@@ -2,6 +2,7 @@
 
 #include <QClipboard>
 #include <QCursor>
+#include <QDateTime>
 #include <QGuiApplication>
 #include <QPixmap>
 #include <QQuickWindow>
@@ -265,6 +266,12 @@ void RdpView::handleLine(const QByteArray& line)
 		setCursor(Qt::ArrowCursor);
 	else if (cmd == "cursor-text")
 		setCursor(Qt::IBeamCursor);
+	else if (cmd == "clip-progress" && w.size() >= 5)
+		emit pasteProgress(int(num(1)), w[2].toDouble(), w[3].toDouble(), unb64(w[4]));
+	else if (cmd == "clip-done" && w.size() >= 2)
+		emit pasteDone(int(num(1)));
+	else if (cmd == "stats" && w.size() >= 2)
+		emit statsChanged(unb64(w[1]));
 	else if (cmd == "clip" && w.size() >= 2)
 	{
 		m_lastClip = unb64(w[1]);
@@ -417,6 +424,14 @@ void RdpView::itemChange(ItemChange change, const ItemChangeData& value)
 	QQuickItem::itemChange(change, value);
 	if (change == ItemDevicePixelRatioHasChanged || change == ItemSceneChange)
 		scheduleSize();
+	if (change == ItemSceneChange)
+	{
+		m_inhibit.release(); // held for the old window
+		if (value.window)
+			connect(value.window, &QWindow::activeChanged, this, &RdpView::updateCapture, Qt::UniqueConnection);
+	}
+	if (change == ItemVisibleHasChanged || change == ItemSceneChange)
+		updateCapture();
 	// A hidden tab sends no size, so one resized meanwhile (the list pinned or the window
 	// resized) catches up when shown; the session ignores a size it already has.
 	if (change == ItemVisibleHasChanged && value.boolValue)
@@ -425,6 +440,30 @@ void RdpView::itemChange(ItemChange change, const ItemChangeData& value)
 		if (m_dirty)
 			update();
 	}
+}
+
+// Holds the compositor's shortcuts while this view has the keyboard and is meant to; lets go
+// otherwise. Focus moves between OMARemote's own items (the sidebar, another tab) release them.
+void RdpView::updateCapture()
+{
+	const bool want = m_captureShortcuts && !m_released && hasActiveFocus() && isVisible() && window() &&
+	                  window()->isActive();
+	const bool before = m_inhibit.held();
+	if (want)
+		m_inhibit.inhibit(window());
+	else
+		m_inhibit.release();
+	if (m_inhibit.held() != before)
+		emit shortcutsCapturedChanged();
+}
+
+void RdpView::setCaptureShortcuts(bool capture)
+{
+	if (capture == m_captureShortcuts)
+		return;
+	m_captureShortcuts = capture;
+	emit captureShortcutsChanged();
+	updateCapture();
 }
 
 void RdpView::scheduleSize()
@@ -470,6 +509,11 @@ static int buttonNumber(Qt::MouseButton b)
 void RdpView::mousePressEvent(QMouseEvent* e)
 {
 	forceActiveFocus(Qt::MouseFocusReason);
+	if (m_released)
+	{
+		m_released = false;
+		updateCapture();
+	}
 	const int b = buttonNumber(e->button());
 	const QPoint p = toRemote(e->position());
 	if (b)
@@ -558,6 +602,31 @@ void RdpView::keyPressEvent(QKeyEvent* e)
 		return;
 	}
 	const quint32 evdev = code - 8;
+	// The release key while the shortcuts are held: they go back to Hyprland. The key itself stays
+	// here; its modifiers already went to the session and go up with their releases. Double Esc:
+	// the first reaches the session, a second within 400 ms releases.
+	if (m_inhibit.held() && !e->isAutoRepeat())
+	{
+		const Qt::KeyboardModifiers mods = e->modifiers() & ~Qt::KeypadModifier;
+		bool release = false;
+		if (m_releaseKey == QLatin1String("shift+escape"))
+			release = e->key() == Qt::Key_Escape && mods == Qt::ShiftModifier;
+		else if (m_releaseKey == QLatin1String("ctrlalt-q"))
+			release = e->key() == Qt::Key_Q && mods == (Qt::ControlModifier | Qt::AltModifier);
+		else if (m_releaseKey == QLatin1String("double-escape") && e->key() == Qt::Key_Escape && mods == Qt::NoModifier)
+		{
+			const qint64 now = QDateTime::currentMSecsSinceEpoch();
+			release = now - m_lastEscape < 400;
+			m_lastEscape = release ? 0 : now;
+		}
+		if (release)
+		{
+			m_released = true;
+			updateCapture();
+			e->accept();
+			return;
+		}
+	}
 	// Hyprland's sendshortcut (Omarchy's Super+V: Shift+Insert in a terminal, Ctrl+V elsewhere) sets
 	// the modifier state without pressing the modifier keys, and Super stays physically held. The
 	// session sees keys, not states: press the missing modifiers around this key, and lift a held
@@ -646,6 +715,7 @@ void RdpView::releaseAllKeys()
 void RdpView::focusInEvent(QFocusEvent* e)
 {
 	QQuickItem::focusInEvent(e);
+	updateCapture();
 	// Bring the remote toggle keys in line with ours; Qt has no lock-state query, so Num Lock on
 	// and the rest off is the common case, and the keys themselves still toggle normally.
 	send("focus " + QByteArray::number(kSyncNum));
@@ -654,10 +724,17 @@ void RdpView::focusInEvent(QFocusEvent* e)
 	sendClipboard();
 }
 
+void RdpView::cancelPaste(int job)
+{
+	send("clip-cancel " + QByteArray::number(job));
+}
+
 void RdpView::focusOutEvent(QFocusEvent* e)
 {
 	QQuickItem::focusOutEvent(e);
+	send("blur");
 	releaseAllKeys();
+	updateCapture();
 }
 
 // Offers our clipboard to the session. Before it is attached there is no one to tell, so nothing is

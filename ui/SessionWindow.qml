@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.Commons
+import "js/Format.js" as Format
 
 // A session in a window of its own: a title bar, the session as a tab draws it (connecting, prompts,
 // why it ended), and the keys that work here at the bottom. ctrl+alt+t hands it to a tab.
@@ -164,8 +165,11 @@ FocusScope {
         StatusBar {
             Layout.fillWidth: true
             showCounts: false
+            info: root.session && root.session.protocol === "gliff" ? (Sessions.stats[root.session.id] || "") : ""
             hints: (root.hotkey ? [["ctrl+alt+h", "hide"]] : []).concat([["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
-                    root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"] : ["ctrl+alt+end", "ctrl+alt+del"],
+                    root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"]
+                    : root.session && root.session.protocol === "gliff" ? Format.gliffKeyHint(Store.ui.gliffReleaseKey, Sessions.capturedSession === root.session.id)
+                    : ["ctrl+alt+end", "ctrl+alt+del"],
                     ["ctrl+alt+home", "to connections"], [Sessions.closeKey, "disconnect"]])
         }
     }

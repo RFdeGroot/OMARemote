@@ -8,6 +8,8 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+#include "shortcutinhibit.h"
+
 #include <deque>
 
 class QSGTexture;
@@ -35,6 +37,13 @@ class RdpView : public QQuickItem
 	Q_PROPERTY(int desktopScale READ desktopScale WRITE setDesktopScale NOTIFY desktopScaleChanged)
 	// When false the remote desktop keeps its size and the picture is scaled to the item.
 	Q_PROPERTY(bool followSize READ followSize WRITE setFollowSize NOTIFY followSizeChanged)
+	// Every key to the session, Super and Hyprland's shortcuts too, while the picture has the focus
+	// (Gliff tabs). Shift+Esc hands the shortcuts back; a click on the picture takes them again.
+	Q_PROPERTY(bool captureShortcuts READ captureShortcuts WRITE setCaptureShortcuts NOTIFY captureShortcutsChanged)
+	// Whether the compositor's shortcuts are held right now.
+	Q_PROPERTY(bool shortcutsCaptured READ shortcutsCaptured NOTIFY shortcutsCapturedChanged)
+	// The key that gives them back: shift+escape, ctrlalt-q (Ctrl+Alt+Q), double-escape or none.
+	Q_PROPERTY(QString releaseKey MEMBER m_releaseKey NOTIFY releaseKeyChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -51,6 +60,9 @@ public:
 	void setDesktopScale(int scale);
 	bool followSize() const { return m_followSize; }
 	void setFollowSize(bool follow);
+	bool captureShortcuts() const { return m_captureShortcuts; }
+	void setCaptureShortcuts(bool capture);
+	bool shortcutsCaptured() const { return m_inhibit.held(); }
 
 	Q_INVOKABLE void answerCertificate(int answer);
 	Q_INVOKABLE void answerCredentials(const QString& user, const QString& domain, const QString& password);
@@ -58,6 +70,7 @@ public:
 	Q_INVOKABLE void sendCtrlAltDel();
 	Q_INVOKABLE void disconnectSession();
 	Q_INVOKABLE void releaseAllKeys();
+	Q_INVOKABLE void cancelPaste(int job);
 
 signals:
 	void socketPathChanged();
@@ -67,6 +80,14 @@ signals:
 	void promptChanged();
 	void desktopScaleChanged();
 	void followSizeChanged();
+	void captureShortcutsChanged();
+	void releaseKeyChanged();
+	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
+	void pasteProgress(int job, double got, double total, const QString& what);
+	void pasteDone(int job);
+	// A line about the stream, once a second (Gliff: fps, bandwidth, decode time).
+	void statsChanged(const QString& text);
+	void shortcutsCapturedChanged();
 
 protected:
 	QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
@@ -94,6 +115,7 @@ private:
 	void scheduleSize();
 	void sendSize();
 	void sendClipboard(bool force = false);
+	void updateCapture();
 	QRectF imageRect() const;
 	QPoint toRemote(const QPointF& p) const;
 	qreal devicePixelRatio() const;
@@ -114,6 +136,11 @@ private:
 	QVariantMap m_prompt;
 	int m_desktopScale = 0;
 	bool m_followSize = true;
+	bool m_captureShortcuts = false;
+	bool m_released = false; // the release key gave the shortcuts back; a click takes them again
+	QString m_releaseKey = QStringLiteral("shift+escape");
+	qint64 m_lastEscape = 0; // for double-escape
+	ShortcutInhibit m_inhibit;
 	QSet<quint32> m_pressed;
 	// A key that came with modifiers no modifier key was pressed for (Hyprland's sendshortcut, as
 	// Omarchy's Super+V/C/X use): the modifiers sent around it, and a held Super lifted for it.

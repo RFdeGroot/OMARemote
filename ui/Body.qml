@@ -500,7 +500,7 @@ FocusScope {
         var what = moved.length === 1 ? (moved[0].name || moved[0].host) : moved.length + " connections"
         var after = Store.get(moved[0].id)
         var signIn = ""
-        if (moved.length === 1 && after && after.protocol !== "ssh") {
+        if (moved.length === 1 && after && after.protocol !== "ssh" && after.protocol !== "gliff") {
             if (moved[0].credential === "inherit" && after.username)
                 signIn = "; signs in as " + (after.domain ? after.domain + "\\" : "") + after.username
             else if (before[moved[0].id] === "group" && moved[0].credential === "custom")
@@ -653,6 +653,14 @@ FocusScope {
         for (var i = 0; i < list.length; i++)
             if (list[i].id === currentTab)
                 return list[i].protocol === "ssh"
+        return false
+    }
+
+    readonly property bool currentIsGliff: {
+        var list = Sessions.sessions
+        for (var i = 0; i < list.length; i++)
+            if (list[i].id === currentTab)
+                return list[i].protocol === "gliff"
         return false
     }
 
@@ -1206,6 +1214,7 @@ FocusScope {
         }
 
         StatusBar {
+            info: root.currentIsGliff ? (Sessions.stats[root.currentTab] || "") : ""
             id: statusBar
             Layout.fillWidth: true
             visible: !root.immersive
@@ -1215,7 +1224,9 @@ FocusScope {
                        ? [["⏎", "reconnect"], ["l", "log"], ["w", "close tab"], ["ctrl+alt+home", "connections"],
                           ["ctrl+alt+pgup/pgdn", "tabs"], ["ctrl+alt+k", "keys"]]
                  : root.currentTab !== "home" ? [["ctrl+alt+home", "connections"], ["ctrl+alt+pgup/pgdn", "tabs"], ["ctrl+alt+w", "close tab"]]
-                                                .concat(root.currentIsSsh ? [["ctrl+shift+c/v", "copy/paste"]] : [["ctrl+alt+end", "ctrl+alt+del"]])
+                                                .concat(root.currentIsSsh ? [["ctrl+shift+c/v", "copy/paste"]]
+                                                        : root.currentIsGliff ? [Format.gliffKeyHint(Store.ui.gliffReleaseKey, Sessions.capturedSession === root.currentTab)]
+                                                        : [["ctrl+alt+end", "ctrl+alt+del"]])
                                                 .concat([["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]])
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]
