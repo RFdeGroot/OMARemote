@@ -170,10 +170,11 @@ static void finished_update(rfbClient*)
 // The server's cursor, drawn locally so it moves without a round trip.
 static void got_cursor(rfbClient* client, int xhot, int yhot, int width, int height, int bytesPerPixel)
 {
-	if (width <= 0 || height <= 0 || !client->rcSource || bytesPerPixel != 4)
+	if (width <= 0 || height <= 0 || width > oma::kMaxCursorSide || height > oma::kMaxCursorSide ||
+	    !client->rcSource || bytesPerPixel != 4)
 		return;
 	std::string pixels(size_t(width) * size_t(height) * 4, '\0');
-	for (int i = 0; i < width * height; i++)
+	for (size_t i = 0; i < size_t(width) * size_t(height); i++)
 	{
 		const uint8_t* src = client->rcSource + i * 4; // our pixel format: B G R X
 		const bool shown = client->rcMask ? client->rcMask[i] != 0 : true;

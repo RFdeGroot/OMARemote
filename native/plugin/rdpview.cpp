@@ -271,8 +271,10 @@ void RdpView::handleLine(const QByteArray& line)
 	else if (cmd == "cursor" && w.size() >= 7)
 	{
 		const int width = num(4), height = num(5);
+		if (width <= 0 || height <= 0 || width > MaxCursorSide || height > MaxCursorSide)
+			return;
 		QByteArray pixels = QByteArray::fromBase64(w[6]);
-		if (width > 0 && height > 0 && pixels.size() >= width * height * 4)
+		if (pixels.size() >= qsizetype(width) * height * 4)
 		{
 			QImage img(reinterpret_cast<const uchar*>(pixels.constData()), width, height, width * 4,
 			           QImage::Format_ARGB32);
@@ -280,15 +282,27 @@ void RdpView::handleLine(const QByteArray& line)
 			// The server drew it for its own scale, which matches ours: show it pixel for pixel.
 			pm.setDevicePixelRatio(devicePixelRatio());
 			const qreal dpr = devicePixelRatio();
-			m_cursors.insert(static_cast<quint32>(num(1)),
-			                 QCursor(pm, static_cast<int>(num(2) / dpr), static_cast<int>(num(3) / dpr)));
+			const quint32 id = static_cast<quint32>(num(1));
+			if (!m_cursors.contains(id) && m_cursors.size() >= MaxCursors)
+			{
+				auto oldest = m_cursors.begin();
+				for (auto it = m_cursors.begin(); it != m_cursors.end(); ++it)
+					if (it->used < oldest->used)
+						oldest = it;
+				m_cursors.erase(oldest);
+			}
+			m_cursors.insert(id, { QCursor(pm, static_cast<int>(num(2) / dpr), static_cast<int>(num(3) / dpr)),
+			                       ++m_cursorClock });
 		}
 	}
 	else if (cmd == "cursor-set" && w.size() >= 2)
 	{
-		const auto it = m_cursors.constFind(static_cast<quint32>(num(1)));
-		if (it != m_cursors.constEnd())
-			setCursor(*it);
+		const auto it = m_cursors.find(static_cast<quint32>(num(1)));
+		if (it != m_cursors.end())
+		{
+			it->used = ++m_cursorClock;
+			setCursor(it->cursor);
+		}
 	}
 	else if (cmd == "cursor-hide")
 		setCursor(Qt::BlankCursor);

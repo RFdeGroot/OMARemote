@@ -554,6 +554,8 @@ static BOOL pointer_new(rdpContext* ctx, rdpPointer* pointer)
 	auto* p = reinterpret_cast<OmaPointer*>(pointer);
 	p->id = st->nextCursor++;
 	const UINT32 w = pointer->width, h = pointer->height;
+	if (w > UINT32(oma::kMaxCursorSide) || h > UINT32(oma::kMaxCursorSide))
+		return TRUE; // not shown: the cursor stays as it was
 	std::string pixels(static_cast<size_t>(w) * h * 4, '\0');
 	if (w && h &&
 	    !freerdp_image_copy_from_pointer_data(reinterpret_cast<BYTE*>(pixels.data()), PIXEL_FORMAT_BGRA32, w * 4, 0,

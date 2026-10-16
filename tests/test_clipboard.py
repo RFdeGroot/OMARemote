@@ -69,9 +69,10 @@ class Runtime(unittest.TestCase):
         with open(self.calls) as f:
             return len(f.read().splitlines())
 
-    def run_view(self, share, ms=1500, send=()):
+    def run_view(self, share, ms=1500, send=(), lines=()):
         """Runs the view; the fake session sends `send` 800 ms after the view attaches. Returns the
-        RESULT, the clipboard texts the view offered the session, and Qt's log."""
+        RESULT, the clipboard texts the view offered the session, and Qt's log. `lines` are sent
+        as they are, after `send`."""
         path = os.path.join(self.dir, "s")
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(path)
@@ -87,10 +88,10 @@ class Runtime(unittest.TestCase):
             with conn:
                 conn.settimeout(0.1)
                 start = time.monotonic()
-                pending = list(send)
+                pending = [b"clip " + base64.b64encode(t) for t in send] + list(lines)
                 while True:
                     if pending and time.monotonic() - start > 0.8:
-                        conn.sendall(b"".join(b"clip " + base64.b64encode(t) + b"\n" for t in pending))
+                        conn.sendall(b"".join(l + b"\n" for l in pending))
                         pending = []
                     try:
                         chunk = conn.recv(65536)
@@ -157,6 +158,24 @@ class Runtime(unittest.TestCase):
         self.assertIn("took more than 2000 ms", err)
         # Ten ticks a second while wl-paste hangs: the window kept running.
         self.assertGreaterEqual(result["ticks"], 20)
+
+    # omarchy-plugin-marketplace#11853: every cursor shape a server sent was kept for good, and the
+    # size check multiplied in int (32768 x 16384 x 4 wraps to INT_MIN and passed with 4 bytes).
+    def test_cursors_are_kept_to_a_number(self):
+        self.stub(b"")
+        pixel = base64.b64encode(b"\xff" * 16)  # 2 x 2
+        lines = [b"cursor %d 0 0 2 2 %s" % (i, pixel) for i in range(1, 201)] + [b"cursor-set 200"]
+        result, _, err = self.run_view(False, lines=lines)
+        self.assertEqual(result["cursors"], 64, err)
+
+    def test_cursor_sizes_that_overflow_or_exceed_the_limit_are_refused(self):
+        self.stub(b"")
+        tiny = base64.b64encode(b"\xff" * 4)
+        lines = [b"cursor 1 0 0 32768 16384 " + tiny, b"cursor-set 1",
+                 b"cursor 2 0 0 513 1 " + base64.b64encode(b"\xff" * 513 * 4), b"cursor-set 2",
+                 b"cursor 3 0 0 512 512 " + base64.b64encode(b"\xff" * 512 * 512 * 4)]
+        result, _, err = self.run_view(False, lines=lines)
+        self.assertEqual(result["cursors"], 1, err)
 
 
 if __name__ == "__main__":

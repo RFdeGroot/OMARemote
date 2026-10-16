@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QCursor>
 #include <QImage>
 #include <QQuickItem>
 #include <QSet>
@@ -78,6 +79,10 @@ public:
 	static constexpr qsizetype MaxClipBytes = 1024 * 1024;
 	static constexpr int ClipTimeoutMs = 2000;
 	static constexpr qsizetype MaxLineBytes = 32 * 1024 * 1024;
+	// The largest cursor taken (as link.hpp's kMaxCursorSide) and how many are kept: the least
+	// recently used one goes first, so a server sending new shapes cannot fill memory.
+	static constexpr int MaxCursorSide = 512;
+	static constexpr int MaxCursors = 64;
 
 	Q_INVOKABLE void answerCertificate(int answer);
 	Q_INVOKABLE void answerCredentials(const QString& user, const QString& domain, const QString& password);
@@ -88,6 +93,7 @@ public:
 	Q_INVOKABLE void cancelPaste(int job);
 	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
 	Q_INVOKABLE void releaseShortcuts();
+	Q_INVOKABLE int cachedCursors() const { return int(m_cursors.size()); } // for tests
 
 signals:
 	void socketPathChanged();
@@ -192,7 +198,9 @@ private:
 	// evdev code and keysym of each, by the key's evdev code.
 	struct Chord { QList<QPair<quint32, quint32>> added, lifted; };
 	QHash<quint32, Chord> m_chords;
-	QHash<quint32, QCursor> m_cursors;
+	struct CachedCursor { QCursor cursor; quint64 used = 0; };
+	QHash<quint32, CachedCursor> m_cursors;
+	quint64 m_cursorClock = 0;
 	QString m_lastClip;
 	bool m_shareClipboard = false;
 	bool m_clipReading = false; // a read is under way; one more follows it when asked meanwhile

@@ -22,6 +22,9 @@ uint64_t now_ms();
 // The most clipboard text passed between a session and the UI, in bytes of UTF-8; longer text from
 // the remote side is dropped, not cut (the UI holds to the same, RdpView::MaxClipBytes).
 constexpr size_t kMaxClipBytes = 1024 * 1024;
+// The widest and tallest cursor passed to the UI, in pixels (RDP's large pointers go to 384); a
+// larger one from the remote side is not shown (the UI holds to the same, RdpView::MaxCursorSide).
+constexpr int kMaxCursorSide = 512;
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // A shared-memory framebuffer, 32 bits per pixel, B G R X in memory (Qt's RGB32).

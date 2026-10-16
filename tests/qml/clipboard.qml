@@ -26,7 +26,8 @@ Window {
         sink.text = ""
         sink.paste()
         console.log("RESULT " + JSON.stringify({ focused: view.activeFocus, attached: view.attached,
-                                                 clipboard: sink.text, ticks: ticks }))
+                                                 clipboard: sink.text, ticks: ticks,
+                                                 cursors: view.cachedCursors() }))
         Qt.exit(0)
     }
 
