@@ -1340,6 +1340,44 @@ class AddressGuard(unittest.TestCase):
         self.assertNotIn("homeDrive", data["groups"]["Servers"]["settings"])
         self.assertEqual(report["pendingAddress"][0]["id"], "group:Servers")
 
+    def test_a_move_into_a_new_group_with_sharing_waits(self):
+        """omarchy-plugin-marketplace#11776: a new group with homeDrive (or a gateway, a KDC) and a
+        connection that signs in here moved into it; the move changes only `group`."""
+        for setting in ({"homeDrive": True}, {"microphone": True}, {"gateway": "gw.example"}, {"kdc": "kdc.example"}):
+            local = self.local(self.c(savePassword=True))
+            incoming = self.remote(self.c(group="Evil", modified=200),
+                                   groups={"Evil": {"settings": setting, "modified": 9}})
+            data, report = session.merge(local, [incoming], 1000)
+            self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"], setting)
+            self.assertNotEqual(data["connections"][0].get("group"), "Evil", setting)
+            data, report = session.merge(local, [incoming], 1000, allow_address=("c1",))
+            self.assertEqual(data["connections"][0]["group"], "Evil", setting)
+
+    def test_a_move_into_a_group_that_just_gained_sharing_waits(self):
+        """The group itself signs in nowhere, so its new setting arrives; the member moved into it
+        signs in here, so the move waits."""
+        local = self.local(self.c(savePassword=True),
+                           groups={"Lab": {"credential": "", "settings": {}, "modified": 1}})
+        incoming = self.remote(self.c(group="Lab", modified=200),
+                               groups={"Lab": {"settings": {"homeDrive": True, "gateway": "gw.example"}, "modified": 9}})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"])
+        self.assertIn("home folder", report["pendingAddress"][0]["to"])
+        self.assertIsNone(data["connections"][0].get("group"))
+
+    def test_a_new_group_a_member_here_already_names_waits(self):
+        local = self.local(self.c(group="Gone", savePassword=True))
+        incoming = self.remote(groups={"Gone": {"settings": {"homeDrive": True}, "modified": 9}})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertEqual(report["pendingAddress"][0]["id"], "group:Gone")
+        self.assertNotIn("Gone", data["groups"])
+
+    def test_a_move_that_widens_nothing_just_arrives(self):
+        local = self.local(self.c(savePassword=True), groups={"Lab": {"credential": "", "settings": {"audio": "off"}, "modified": 1}})
+        data, report = session.merge(local, [self.remote(self.c(group="Lab", modified=200))], 1000)
+        self.assertEqual(report["pendingAddress"], [])
+        self.assertEqual(data["connections"][0]["group"], "Lab")
+
     def test_an_ssh_key_signs_in_here_too(self):
         # The key would be offered to the new host, and omaremote.conf would name it for that host.
         local = self.local(self.c(protocol="ssh", port=22, credential="custom", sshKey="~/.ssh/id_ed25519"))

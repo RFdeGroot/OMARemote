@@ -456,6 +456,14 @@ def _widens(theirs, mine):
                                                             for k, _ in SHARING_KEYS)
 
 
+def _effective(conn, groups):
+    """A connection's address and sharing as a session would use them: its group's settings, then
+    its own (as resolve() does). A synced move into another group changes them without changing a
+    field of the connection's own."""
+    settings = (groups.get(conn.get("group") or "") or {}).get("settings") or {}
+    return dict({k: v for k, v in settings.items() if k in SETTING_KEYS}, **conn)
+
+
 def _signs_in_here(conn, groups):
     """Whether this system would send credentials to wherever the connection points: a saved
     password (the connection's or its gateway's), a credential set, its group's set, or a chosen
@@ -499,6 +507,8 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             report["errors"].append(f"{inc.get('system') or '?'}: written by a newer OMARemote")
             continue
         system = inc.get("system") or "another system"
+        # The groups as they were before this file: what a connection moved by it inherited until now.
+        groups_before = json.loads(json.dumps(groups))
 
         for name, g in (inc.get("groups") or {}).items():
             if not isinstance(g, dict):
@@ -516,13 +526,15 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             theirs_settings = {k: v for k, v in (g.get("settings") or {}).items() if k not in GROUP_LOCAL_SETTINGS}
             # The group's own set signs in through it, and so does every member that signs in here
             # (its gateway takes the member's saved password, or a saved gateway password).
-            signs_in = mine is not None and (mine.get("credential") or any(
-                _signs_in_here(c, groups) for c in conns if (c.get("group") or "") == name))
+            # A group new here is checked too: a connection here may already name it.
+            signs_in = (mine or {}).get("credential") or any(
+                _signs_in_here(c, groups) for c in conns if (c.get("group") or "") == name)
             if signs_in and not address_ok("group:" + name) \
-                    and _widens(theirs_settings, mine.get("settings") or {}):
+                    and _widens(theirs_settings, (mine or {}).get("settings") or {}):
                 report["pendingAddress"].append({
                     "system": system, "id": "group:" + name, "name": "group " + name,
-                    "from": _describe_address(mine.get("settings") or {}), "to": _describe_address(theirs_settings)})
+                    "from": _describe_address((mine or {}).get("settings") or {}),
+                    "to": _describe_address(theirs_settings)})
                 continue
             mine = dict(mine or {})
             kept = {k: v for k, v in (mine.get("settings") or {}).items() if k in GROUP_LOCAL_SETTINGS}
@@ -579,11 +591,14 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
                 or (by_host[0] if len(by_host) == 1 else None)
             if match is not None:
                 matched.add(match.get("id"))
-                if changed > match.get("modified", 0) and _widens(ic, match) \
+                # Compared as a session would use them: a move into another group (new here, or with
+                # a gateway or sharing of its own) widens it as much as a change of its own fields.
+                was, will = _effective(match, groups_before), _effective(ic, groups)
+                if changed > match.get("modified", 0) and _widens(will, was) \
                         and _signs_in_here(match, groups) and not address_ok(match["id"]):
                     report["pendingAddress"].append({
                         "system": system, "id": match["id"], "name": match.get("name") or match.get("host"),
-                        "from": _describe_address(match), "to": _describe_address(ic)})
+                        "from": _describe_address(was), "to": _describe_address(will)})
                     continue
                 if changed > match.get("modified", 0):
                     new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
