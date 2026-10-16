@@ -47,6 +47,10 @@ class RdpView : public QQuickItem
 	Q_PROPERTY(bool shortcutsCaptured READ shortcutsCaptured NOTIFY shortcutsCapturedChanged)
 	// A key that gives them back besides the session keys + Esc: shift+escape, double-escape or none.
 	Q_PROPERTY(QString releaseKey MEMBER m_releaseKey NOTIFY releaseKeyChanged)
+	// Whether this view passes the clipboard between the desktop and the session (the connection's
+	// Clipboard switch; Gliff's session process has its own). Off: the clipboard is never read,
+	// and text from the session never set.
+	Q_PROPERTY(bool shareClipboard READ shareClipboard WRITE setShareClipboard NOTIFY shareClipboardChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -66,6 +70,14 @@ public:
 	bool captureShortcuts() const { return m_captureShortcuts; }
 	void setCaptureShortcuts(bool capture);
 	bool shortcutsCaptured() const { return m_inhibit.held(); }
+	bool shareClipboard() const { return m_shareClipboard; }
+	void setShareClipboard(bool share);
+
+	// The most clipboard text passed either way, in bytes of UTF-8 (as native/common/link.hpp's
+	// kMaxClipBytes), how long reading it may take, and the longest line the session may send.
+	static constexpr qsizetype MaxClipBytes = 1024 * 1024;
+	static constexpr int ClipTimeoutMs = 2000;
+	static constexpr qsizetype MaxLineBytes = 32 * 1024 * 1024;
 
 	Q_INVOKABLE void answerCertificate(int answer);
 	Q_INVOKABLE void answerCredentials(const QString& user, const QString& domain, const QString& password);
@@ -87,6 +99,7 @@ signals:
 	void followSizeChanged();
 	void captureShortcutsChanged();
 	void releaseKeyChanged();
+	void shareClipboardChanged();
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
 	void pasteDone(int job);
@@ -126,6 +139,7 @@ private:
 	void scheduleSize();
 	void sendSize();
 	void sendClipboard(bool force = false);
+	void offerClipboard(const QString& text, bool force);
 	void updateCapture();
 	QRectF imageRect() const;
 	QPoint toRemote(const QPointF& p) const;
@@ -137,6 +151,7 @@ private:
 	int m_fd = -1;
 	QSocketNotifier* m_notifier = nullptr;
 	QByteArray m_inbuf;
+	bool m_skipLine = false; // dropping the rest of an overlong line, up to its newline
 	std::deque<int> m_fds;
 	QTimer m_attachTimer;
 	QTimer m_sizeTimer;
@@ -179,5 +194,9 @@ private:
 	QHash<quint32, Chord> m_chords;
 	QHash<quint32, QCursor> m_cursors;
 	QString m_lastClip;
+	bool m_shareClipboard = false;
+	bool m_clipReading = false; // a read is under way; one more follows it when asked meanwhile
+	bool m_clipAgain = false;
+	bool m_clipAgainForce = false;
 	Qt::MouseButtons m_buttons;
 };

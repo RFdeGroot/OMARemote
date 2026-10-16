@@ -132,6 +132,7 @@ struct Session
 	std::set<uint32_t> held; // evdev codes held: the modifiers come from these
 	std::string localClip;   // the UI's clipboard, offered on focus and when it changes
 	std::string osc52;       // a clipboard write from the remote program, gathered in fragments
+	bool osc52TooLong = false; // that write passed kMaxClipBytes: the rest of it is dropped
 
 	std::string get(const char* key, const char* fallback = "") const
 	{
@@ -589,9 +590,20 @@ static int cb_sb_clear(void*)
 static int cb_selection_set(VTermSelectionMask, VTermStringFragment frag, void*)
 {
 	if (frag.initial)
+	{
 		g.osc52.clear();
-	g.osc52.append(frag.str, frag.len);
-	if (frag.final && !g.osc52.empty())
+		g.osc52TooLong = false;
+	}
+	// libvterm hands the text over decoded, in fragments as it arrives.
+	if (!g.osc52TooLong && g.osc52.size() + frag.len > oma::kMaxClipBytes)
+	{
+		oma::log("clipboard: the remote program's text is larger than %zu bytes; not passed on", oma::kMaxClipBytes);
+		g.osc52TooLong = true;
+		g.osc52.clear();
+	}
+	if (!g.osc52TooLong)
+		g.osc52.append(frag.str, frag.len);
+	if (frag.final && !g.osc52TooLong && !g.osc52.empty())
 	{
 		g.localClip = g.osc52;
 		g.link.send("clip " + b64(g.osc52));

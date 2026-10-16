@@ -71,7 +71,7 @@ qt_add_qml_module(omaremote_plugin
   VERSION 1.0
   PLUGIN_TARGET omaremote_plugin
   OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml/OMARemote
-  SOURCES plugin/rdpview.h plugin/rdpview.cpp plugin/pasteguard.h plugin/pasteguard.cpp
+  SOURCES plugin/rdpview.h plugin/rdpview.cpp plugin/pasteguard.h plugin/pasteguard.cpp plugin/clipread.h plugin/clipread.cpp
           plugin/shortcutinhibit.h plugin/shortcutinhibit.cpp plugin/yuvnode.h plugin/yuvnode.cpp
 )
 # Gliff pictures drawn from the decoder's dmabufs (plugin/yuvnode.cpp): EGL imports them, the

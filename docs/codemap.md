@@ -76,9 +76,10 @@ The manager window:
 
 | Path | What |
 | --- | --- |
-| plugin/rdpview.cpp | the QML item drawing a session: frame, keys (`keyPressEvent`, chords for sent shortcuts), mouse, clipboard, cursor |
+| plugin/rdpview.cpp | the QML item drawing a session: frame, keys (`keyPressEvent`, chords for sent shortcuts), mouse, clipboard (`shareClipboard`, `sendClipboard` through clipread, `MaxClipBytes` both ways), cursor |
 | plugin/yuvnode.cpp, plugin/shaders/yuv.* | Gliff pictures drawn from the decoder's dmabufs: EGL import, the shader converts (BT.709, Dual420 recombined); RdpView `addSurface`, `showSurfaces`, `updatePaintNode` |
 | plugin/shortcutinhibit.cpp | keyboard-shortcuts-inhibit for Gliff tabs (`captureShortcuts`, release key in rdpview.cpp `keyPressEvent`) |
+| plugin/clipread.cpp | `oma::readClipboard`: the only way the UI reads the clipboard (wl-paste in its own process, size and time limits); never `QClipboard::text()` (tests/test_clipboard.py checks) |
 | plugin/pasteguard.cpp | `PasteGuard.guard` (cuts a field loose from clipboard changes), `paste` (wl-paste, 16 KiB, 2 s, one line; refused whole when it does not fit `maximumLength`) |
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode` |
 | vnc/main.cpp | libvncclient client |
@@ -101,7 +102,9 @@ Build: `ninja -C native/build`.
   test_quick.py (Format.quickCredential through tests/qml/format.qml), test_import.py (.rdp, Remmina,
   1Remote, ~/.ssh/config: parsers, refused values, idempotent re-import), test_gliff.py (the protocol
   against gliff-proto's fixtures via gliff-proto-test, the ssh command, exit messages), test_session_keys.py (the session
-  keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting).
+  keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting), test_clipboard.py
+  (a session tab's clipboard through tests/qml/clipboard.qml against a fake session socket: wl-paste only,
+  nothing when not shared, size and time limits).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

@@ -85,6 +85,10 @@ Item {
                       ? parseInt(root.connection.scale) : 0
         focus: root.current
         captureShortcuts: !!root.session && root.session.protocol === "gliff"
+        // The connection's Clipboard switch; SSH has none (selection and OSC 52 always). Gliff's
+        // session process shares the clipboard itself, so its view never touches it.
+        shareClipboard: !!root.connection && root.connection.protocol !== "gliff"
+                        && (root.connection.protocol === "ssh" || root.connection.clipboard !== false)
         releaseKey: Store.ui.gliffReleaseKey || "shift+escape"
         onShortcutsCapturedChanged: {
             if (shortcutsCaptured)

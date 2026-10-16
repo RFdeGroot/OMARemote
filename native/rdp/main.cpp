@@ -307,6 +307,11 @@ static UINT clip_server_data_response(CliprdrClientContext* clip, const CLIPRDR_
 		return CHANNEL_RC_OK;
 	std::string text(utf8, strnlen(utf8, len));
 	free(utf8);
+	if (text.size() > oma::kMaxClipBytes)
+	{
+		oma::log("clipboard: the server's text is larger than %zu bytes; not passed on", oma::kMaxClipBytes);
+		return CHANNEL_RC_OK;
+	}
 	// Windows line endings stay as they are: Linux apps cope, and a round trip stays exact.
 	// The remote now holds the clipboard: copying the last local text again must reach it.
 	st->remoteClip = text;

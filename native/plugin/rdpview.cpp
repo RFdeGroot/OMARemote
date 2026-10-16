@@ -1,5 +1,7 @@
 #include "rdpview.h"
 
+#include "clipread.h"
+
 #include <QClipboard>
 #include <QCursor>
 #include <QDateTime>
@@ -132,6 +134,7 @@ void RdpView::detach()
 		close(fd);
 	m_fds.clear();
 	m_inbuf.clear();
+	m_skipLine = false;
 	// The picture drawn stays up (its textures hold the buffers); the session forgets the rest.
 	forgetSurfaces();
 	m_showTaken = true;
@@ -213,7 +216,18 @@ void RdpView::onReadable()
 	{
 		const QByteArray line = m_inbuf.left(pos);
 		m_inbuf.remove(0, pos + 1);
-		handleLine(line);
+		if (m_skipLine)
+			m_skipLine = false; // the rest of a line too long to keep
+		else
+			handleLine(line);
+	}
+	// No session line comes near this (a cursor is the largest); a longer one is dropped whole.
+	if (m_inbuf.size() > MaxLineBytes)
+	{
+		qWarning("omaremote: the session sent a line longer than %lld bytes; dropped",
+		         static_cast<long long>(MaxLineBytes));
+		m_inbuf.clear();
+		m_skipLine = true;
 	}
 }
 
@@ -290,7 +304,13 @@ void RdpView::handleLine(const QByteArray& line)
 		emit statsChanged(unb64(w[1]));
 	else if (cmd == "clip" && w.size() >= 2)
 	{
-		m_lastClip = unb64(w[1]);
+		// At most MaxClipBytes: the session processes keep to it, this is the backstop.
+		if (!m_shareClipboard || w[1].size() > (MaxClipBytes + 2) / 3 * 4)
+			return;
+		const QByteArray text = w[1] == "-" ? QByteArray() : QByteArray::fromBase64(w[1]);
+		if (text.size() > MaxClipBytes)
+			return;
+		m_lastClip = QString::fromUtf8(text);
 		QGuiApplication::clipboard()->setText(m_lastClip);
 	}
 	else if (cmd == "cert" && w.size() >= 8)
@@ -917,15 +937,49 @@ void RdpView::focusOutEvent(QFocusEvent* e)
 
 // Offers our clipboard to the session. Before it is attached there is no one to tell, so nothing is
 // marked as sent; attaching offers it again (force: a new session has not seen it yet).
+// Read with wl-paste (clipread.h), never QClipboard::text(); our own clipboard is read the same way,
+// which Qt serves from the event loop while the read waits in its own process.
 void RdpView::sendClipboard(bool force)
 {
-	if (m_fd < 0)
+	if (m_fd < 0 || !m_shareClipboard)
 		return;
-	const QString text = QGuiApplication::clipboard()->text();
+	if (m_clipReading) {
+		m_clipAgain = true;
+		m_clipAgainForce = m_clipAgainForce || force;
+		return;
+	}
+	m_clipReading = true;
+	oma::readClipboard(this, MaxClipBytes, ClipTimeoutMs, false, [this, force](bool ok, const QByteArray& data) {
+		m_clipReading = false;
+		if (ok)
+			offerClipboard(QString::fromUtf8(data), force);
+		if (m_clipAgain) {
+			const bool again = m_clipAgainForce;
+			m_clipAgain = m_clipAgainForce = false;
+			sendClipboard(again);
+		}
+	});
+}
+
+// The text read, to the session: only while still attached, sharing and focused, as when asked.
+void RdpView::offerClipboard(const QString& text, bool force)
+{
+	if (m_fd < 0 || !m_shareClipboard || !hasActiveFocus())
+		return;
 	if (text.isEmpty() || (text == m_lastClip && !force))
 		return;
 	m_lastClip = text;
 	send("clip " + text.toUtf8().toBase64());
+}
+
+void RdpView::setShareClipboard(bool share)
+{
+	if (share == m_shareClipboard)
+		return;
+	m_shareClipboard = share;
+	emit shareClipboardChanged();
+	if (share && hasActiveFocus())
+		sendClipboard(true);
 }
 
 // ---------------------------------------------------------------- prompts and actions

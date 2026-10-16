@@ -192,8 +192,24 @@ static void got_cursor(rfbClient* client, int xhot, int yhot, int width, int hei
 
 // ---------------------------------------------------------------- clipboard
 
+// The connection's Clipboard switch (on unless the settings say clipboard=0).
+static bool clipboard_on()
+{
+	return g.get("clipboard", "1") != "0";
+}
+
+static bool clip_fits(size_t len)
+{
+	if (len <= oma::kMaxClipBytes)
+		return true;
+	oma::log("clipboard: the server's text is larger than %zu bytes; not passed on", oma::kMaxClipBytes);
+	return false;
+}
+
 static void got_cut_text_utf8(rfbClient*, const char* text, int len)
 {
+	if (!clipboard_on() || len < 0 || !clip_fits(size_t(len)))
+		return;
 	g.remoteClip.assign(text, size_t(len));
 	g.localClip.clear(); // the remote holds the clipboard now: the last local text may be sent again
 	g.link.send("clip " + b64(g.remoteClip));
@@ -201,6 +217,8 @@ static void got_cut_text_utf8(rfbClient*, const char* text, int len)
 
 static void got_cut_text(rfbClient*, const char* text, int len)
 {
+	if (!clipboard_on() || len < 0 || !clip_fits(size_t(len) * 2))
+		return;
 	// Latin-1 from older servers: widen to UTF-8.
 	std::string utf8;
 	for (int i = 0; i < len; i++)
@@ -221,7 +239,8 @@ static void got_cut_text(rfbClient*, const char* text, int len)
 
 static void send_clipboard(const std::string& text)
 {
-	if (g.flag("viewOnly") || text == g.remoteClip || text == g.localClip)
+	if (!clipboard_on() || g.flag("viewOnly") || text.size() > oma::kMaxClipBytes || text == g.remoteClip ||
+	    text == g.localClip)
 		return;
 	if (!g.client)
 	{

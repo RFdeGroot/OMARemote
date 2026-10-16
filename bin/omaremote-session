@@ -1979,7 +1979,8 @@ def build_vnc_config(conn, password=None):
     lines = [f"host={host}", f"port={port}",
              f"scaling={c['vncScaling'] if c['vncScaling'] in ('fit', 'native', 'resize') else 'fit'}",
              f"quality={c['vncQuality'] if c['vncQuality'] in ('auto', 'high', 'low') else 'auto'}",
-             f"viewOnly={1 if c['viewOnly'] else 0}"]
+             f"viewOnly={1 if c['viewOnly'] else 0}",
+             f"clipboard={0 if c['clipboard'] is False else 1}"]
     if c["username"]:
         lines.append(f"username={c['username']}")
     if password:

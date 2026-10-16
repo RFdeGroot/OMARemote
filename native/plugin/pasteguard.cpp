@@ -1,10 +1,10 @@
 #include "pasteguard.h"
 
+#include "clipread.h"
+
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QPointer>
-#include <QProcess>
-#include <QTimer>
 #include <QVariant>
 
 bool PasteGuard::guard(QObject *field)
@@ -48,29 +48,9 @@ void PasteGuard::paste(QObject *field, bool primary)
 	if (!field || field->property("readOnly").toBool())
 		return;
 
-	auto *proc = new QProcess(this);
-	auto *data = new QByteArray;
 	QPointer<QObject> target(field);
-	auto *timer = new QTimer(proc);
-	timer->setSingleShot(true);
-
-	QObject::connect(timer, &QTimer::timeout, proc, [proc] {
-		qWarning("omaremote: wl-paste took more than %d ms; nothing pasted", TimeoutMs);
-		proc->kill();
-	});
-	QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [proc, data] {
-		*data += proc->readAllStandardOutput();
-		if (data->size() > MaxBytes) {
-			qWarning("omaremote: clipboard holds more than %lld bytes; nothing pasted",
-				static_cast<long long>(MaxBytes));
-			proc->kill();
-		}
-	});
-	QObject::connect(proc, &QProcess::finished, this, [this, proc, data, target](int code, QProcess::ExitStatus status) {
-		QString text = clean(QString::fromUtf8(*data));
-		bool ok = status == QProcess::NormalExit && code == 0 && data->size() <= MaxBytes;
-		delete data;
-		proc->deleteLater();
+	oma::readClipboard(this, MaxBytes, TimeoutMs, primary, [this, target](bool ok, const QByteArray &data) {
+		QString text = clean(QString::fromUtf8(data));
 		if (!ok || text.isEmpty() || !target || target->property("readOnly").toBool())
 			return;
 		int start = target->property("selectionStart").toInt();
@@ -88,20 +68,4 @@ void PasteGuard::paste(QObject *field, bool primary)
 		int at = target->property("cursorPosition").toInt();
 		QMetaObject::invokeMethod(target, "insert", Q_ARG(int, at), Q_ARG(QString, text));
 	});
-	// Not started (no wl-paste): finished never comes.
-	QObject::connect(proc, &QProcess::errorOccurred, proc, [proc, data](QProcess::ProcessError err) {
-		if (err != QProcess::FailedToStart)
-			return;
-		qWarning("omaremote: wl-paste not found (package wl-clipboard); nothing pasted");
-		delete data;
-		proc->deleteLater();
-	});
-
-	QStringList args{QStringLiteral("--no-newline"), QStringLiteral("--type"), QStringLiteral("text")};
-	if (primary)
-		args.prepend(QStringLiteral("--primary"));
-	proc->setStandardInputFile(QProcess::nullDevice());
-	proc->setStandardErrorFile(QProcess::nullDevice());
-	proc->start(QStringLiteral("wl-paste"), args);
-	timer->start(TimeoutMs);
 }

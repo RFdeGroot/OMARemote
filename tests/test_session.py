@@ -314,6 +314,10 @@ class Vnc(unittest.TestCase):
         self.assertIn("password=pw", lines)
         self.assertIn("password=********", session.redact(lines))
 
+    def test_clipboard_switch_reaches_the_session(self):
+        self.assertIn("clipboard=1", session.build_vnc_config(conn(protocol="vnc")))
+        self.assertIn("clipboard=0", session.build_vnc_config(conn(protocol="vnc", clipboard=False)))
+
     def test_explicit_port_and_safe_defaults(self):
         lines = session.build_vnc_config(conn(protocol="vnc", port=5901, vncScaling="weird"))
         self.assertIn("port=5901", lines)
