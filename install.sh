@@ -78,6 +78,12 @@ need_pkgconfig "Gliff" libavcodec ffmpeg
 need_pkgconfig "Gliff" wayland-client wayland
 need_pkgconfig "Gliff" wayland-protocols wayland-protocols
 need_command "Gliff" wayland-scanner wayland
+# Its pictures go from the decoder to the window as dmabufs (libva, libdrm), imported with EGL
+# and converted by a shader built with Qt's shader tools.
+need_pkgconfig "Gliff" libva libva
+need_pkgconfig "Gliff" libdrm libdrm
+need_pkgconfig "Gliff" egl libglvnd
+need_pkgconfig "Gliff" Qt6ShaderTools qt6-shadertools
 
 # Pasting into text fields: wl-paste, with a size and time limit (ui/Input.qml, PasteGuard).
 need_command "paste" wl-paste wl-clipboard

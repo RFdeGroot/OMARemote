@@ -212,11 +212,9 @@ function bytes(n) {
     return (n < 10 ? n.toFixed(1) : Math.round(n)) + " " + units[i]
 }
 
-// The bottom-bar hint for a Gliff tab: how to give Hyprland's shortcuts back while they are taken,
-// or how to take them again. Written so StatusBar never reads it as a session key (ctrl+alt+…).
-function gliffKeyHint(releaseKey, captured) {
-    if (!captured)
-        return ["click", "capture super"]
-    var key = { "shift+escape": "shift+esc", "ctrlalt-q": "Ctrl+Alt+Q", "double-escape": "esc esc" }[releaseKey || "shift+escape"]
-    return key ? [key, "release super"] : ["leave the tab", "release super"]
+// The bottom-bar hint for a Gliff tab: how to give Hyprland's shortcuts back while they are taken
+// (the session keys + Esc, which StatusBar draws as Settings › Keyboard has them), or how to take
+// them again.
+function gliffKeyHint(captured) {
+    return captured ? ["ctrl+alt+esc", "stop sending super"] : ["click", "send super"]
 }

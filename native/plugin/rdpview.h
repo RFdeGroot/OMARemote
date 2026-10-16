@@ -9,6 +9,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include "shortcutinhibit.h"
+#include "yuvnode.h"
 
 #include <deque>
 
@@ -38,11 +39,13 @@ class RdpView : public QQuickItem
 	// When false the remote desktop keeps its size and the picture is scaled to the item.
 	Q_PROPERTY(bool followSize READ followSize WRITE setFollowSize NOTIFY followSizeChanged)
 	// Every key to the session, Super and Hyprland's shortcuts too, while the picture has the focus
-	// (Gliff tabs). Shift+Esc hands the shortcuts back; a click on the picture takes them again.
+	// (Gliff tabs) and the pointer is over it, as in Gliff's own client. The session keys + Esc
+	// (releaseShortcuts) or the release key hand the shortcuts back until the pointer leaves or the
+	// picture is clicked.
 	Q_PROPERTY(bool captureShortcuts READ captureShortcuts WRITE setCaptureShortcuts NOTIFY captureShortcutsChanged)
 	// Whether the compositor's shortcuts are held right now.
 	Q_PROPERTY(bool shortcutsCaptured READ shortcutsCaptured NOTIFY shortcutsCapturedChanged)
-	// The key that gives them back: shift+escape, ctrlalt-q (Ctrl+Alt+Q), double-escape or none.
+	// A key that gives them back besides the session keys + Esc: shift+escape, double-escape or none.
 	Q_PROPERTY(QString releaseKey MEMBER m_releaseKey NOTIFY releaseKeyChanged)
 
 public:
@@ -54,7 +57,7 @@ public:
 	QString state() const { return m_state; }
 	int exitCode() const { return m_exitCode; }
 	bool attached() const { return m_fd >= 0; }
-	QSize remoteSize() const { return m_image.size(); }
+	QSize remoteSize() const { return m_gpu ? m_show.size : m_image.size(); }
 	QVariantMap prompt() const { return m_prompt; }
 	int desktopScale() const { return m_desktopScale; }
 	void setDesktopScale(int scale);
@@ -71,6 +74,8 @@ public:
 	Q_INVOKABLE void disconnectSession();
 	Q_INVOKABLE void releaseAllKeys();
 	Q_INVOKABLE void cancelPaste(int job);
+	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
+	Q_INVOKABLE void releaseShortcuts();
 
 signals:
 	void socketPathChanged();
@@ -99,6 +104,8 @@ protected:
 	void mouseReleaseEvent(QMouseEvent* event) override;
 	void mouseMoveEvent(QMouseEvent* event) override;
 	void hoverMoveEvent(QHoverEvent* event) override;
+	void hoverEnterEvent(QHoverEvent* event) override;
+	void hoverLeaveEvent(QHoverEvent* event) override;
 	void wheelEvent(QWheelEvent* event) override;
 	void focusInEvent(QFocusEvent* event) override;
 	void focusOutEvent(QFocusEvent* event) override;
@@ -111,6 +118,10 @@ private:
 	void send(const QByteArray& line);
 	void mapFrame(int fd, int w, int h, int stride);
 	void unmapFrame();
+	void addSurface(const QList<QByteArray>& w);
+	void forgetSurfaces();
+	void showSurfaces(const QList<QByteArray>& w);
+	void sendLater(const QByteArray& line);
 	void setState(const QString& state, int code = 0);
 	void scheduleSize();
 	void sendSize();
@@ -133,11 +144,30 @@ private:
 	QImage m_image;
 	bool m_dirty = false;
 
+	// Gliff pictures as dmabufs (yuvnode.h): the surfaces the session handed over, the newest
+	// "show" and whether the render thread took it, and the one it draws (released to the
+	// session once a newer one replaces it).
+	bool m_gpu = false; // drawing the shown surfaces, not m_image
+	bool m_gpuFailed = false; // this GPU could not import them: never ask again
+	bool m_nodeGpu = false;
+	QHash<quint32, DmabufSurface> m_surfaces;
+	quint64 m_surfaceGeneration = 1;
+	struct Show
+	{
+		quint64 seq = 0;
+		quint32 main = 0, aux = 0;
+		bool dual = false;
+		QSize size;
+	} m_show;
+	bool m_showTaken = true;
+	quint64 m_drawnSeq = 0;
+
 	QVariantMap m_prompt;
 	int m_desktopScale = 0;
 	bool m_followSize = true;
 	bool m_captureShortcuts = false;
-	bool m_released = false; // the release key gave the shortcuts back; a click takes them again
+	bool m_released = false; // the release key gave the shortcuts back; a click or leaving undoes it
+	bool m_pointerInside = false; // the shortcuts are taken only with the pointer on the picture
 	QString m_releaseKey = QStringLiteral("shift+escape");
 	qint64 m_lastEscape = 0; // for double-escape
 	ShortcutInhibit m_inhibit;

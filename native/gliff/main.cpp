@@ -6,6 +6,12 @@
 // libavcodec and converted (BT.709, limited range) into the shared-memory framebuffer the UI maps,
 // over the socket protocol every session process speaks (native/common/link.hpp).
 //
+// With VA-API and a UI that says "gpu 1", no pixel passes through here: each decoded surface goes
+// to the UI once as a dmabuf ("surface"), every picture after that is one "show" line naming its
+// surfaces, and the UI converts on its GPU (plugin/yuvnode.cpp), as Gliff's own client does. The
+// pictures shown stay referenced (so the decoder leaves their surfaces alone) until the UI sends
+// "release".
+//
 // Settings arrive as key=value lines on stdin: arg (repeated: the whole ssh command line, built by
 // omaremote-session), host, and headless (1: the server draws the cursor into the picture).
 
@@ -18,7 +24,11 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_vaapi.h>
 }
+
+#include <drm_fourcc.h>
+#include <va/va_drmcommon.h>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -82,7 +92,16 @@ struct Session
 	Stream main, aux; // aux: Dual420's second picture
 	AVPacket* pkt = nullptr;
 	oma::Framebuffer frame;
+	bool shmStale = false; // pictures went to the UI as dmabufs: the framebuffer is behind
 	bool needKeyframe = false;
+
+	// Pictures as dmabufs (the UI said "gpu 1"): the surfaces it has, and the pictures it may be
+	// drawing (by "show" number: main and aux, referenced until "release").
+	bool gpuView = false;
+	std::set<VASurfaceID> exported;
+	const void* exportedPools[2] = {}; // the decoders' surface pools those belong to (main, aux)
+	std::map<uint64_t, std::pair<AVFrame*, AVFrame*>> held;
+	uint64_t showSeq = 0;
 	bool fullRedraw = false;
 
 	uint32_t wantW = 0, wantH = 0, wantScale = 100;
@@ -252,8 +271,11 @@ static void free_stream(Stream& s)
 	av_frame_free(&s.sw);
 }
 
+static void reset_surfaces();
+
 static void free_decoder()
 {
+	reset_surfaces();
 	free_stream(g.main);
 	free_stream(g.aux);
 }
@@ -274,6 +296,7 @@ static bool open_stream(Stream& s, const std::string& extradata)
 	{
 		s.ctx->hw_device_ctx = av_buffer_ref(g.hw);
 		s.ctx->get_format = pick_format;
+		s.ctx->extra_hw_frames = 4; // the pictures the UI holds, beyond the decoder's own references
 	}
 	if (!extradata.empty())
 	{
@@ -377,6 +400,123 @@ static void ensure_framebuffer(uint32_t w, uint32_t h)
 
 static void on_connected();
 
+// ---------------------------------------------------------------- pictures as dmabufs
+
+static void release_held(uint64_t upTo = UINT64_MAX)
+{
+	for (auto it = g.held.begin(); it != g.held.end() && it->first <= upTo;)
+	{
+		av_frame_free(&it->second.first);
+		av_frame_free(&it->second.second);
+		it = g.held.erase(it);
+	}
+}
+
+// The UI forgets every surface it has (a new UI, or a new decoder pool).
+static void reset_surfaces()
+{
+	release_held();
+	if (!g.exported.empty() && g.link.attached())
+		g.link.send("surfaces-reset");
+	g.exported.clear();
+	g.exportedPools[0] = g.exportedPools[1] = nullptr;
+}
+
+// Whether this picture can go to the UI as it is: VA-API, NV12 (8 bits).
+static bool on_gpu(const Stream& s)
+{
+	if (!s.got || s.pic->format != AV_PIX_FMT_VAAPI || !s.pic->hw_frames_ctx)
+		return false;
+	const auto* fc = reinterpret_cast<const AVHWFramesContext*>(s.pic->hw_frames_ctx->data);
+	return fc->sw_format == AV_PIX_FMT_NV12;
+}
+
+// The picture's surface, finished decoding and known to the UI: sends it as a dmabuf the first
+// time. "surface <id> <width> <height> <objects> <modifier>... <layers>" then per layer "<fourcc>
+// <object> <offset> <pitch>", with one descriptor per object.
+static bool export_surface(const Stream& s, VASurfaceID& id)
+{
+	const auto* fc = reinterpret_cast<const AVHWFramesContext*>(s.pic->hw_frames_ctx->data);
+	const auto* dc = static_cast<const AVVAAPIDeviceContext*>(fc->device_ctx->hwctx);
+	id = VASurfaceID(uintptr_t(s.pic->data[3]));
+	if (vaSyncSurface(dc->display, id) != VA_STATUS_SUCCESS)
+		return false;
+	if (g.exported.count(id))
+		return true;
+	VADRMPRIMESurfaceDescriptor d = {};
+	if (vaExportSurfaceHandle(dc->display, id, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+	                          VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &d) != VA_STATUS_SUCCESS)
+		return false;
+	std::vector<int> fds;
+	for (uint32_t i = 0; i < d.num_objects; i++)
+		fds.push_back(d.objects[i].fd);
+	const bool ok = d.num_objects >= 1 && d.num_objects <= 4 && d.num_layers == 2 && d.layers[0].num_planes == 1 &&
+	                d.layers[1].num_planes == 1 && d.layers[0].drm_format == DRM_FORMAT_R8 &&
+	                d.layers[1].drm_format == DRM_FORMAT_GR88;
+	if (ok)
+	{
+		std::string line = "surface " + std::to_string(id) + " " + std::to_string(d.width) + " " +
+		                   std::to_string(d.height) + " " + std::to_string(d.num_objects);
+		for (uint32_t i = 0; i < d.num_objects; i++)
+			line += " " + std::to_string(d.objects[i].drm_format_modifier);
+		line += " 2";
+		for (uint32_t i = 0; i < 2; i++)
+			line += " " + std::to_string(d.layers[i].drm_format) + " " + std::to_string(d.layers[i].object_index[0]) +
+			        " " + std::to_string(d.layers[i].offset[0]) + " " + std::to_string(d.layers[i].pitch[0]);
+		g.link.send(line, fds);
+		g.exported.insert(id);
+	}
+	else
+		log("VA-API exported a surface the UI cannot take (%u objects, %u layers): drawing here", d.num_objects,
+		    d.num_layers);
+	for (int fd : fds)
+		close(fd);
+	return ok;
+}
+
+static void ensure_framebuffer(uint32_t w, uint32_t h);
+
+// The newest picture to the UI as dmabufs. False when it cannot go that way (then the caller
+// converts it here, and keeps doing so).
+static bool show_gpu(bool dual)
+{
+	if (!g.gpuView || !on_gpu(g.main) || (dual && !on_gpu(g.aux)))
+		return false;
+	const int w = std::min(g.main.pic->width, int(g.stream.width)) & ~1;
+	const int h = std::min(g.main.pic->height, int(g.stream.height)) & ~1;
+	if (dual && (g.aux.pic->width < w || g.aux.pic->height < h))
+		return true; // a picture to skip, as show() does
+	// A new pool (a new stream, or the decoder's own reinit) may hand out ids the UI already has
+	// for other surfaces: start its list again.
+	const void* pools[2] = { g.main.pic->hw_frames_ctx->data, dual ? g.aux.pic->hw_frames_ctx->data : nullptr };
+	if (g.exportedPools[0] != pools[0] || g.exportedPools[1] != pools[1])
+	{
+		reset_surfaces();
+		g.exportedPools[0] = pools[0];
+		g.exportedPools[1] = pools[1];
+	}
+	VASurfaceID mainId = VA_INVALID_SURFACE, auxId = VA_INVALID_SURFACE;
+	if (!export_surface(g.main, mainId) || (dual && !export_surface(g.aux, auxId)))
+	{
+		g.gpuView = false;
+		return false;
+	}
+	// The framebuffer keeps the size (the UI's geometry and a later fallback), not the pixels.
+	ensure_framebuffer(uint32_t(w), uint32_t(h));
+	g.shmStale = true;
+	const uint64_t seq = ++g.showSeq;
+	g.held[seq] = { av_frame_clone(g.main.pic), dual ? av_frame_clone(g.aux.pic) : nullptr };
+	// A UI that stops releasing (stuck, or gone without a word) cannot starve the decoder.
+	while (g.held.size() > 6)
+		release_held(g.held.begin()->first);
+	g.link.send("show " + std::to_string(seq) + " " + std::to_string(mainId) + " " +
+	            (dual ? std::to_string(auxId) : std::string("-")) + " " + std::to_string(w) + " " +
+	            std::to_string(h));
+	if (!g.connected)
+		on_connected();
+	return true;
+}
+
 // Converts what changed into the framebuffer and tells the UI.
 static void show(const gliff::VideoFrame& vf, bool dual)
 {
@@ -394,11 +534,12 @@ static void show(const gliff::VideoFrame& vf, bool dual)
 	if (!g.frame.data)
 		return;
 	std::vector<gliff::Rect> rects;
-	if (vf.keyframe || vf.damage.empty() || !g.connected || g.fullRedraw)
+	if (vf.keyframe || vf.damage.empty() || !g.connected || g.fullRedraw || g.shmStale)
 		rects.push_back({ 0, 0, w, h });
 	else
 		rects = vf.damage;
 	g.fullRedraw = false;
+	g.shmStale = false;
 	const uint64_t tc = now_us();
 	for (const auto& d : rects)
 	{
@@ -416,6 +557,20 @@ static void show(const gliff::VideoFrame& vf, bool dual)
 	g.statConvUs += now_us() - tc;
 	if (!g.connected)
 		on_connected();
+}
+
+// The newest picture again, after the UI changed how it takes them: as dmabufs, or converted into
+// the framebuffer (which then is behind on everything since the last conversion).
+static void redraw()
+{
+	const bool dual = g.stream.chroma == gliff::CHROMA_DUAL420;
+	if (!g.main.got || (dual && !g.aux.got) || show_gpu(dual))
+		return;
+	if (!download(g.main) || (dual && !download(g.aux)))
+		return;
+	gliff::VideoFrame vf;
+	vf.keyframe = true;
+	show(vf, dual);
 }
 
 // Once a second: frames shown, bandwidth, decode time, and what decodes and encodes.
@@ -461,6 +616,13 @@ static void decode(const gliff::VideoFrame& vf, const uint8_t* data)
 		ok = decode_stream(g.aux, data + vf.dataLen, vf.auxLen, vf.keyframe);
 	// Acked whatever happened, so the server keeps pacing; a broken stream asks for a fresh start.
 	send_msg(gliff::frameAck(vf.frameId, oma::now_ms()));
+	if (ok && g.main.got && (!dual || g.aux.got) && show_gpu(dual))
+	{
+		g.hwErrors = 0;
+		g.statFrames++;
+		g.statDecodeUs += now_us() - t0;
+		return;
+	}
 	if (ok && g.main.got && (!dual || g.aux.got))
 	{
 		// Both pictures out of the GPU at once: the copies take about as long as the conversion.
@@ -818,6 +980,28 @@ static void handle_line(const std::string& line)
 		g.clip->cancel(uint32_t(num(1)));
 	else if (cmd == "disconnect")
 		g.quit = 1;
+	// The UI draws dmabufs on its GPU ("gpu 1"), or stops doing so ("gpu 0": it could not import).
+	else if (cmd == "gpu" && w.size() >= 2)
+	{
+		const bool want = num(1) == 1 && g.hw && !g.hwBroken && !getenv("OMAREMOTE_GLIFF_NO_DMABUF");
+		if (want == g.gpuView)
+			return;
+		g.gpuView = want;
+		log(want ? "the UI draws the pictures on its GPU" : "the UI takes converted pictures");
+		if (!want)
+			reset_surfaces();
+		redraw();
+	}
+	else if (cmd == "release" && w.size() >= 2)
+	{
+		const auto it = g.held.find(uint64_t(strtoull(w[1].c_str(), nullptr, 10)));
+		if (it != g.held.end())
+		{
+			av_frame_free(&it->second.first);
+			av_frame_free(&it->second.second);
+			g.held.erase(it);
+		}
+	}
 }
 
 // ---------------------------------------------------------------- main
@@ -832,6 +1016,8 @@ static void replay()
 	g.link.send(g.connected ? "state connected" : "state connecting");
 	if (!g.connected)
 		return;
+	if (g.shmStale)
+		redraw();
 	g.link.sendFrame(g.frame);
 	g.link.send("damage 0 0 " + std::to_string(g.frame.width) + " " + std::to_string(g.frame.height));
 	if (!g.cursorDef.empty())
@@ -956,6 +1142,11 @@ int main()
 	};
 	// A UI that goes away takes the focus with it.
 	g.link.onClientChanged = [] {
+		// A new UI has none of the surfaces, and holds no pictures: it says "gpu 1" again.
+		g.gpuView = false;
+		g.exported.clear();
+		g.exportedPools[0] = g.exportedPools[1] = nullptr;
+		release_held();
 		if (!g.link.attached() && g.clip)
 		{
 			g.focused = false;

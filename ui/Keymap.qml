@@ -82,6 +82,7 @@ Singleton {
         { group: "In a session", context: "session", action: "previousTab", keys: ["ctrl+alt+pgup"], label: "Previous tab", run: false },
         { group: "In a session", context: "session", action: "closeTab", keys: ["ctrl+alt+w"], label: "Disconnect: close this tab (or its own window)", run: false },
         { group: "In a session", context: "session", action: "cad", keys: ["ctrl+alt+end"], label: "Send Ctrl+Alt+Del", run: false },
+        { group: "In a session", context: "session", action: "releaseSuper", keys: ["ctrl+alt+escape"], label: "Gliff: stop sending Super and Hyprland's shortcuts", run: false },
         { group: "In a session", context: "session", action: "sessionQuick", keys: ["ctrl+alt+n"], label: "Quick connect (the session stays)", run: false },
         { group: "In a session", context: "session", action: "sshCopy", keys: ["ctrl+shift+c", "super+c"], label: "SSH: copy the selection (drag to select)", run: false },
         { group: "In a session", context: "session", action: "sshPaste", keys: ["ctrl+shift+v", "super+v"], label: "SSH: paste (shift+insert, middle click too)", run: false },

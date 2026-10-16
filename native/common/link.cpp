@@ -221,7 +221,12 @@ void Link::attach(int fd)
 
 void Link::send(const std::string& text, int fd)
 {
-	if (clientFd_ < 0)
+	send(text, fd >= 0 ? std::vector<int>{ fd } : std::vector<int>{});
+}
+
+void Link::send(const std::string& text, const std::vector<int>& fds)
+{
+	if (clientFd_ < 0 || fds.size() > 4)
 		return;
 	const std::string line = text + "\n";
 	size_t off = 0;
@@ -231,16 +236,16 @@ void Link::send(const std::string& text, int fd)
 		msghdr msg = {};
 		msg.msg_iov = &iov;
 		msg.msg_iovlen = 1;
-		char cbuf[CMSG_SPACE(sizeof(int))] = {};
-		if (fd >= 0 && off == 0)
+		char cbuf[CMSG_SPACE(sizeof(int) * 4)] = {};
+		if (!fds.empty() && off == 0)
 		{
 			msg.msg_control = cbuf;
-			msg.msg_controllen = sizeof(cbuf);
+			msg.msg_controllen = CMSG_SPACE(sizeof(int) * fds.size());
 			cmsghdr* c = CMSG_FIRSTHDR(&msg);
 			c->cmsg_level = SOL_SOCKET;
 			c->cmsg_type = SCM_RIGHTS;
-			c->cmsg_len = CMSG_LEN(sizeof(int));
-			memcpy(CMSG_DATA(c), &fd, sizeof(int));
+			c->cmsg_len = CMSG_LEN(sizeof(int) * fds.size());
+			memcpy(CMSG_DATA(c), fds.data(), sizeof(int) * fds.size());
 		}
 		const ssize_t n = sendmsg(clientFd_, &msg, MSG_NOSIGNAL);
 		if (n < 0)

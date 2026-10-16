@@ -49,6 +49,8 @@ class Link
 	// One line to the UI, with a file descriptor attached when fd >= 0. A UI that stops reading
 	// for two seconds is dropped rather than allowed to stall the session; it can reattach.
 	void send(const std::string& line, int fd = -1);
+	// The same with up to four descriptors (a dmabuf's objects).
+	void send(const std::string& line, const std::vector<int>& fds);
 	void sendFrame(const Framebuffer& fb);
 
 	// Accepts a waiting UI (running onAttach) and returns the complete lines sent so far.

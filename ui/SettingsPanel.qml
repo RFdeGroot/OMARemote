@@ -408,18 +408,20 @@ FocusScope {
                         Heading { visible: root.section === "keyboard"; text: "GLIFF" }
                         Note {
                             visible: root.section === "keyboard"
-                            text: "A Gliff tab takes Hyprland's shortcuts while it has the keyboard, Super included, "
-                                + "as Gliff's own client does. This key gives them back; a click on the picture takes "
-                                + "them again. Double Esc: the first Esc still reaches the remote, a quick second gives "
-                                + "them back."
+                            text: "A Gliff tab takes Hyprland's shortcuts while it has the keyboard and the pointer is "
+                                + "on the picture, Super included, as Gliff's own client does; moving the pointer off "
+                                + "the picture gives them back. " + Keymap.cap("ctrl+alt+escape") + " gives them back "
+                                + "while it stays there, and so does the key below, until the pointer leaves or you "
+                                + "click the picture. Double Esc: the first Esc still reaches the remote, a quick "
+                                + "second gives them back."
                         }
                         FormRow {
                             visible: root.section === "keyboard"
-                            label: "Give shortcuts back"
+                            label: "Also on"
                             Segment {
-                                value: Store.ui.gliffReleaseKey || "shift+escape"
-                                options: [{ value: "shift+escape", label: "Shift+Esc" }, { value: "ctrlalt-q", label: "Ctrl+Alt+Q" },
-                                          { value: "double-escape", label: "Double Esc" }, { value: "none", label: "Never" }]
+                                value: ["double-escape", "none"].indexOf(Store.ui.gliffReleaseKey) >= 0 ? Store.ui.gliffReleaseKey : "shift+escape"
+                                options: [{ value: "shift+escape", label: "Shift+Esc" }, { value: "double-escape", label: "Double Esc" },
+                                          { value: "none", label: "Nothing else" }]
                                 onPicked: function (v) { Store.setUi("gliffReleaseKey", v) }
                             }
                         }

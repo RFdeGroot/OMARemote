@@ -106,6 +106,11 @@ void RdpView::tryAttach()
 	connect(m_notifier, &QSocketNotifier::activated, this, &RdpView::onReadable);
 	emit attachedChanged();
 	sendSize();
+	// Gliff pictures straight from the decoder's surfaces, when the scene graph draws with OpenGL
+	// (EGL takes the dmabufs); other sessions ignore the line.
+	if (!m_gpuFailed && QQuickWindow::graphicsApi() == QSGRendererInterface::OpenGL &&
+	    qEnvironmentVariableIsEmpty("OMAREMOTE_NO_DMABUF"))
+		send("gpu 1");
 	if (hasActiveFocus())
 		sendClipboard(true);
 }
@@ -127,6 +132,10 @@ void RdpView::detach()
 		close(fd);
 	m_fds.clear();
 	m_inbuf.clear();
+	// The picture drawn stays up (its textures hold the buffers); the session forgets the rest.
+	forgetSurfaces();
+	m_showTaken = true;
+	m_drawnSeq = 0;
 	emit attachedChanged();
 }
 
@@ -221,6 +230,7 @@ void RdpView::handleLine(const QByteArray& line)
 
 	if (cmd == "damage")
 	{
+		m_gpu = false; // the session draws into the framebuffer (again)
 		if (!m_dirty)
 		{
 			m_dirty = true;
@@ -236,6 +246,12 @@ void RdpView::handleLine(const QByteArray& line)
 		m_fds.pop_front();
 		mapFrame(fd, num(1), num(2), num(3));
 	}
+	else if (cmd == "surface")
+		addSurface(w);
+	else if (cmd == "surfaces-reset")
+		forgetSurfaces();
+	else if (cmd == "show" && w.size() >= 6)
+		showSurfaces(w);
 	else if (cmd == "state" && w.size() >= 2)
 		setState(QString::fromLatin1(w[1]), num(2));
 	else if (cmd == "cursor" && w.size() >= 7)
@@ -360,11 +376,12 @@ void RdpView::unmapFrame()
 
 QRectF RdpView::imageRect() const
 {
-	if (m_image.isNull() || width() <= 0 || height() <= 0)
+	const QSize picture = remoteSize();
+	if (picture.isEmpty() || width() <= 0 || height() <= 0)
 		return {};
 	// Logical size the remote desktop would have at our pixel ratio.
 	const qreal dpr = devicePixelRatio();
-	QSizeF natural(m_image.width() / dpr, m_image.height() / dpr);
+	QSizeF natural(picture.width() / dpr, picture.height() / dpr);
 	QSizeF fit = natural;
 	// Shrink to fit always; grow only when the desktop is not following the item (fixed size).
 	if (fit.width() > width() || fit.height() > height() || !m_followSize)
@@ -372,8 +389,140 @@ QRectF RdpView::imageRect() const
 	return QRectF(QPointF((width() - fit.width()) / 2, (height() - fit.height()) / 2), fit);
 }
 
+// ---------------------------------------------------------------- pictures as dmabufs
+
+// "surface <id> <width> <height> <objects> <modifier>... <layers> (<fourcc> <object> <offset>
+// <pitch>)...", with one descriptor per object.
+void RdpView::addSurface(const QList<QByteArray>& w)
+{
+	const int objects = w.size() > 4 ? w[4].toInt() : 0;
+	if (objects < 1 || objects > 4 || int(m_fds.size()) < objects)
+		return;
+	DmabufSurface s;
+	s.objects = objects;
+	for (int i = 0; i < objects; i++)
+	{
+		s.fds[i] = m_fds.front();
+		m_fds.pop_front();
+	}
+	const int layerAt = 5 + objects;
+	bool ok = w.size() >= layerAt + 1 + 8 && w[layerAt].toInt() == 2;
+	if (ok)
+	{
+		s.id = w[1].toUInt();
+		s.width = w[2].toInt();
+		s.height = w[3].toInt();
+		for (int i = 0; i < objects; i++)
+			s.modifiers[i] = w[5 + i].toULongLong();
+		for (int i = 0; i < 2; i++)
+		{
+			const int at = layerAt + 1 + i * 4;
+			s.layers[i] = { w[at].toUInt(), w[at + 1].toInt(), w[at + 2].toUInt(), w[at + 3].toUInt() };
+		}
+		ok = s.width > 0 && s.height > 0 && s.width <= 8192 && s.height <= 8192;
+	}
+	if (!ok)
+	{
+		for (int fd : s.fds)
+			if (fd >= 0)
+				close(fd);
+		return;
+	}
+	const auto old = m_surfaces.constFind(s.id);
+	if (old != m_surfaces.constEnd())
+		for (int fd : old->fds)
+			if (fd >= 0)
+				close(fd);
+	m_surfaces.insert(s.id, s);
+}
+
+void RdpView::forgetSurfaces()
+{
+	for (const DmabufSurface& s : std::as_const(m_surfaces))
+		for (int fd : s.fds)
+			if (fd >= 0)
+				close(fd);
+	m_surfaces.clear();
+	m_surfaceGeneration++;
+}
+
+// "show <seq> <main> <aux or -> <width> <height>": the newest picture. One the render thread never
+// took is released at once; the newest is drawn at the next frame.
+void RdpView::showSurfaces(const QList<QByteArray>& w)
+{
+	if (!m_showTaken && m_show.seq != m_drawnSeq)
+		send("release " + QByteArray::number(m_show.seq));
+	const QSize before = remoteSize();
+	m_show.seq = w[1].toULongLong();
+	m_show.main = w[2].toUInt();
+	m_show.dual = w[3] != "-";
+	m_show.aux = m_show.dual ? w[3].toUInt() : 0;
+	m_show.size = QSize(w[4].toInt(), w[5].toInt());
+	m_showTaken = false;
+	m_gpu = true;
+	if (remoteSize() != before)
+		emit remoteSizeChanged();
+	if (isVisible())
+		update();
+}
+
+// From the render thread: the line goes out on the item's own thread.
+void RdpView::sendLater(const QByteArray& line)
+{
+	QMetaObject::invokeMethod(this, [this, line] { send(line); }, Qt::QueuedConnection);
+}
+
 QSGNode* RdpView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 {
+	// Runs on the render thread with the item's thread blocked: the members are safe to read.
+	if (old && m_nodeGpu != m_gpu)
+	{
+		delete old;
+		old = nullptr;
+	}
+	m_nodeGpu = m_gpu;
+	if (m_gpu)
+	{
+		auto* node = static_cast<YuvNode*>(old);
+		// A new node (another window, or the scene graph rebuilt) imports the picture again.
+		const bool fresh = !node;
+		if (!node)
+			node = new YuvNode(window());
+		const auto main = m_surfaces.constFind(m_show.main);
+		const auto aux = m_show.dual ? m_surfaces.constFind(m_show.aux) : m_surfaces.constEnd();
+		if ((!m_showTaken || fresh) && main != m_surfaces.constEnd() &&
+		    (!m_show.dual || aux != m_surfaces.constEnd()))
+		{
+			if (!node->setPicture(*main, m_show.dual ? &*aux : nullptr, m_show.size, m_surfaceGeneration))
+			{
+				// This GPU cannot draw them: the session converts from here on.
+				qWarning("omaremote: Gliff pictures are converted on the CPU from here on");
+				delete node;
+				m_gpuFailed = true;
+				m_gpu = m_nodeGpu = false;
+				sendLater("gpu 0");
+				return nullptr;
+			}
+			if (m_drawnSeq && m_drawnSeq != m_show.seq)
+				sendLater("release " + QByteArray::number(m_drawnSeq));
+			m_drawnSeq = m_show.seq;
+			m_showTaken = true;
+		}
+		if (!node->hasPicture())
+		{
+			delete node;
+			return nullptr;
+		}
+		const QRectF r = imageRect();
+		node->setRect(r, !qFuzzyCompare(r.width() * devicePixelRatio(), qreal(m_show.size.width())));
+		return node;
+	}
+	if (m_drawnSeq)
+	{
+		sendLater("release " + QByteArray::number(m_drawnSeq));
+		m_drawnSeq = 0;
+	}
+
 	auto* node = static_cast<QSGImageNode*>(old);
 	if (m_image.isNull())
 	{
@@ -437,7 +586,7 @@ void RdpView::itemChange(ItemChange change, const ItemChangeData& value)
 	if (change == ItemVisibleHasChanged && value.boolValue)
 	{
 		scheduleSize();
-		if (m_dirty)
+		if (m_dirty || !m_showTaken)
 			update();
 	}
 }
@@ -446,8 +595,8 @@ void RdpView::itemChange(ItemChange change, const ItemChangeData& value)
 // otherwise. Focus moves between OMARemote's own items (the sidebar, another tab) release them.
 void RdpView::updateCapture()
 {
-	const bool want = m_captureShortcuts && !m_released && hasActiveFocus() && isVisible() && window() &&
-	                  window()->isActive();
+	const bool want = m_captureShortcuts && !m_released && m_pointerInside && hasActiveFocus() && isVisible() &&
+	                  window() && window()->isActive();
 	const bool before = m_inhibit.held();
 	if (want)
 		m_inhibit.inhibit(window());
@@ -455,6 +604,14 @@ void RdpView::updateCapture()
 		m_inhibit.release();
 	if (m_inhibit.held() != before)
 		emit shortcutsCapturedChanged();
+}
+
+void RdpView::releaseShortcuts()
+{
+	if (!m_inhibit.held())
+		return;
+	m_released = true;
+	updateCapture();
 }
 
 void RdpView::setCaptureShortcuts(bool capture)
@@ -488,9 +645,10 @@ QPoint RdpView::toRemote(const QPointF& p) const
 	const QRectF r = imageRect();
 	if (r.isEmpty())
 		return {};
-	const qreal x = (p.x() - r.x()) * m_image.width() / r.width();
-	const qreal y = (p.y() - r.y()) * m_image.height() / r.height();
-	return QPoint(qBound(0, qRound(x), m_image.width() - 1), qBound(0, qRound(y), m_image.height() - 1));
+	const QSize picture = remoteSize();
+	const qreal x = (p.x() - r.x()) * picture.width() / r.width();
+	const qreal y = (p.y() - r.y()) * picture.height() / r.height();
+	return QPoint(qBound(0, qRound(x), picture.width() - 1), qBound(0, qRound(y), picture.height() - 1));
 }
 
 static int buttonNumber(Qt::MouseButton b)
@@ -535,6 +693,27 @@ void RdpView::mouseMoveEvent(QMouseEvent* e)
 	const QPoint p = toRemote(e->position());
 	send("mouse " + QByteArray::number(p.x()) + ' ' + QByteArray::number(p.y()));
 	e->accept();
+}
+
+// The shortcuts follow the pointer, as in Gliff's own client: taken when it comes onto the picture,
+// given back (and the keys held on the remote let go) when it leaves; a release by key lasts until
+// then.
+void RdpView::hoverEnterEvent(QHoverEvent* e)
+{
+	QQuickItem::hoverEnterEvent(e);
+	m_pointerInside = true;
+	updateCapture();
+}
+
+void RdpView::hoverLeaveEvent(QHoverEvent* e)
+{
+	QQuickItem::hoverLeaveEvent(e);
+	m_pointerInside = false;
+	m_released = false;
+	const bool held = m_inhibit.held();
+	updateCapture();
+	if (held)
+		releaseAllKeys();
 }
 
 void RdpView::hoverMoveEvent(QHoverEvent* e)
@@ -604,15 +783,14 @@ void RdpView::keyPressEvent(QKeyEvent* e)
 	const quint32 evdev = code - 8;
 	// The release key while the shortcuts are held: they go back to Hyprland. The key itself stays
 	// here; its modifiers already went to the session and go up with their releases. Double Esc:
-	// the first reaches the session, a second within 400 ms releases.
+	// the first reaches the session, a second within 400 ms releases. (The session keys + Esc
+	// release too: SessionView's chord, through releaseShortcuts.)
 	if (m_inhibit.held() && !e->isAutoRepeat())
 	{
 		const Qt::KeyboardModifiers mods = e->modifiers() & ~Qt::KeypadModifier;
 		bool release = false;
 		if (m_releaseKey == QLatin1String("shift+escape"))
 			release = e->key() == Qt::Key_Escape && mods == Qt::ShiftModifier;
-		else if (m_releaseKey == QLatin1String("ctrlalt-q"))
-			release = e->key() == Qt::Key_Q && mods == (Qt::ControlModifier | Qt::AltModifier);
 		else if (m_releaseKey == QLatin1String("double-escape") && e->key() == Qt::Key_Escape && mods == Qt::NoModifier)
 		{
 			const qint64 now = QDateTime::currentMSecsSinceEpoch();
