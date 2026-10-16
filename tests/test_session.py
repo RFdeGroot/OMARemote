@@ -1459,6 +1459,113 @@ class AddressGuard(unittest.TestCase):
         data, report = session.merge(local, [self.remote(groups={"G": {"settings": {"gateway": "gw2.lan"}, "modified": 9}})], 1000)
         self.assertEqual(data["groups"]["G"]["settings"]["gateway"], "gw2.lan")
 
+    def test_switching_the_clipboard_back_on_waits(self):
+        local = self.local(self.c(savePassword=True, clipboard=False))
+        for change in ({"clipboard": True}, {}):  # {}: dropping the override turns it on as well
+            incoming = self.remote(dict({k: v for k, v in self.c(modified=200).items()}, **change))
+            data, report = session.merge(local, [incoming], 1000)
+            self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"], change)
+            self.assertIn("clipboard", report["pendingAddress"][0]["to"])
+            self.assertFalse(data["connections"][0]["clipboard"], change)
+        # On by default on both sides: nothing to say about it.
+        local = self.local(self.c(savePassword=True))
+        data, report = session.merge(local, [self.remote(self.c(clipboard=True, modified=200))], 1000)
+        self.assertEqual(report["pendingAddress"], [])
+
+    def test_a_new_protocol_without_a_port_counts_as_a_new_port(self):
+        local = self.local(self.c(savePassword=True, port=None))
+        _, report = session.merge(local, [self.remote(self.c(protocol="vnc", port=None, modified=200))], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"])
+        # The default port written out or left out is the same port.
+        local = self.local(self.c(savePassword=True, port=None))
+        _, report = session.merge(local, [self.remote(self.c(name="Renamed", port=3389, modified=200))], 1000)
+        self.assertEqual(report["pendingAddress"], [])
+
+    def test_a_groups_change_counts_its_members_in_the_trash(self):
+        """A group's new gateway arrived while its only member that signs in was in the trash; the
+        restore after it then compared against the new gateway and widened nothing."""
+        local = dict(self.binned(self.c(group="G", savePassword=True)),
+                     groups={"G": {"credential": "", "settings": {"gateway": "gw.lan"}, "modified": 1}})
+        incoming = self.remote(groups={"G": {"settings": {"gateway": "evil.example"}, "modified": 9}})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["group:G"])
+        self.assertEqual(data["groups"]["G"]["settings"]["gateway"], "gw.lan")
+
+    def test_a_synced_group_deletion_that_loosens_waits(self):
+        for settings in ({"gateway": "gw.lan"}, {"kdc": "kdc.lan"}, {"security": "nla"}):
+            local = self.local(self.c(group="G", savePassword=True),
+                               groups={"G": {"credential": "", "settings": settings, "modified": 1}})
+            incoming = dict(self.remote(), deletedGroups={"G": 9})
+            data, report = session.merge(local, [incoming], 1000)
+            self.assertEqual([p["id"] for p in report["pendingAddress"]], ["group:G"], settings)
+            self.assertIn("G", data["groups"], settings)
+            self.assertNotIn("G", data["deletedGroups"], settings)
+            data, _ = session.merge(local, [incoming], 1000, allow_address=("group:G",))
+            self.assertNotIn("G", data["groups"], settings)
+        # Nobody signs in through it, or it held nothing that matters: it just goes.
+        for member, settings in (({}, {"gateway": "gw.lan"}), ({"savePassword": True}, {"audio": "off"})):
+            local = self.local(self.c(group="G", **member),
+                               groups={"G": {"credential": "", "settings": settings, "modified": 1}})
+            data, report = session.merge(local, [dict(self.remote(), deletedGroups={"G": 9})], 1000)
+            self.assertEqual(report["pendingAddress"], [])
+            self.assertNotIn("G", data["groups"])
+
+    def test_changes_dated_in_the_future_are_not_taken_in(self):
+        later = 1000 + session.SYNC_SKEW_MS + 1
+        local = self.local(self.c(), groups={"G": {"credential": "", "settings": {}, "modified": 1}})
+        incoming = dict(self.remote(self.c(name="Mine forever", modified=later),
+                                    groups={"G": {"settings": {"audio": "off"}, "modified": later}}),
+                        deleted={"c9": later}, deletedGroups={"G": later})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertEqual(data["connections"][0]["name"], "Files")
+        self.assertEqual(data["groups"]["G"]["settings"], {})
+        self.assertNotIn("c9", data["deleted"])
+        self.assertEqual(len([e for e in report["errors"] if "future" in e]), 2)
+        # A clock a little ahead is fine.
+        data, _ = session.merge(local, [self.remote(self.c(name="Soon", modified=1000 + 60000))], 1000)
+        self.assertEqual(data["connections"][0]["name"], "Soon")
+
+    def test_values_of_the_wrong_kind_are_skipped_not_fatal(self):
+        local = self.local(self.c(), groups={"G": {"credential": "", "settings": {}, "modified": 1}})
+        for bad in ({"host": 5}, {"modified": "9"}, {"aliases": "c2"}, {"gateway": ["x"]},
+                    {"homeDrive": "yes"}, {"width": [1]}):
+            data, report = session.merge(local, [self.remote(dict(self.c(id="c2", modified=200), **bad))], 1000)
+            self.assertEqual([c["id"] for c in data["connections"]], ["c1"], bad)
+            self.assertTrue(report["errors"], bad)
+        for group in ({"modified": "x"}, {"settings": "x", "modified": 9}, {"settings": {"gateway": 1}, "modified": 9}):
+            data, report = session.merge(local, [self.remote(groups={"G": group})], 1000)
+            self.assertEqual(data["groups"]["G"]["modified"], 1, group)
+        for whole in ({"version": "x"}, {"groups": "x"}, {"deleted": [1]}, {"connections": {"a": 1}}):
+            _, report = session.merge(local, [dict(self.remote(), **whole)], 1000)
+            self.assertTrue(report["errors"], whole)
+        # What OMARemote writes itself still arrives.
+        data, report = session.merge(local, [self.remote(self.c(id="c2", host="b.lan", port="3390", scale=150,
+                                                                multimon=False, modified=200))], 1000)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(len(data["connections"]), 2)
+
+    def test_a_hand_import_deletes_no_groups(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg, src = os.path.join(d, "connections.json"), os.path.join(d, "in.json")
+            with open(cfg, "w") as f:
+                json.dump(self.local(groups={"G": {"credential": "k1", "settings": {}, "modified": 1}}), f)
+            with open(src, "w") as f:
+                json.dump(dict(self.remote(), format="omaremote-export", deletedGroups={"G": 9}), f)
+            self.assertIn("G", session.import_file(src, path=cfg, now=1000)["data"]["groups"])
+
+    def test_a_sync_file_that_is_not_an_object_is_an_error(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            cfg, folder = os.path.join(d, "connections.json"), os.path.join(d, "sync")
+            os.mkdir(folder)
+            with open(cfg, "w") as f:
+                json.dump({"ui": {"sync": {"folder": folder, "system": "here"}}}, f)
+            with open(os.path.join(folder, "other.omaremote.json"), "w") as f:
+                json.dump([1, 2], f)
+            out = session.sync_folder(cfg, now=1000)
+            self.assertTrue(any("other" in e for e in out["report"]["errors"]))
+
     def test_certificate_checks_never_travel(self):
         out = json.dumps(session.portable(self.local(self.c(ignoreCert=True, security="rdp")), "here"))
         self.assertNotIn("ignoreCert", out)

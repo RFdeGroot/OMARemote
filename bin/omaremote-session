@@ -313,7 +313,10 @@ GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert
 ADDRESS_KEYS = ("host", "port", "gateway", "kdc")
 # What a connection hands the server it signs in to. A synced change that switches one on waits the
 # same way: the next session would share the home folder (or the microphone) with that server.
-SHARING_KEYS = (("homeDrive", "shares the home folder"), ("microphone", "with the microphone"))
+SHARING_KEYS = (("homeDrive", "shares the home folder"), ("microphone", "with the microphone"),
+                ("clipboard", "with the clipboard"))
+# A change dated further ahead than this is not taken in: it would win over every edit made here.
+SYNC_SKEW_MS = 24 * 3600 * 1000
 SYNC_SUFFIX = ".omaremote.json"
 TRASH_DAYS = 30
 DAY_MS = 24 * 3600 * 1000
@@ -417,6 +420,41 @@ def too_long(fields):
     return None
 
 
+_NUMBER = (int, float)
+
+
+def odd_types(fields, connection=True):
+    """The first key of a connection (or a group's settings) whose value is not of the kind
+    OMARemote writes, else None: such a value would stop the merge or a session halfway."""
+    if connection:
+        if not isinstance(fields.get("id"), str) or not isinstance(fields.get("host"), str):
+            return "id" if not isinstance(fields.get("id"), str) else "host"
+        if not isinstance(fields.get("modified", 0), _NUMBER) or isinstance(fields.get("modified"), bool):
+            return "modified"
+        aliases = fields.get("aliases", [])
+        if not isinstance(aliases, list) or any(not isinstance(a, str) for a in aliases):
+            return "aliases"
+    for key, value in fields.items():
+        if key not in DEFAULTS or key == "scale":  # scale: "auto" or a number
+            continue
+        kind = DEFAULTS[key]
+        if isinstance(kind, bool):
+            ok = isinstance(value, bool) or value in (0, 1)
+        elif isinstance(kind, int):
+            # A port left empty is None or "": the protocol's own.
+            ok = value is None or value == "" or (isinstance(value, int) and not isinstance(value, bool)) \
+                or (isinstance(value, str) and value.isdigit())
+        else:
+            ok = isinstance(value, str)
+        if not ok:
+            return key
+    return None
+
+
+def _future(when, now):
+    return isinstance(when, _NUMBER) and when > now + SYNC_SKEW_MS
+
+
 def _drop_aliases(conn, ids):
     """conn without the aliases in ids (ids that belong to connections of their own)."""
     left = set(conn.get("aliases") or []) - set(ids)
@@ -431,12 +469,22 @@ def _drop_aliases(conn, ids):
 
 
 def _address(conn, settings=None):
-    """Where a connection (or a group's settings) points: host, port, gateway and KDC."""
+    """Where a connection (or a group's settings) points: host, port, gateway and KDC. The port as a
+    session would use it: a new protocol without a port of its own moves to that protocol's port."""
     c = settings if settings is not None else conn
-    return tuple(str(c.get(k) or "").strip().lower() for k in ADDRESS_KEYS)
+    out = [str(c.get(k) or "").strip().lower() for k in ADDRESS_KEYS]
+    if out[0]:
+        out[1] = str(connection_key(c)[2])
+    return tuple(out)
 
 
-def _describe_address(c):
+def _shares(c, key):
+    """Whether a connection (or a group's settings) shares this with the server; the clipboard is
+    shared unless switched off."""
+    return bool(c.get(key, DEFAULTS.get(key)))
+
+
+def _describe_address(c, other=None):
     host = (c.get("host") or "").strip()
     port = c.get("port")
     out = host + (f":{port}" if host and port and int(port or 0) not in DEFAULT_PORTS.values() else "")
@@ -444,15 +492,16 @@ def _describe_address(c):
         if (c.get(k) or "").strip():
             out += f" via {label} {c[k].strip()}" if out else f"{label} {c[k].strip()}"
     out = out or "(none)"
+    # What is shared: the clipboard (on unless switched off) only where it differs from other.
     for k, label in SHARING_KEYS:
-        if c.get(k):
+        if _shares(c, k) and (not DEFAULTS.get(k) or (other is not None and not _shares(other, k))):
             out += ", " + label
     return out
 
 
 def _widens(theirs, mine):
     """Whether a synced change points elsewhere, or switches on sharing with the server."""
-    return _address({}, theirs) != _address({}, mine) or any(theirs.get(k) and not mine.get(k)
+    return _address({}, theirs) != _address({}, mine) or any(_shares(theirs, k) and not _shares(mine, k)
                                                             for k, _ in SHARING_KEYS)
 
 
@@ -504,8 +553,13 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             return False
         report["pendingAddress"].append({
             "system": system, "id": old["id"], "name": old.get("name") or old.get("host"),
-            "from": _describe_address(was), "to": _describe_address(will)})
+            "from": _describe_address(was, will), "to": _describe_address(will, was)})
         return True
+
+    def members(name):
+        """A group's connections here, those in the trash too: a restore brings one back as the group
+        has become by then (#11837 waited for the restore, not for the group's change before it)."""
+        return [c for c in conns + [t.get("connection") or {} for t in trash] if (c.get("group") or "") == name]
 
     # An alias is another system's id for the same server; it can never be the id of a connection
     # of its own here. (Before 0.4.4 a duplicate, which keeps its original's host, was taken for the
@@ -517,15 +571,28 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
         if not isinstance(inc, dict) or inc.get("format") not in ("omaremote-sync", "omaremote-export"):
             report["errors"].append("not an OMARemote file: " + str((inc or {}).get("_path", "?")))
             continue
-        if int(inc.get("version") or 0) > 1:
-            report["errors"].append(f"{inc.get('system') or '?'}: written by a newer OMARemote")
+        system = plain(str(inc.get("system") or "another system"))[:64]
+        version = inc.get("version") or 0
+        if not isinstance(version, int) or isinstance(version, bool) or not all(
+                isinstance(inc.get(k) or {}, dict) for k in ("groups", "deleted", "deletedGroups")) \
+                or not isinstance(inc.get("connections") or [], list):
+            report["errors"].append(f"{system}: not an OMARemote file of a kind this one reads")
             continue
-        system = inc.get("system") or "another system"
+        if version > 1:
+            report["errors"].append(f"{system}: written by a newer OMARemote")
+            continue
         # The groups as they were before this file: what a connection moved by it inherited until now.
         groups_before = json.loads(json.dumps(groups))
 
         for name, g in (inc.get("groups") or {}).items():
             if not isinstance(g, dict):
+                continue
+            if not isinstance(g.get("settings") or {}, dict) or not isinstance(g.get("modified", 0), _NUMBER) \
+                    or isinstance(g.get("modified"), bool) or odd_types(g.get("settings") or {}, connection=False):
+                report["errors"].append(f"{system}: skipped group {plain(str(name))[:40]!r}: a value of the wrong kind")
+                continue
+            if _future(g.get("modified", 0), now):
+                report["errors"].append(f"{system}: skipped group {plain(str(name))[:40]!r}: dated in the future")
                 continue
             over = too_long({"name": name, **(g.get("settings") or {})})
             if over:
@@ -541,8 +608,7 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             # The group's own set signs in through it, and so does every member that signs in here
             # (its gateway takes the member's saved password, or a saved gateway password).
             # A group new here is checked too: a connection here may already name it.
-            signs_in = (mine or {}).get("credential") or any(
-                _signs_in_here(c, groups) for c in conns if (c.get("group") or "") == name)
+            signs_in = (mine or {}).get("credential") or any(_signs_in_here(c, groups) for c in members(name))
             if signs_in and not address_ok("group:" + name) \
                     and _widens(theirs_settings, (mine or {}).get("settings") or {}):
                 report["pendingAddress"].append({
@@ -559,17 +625,37 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             groups[name] = mine
 
         # A group deleted or renamed there. Its connections moved out with newer changes of their
-        # own, which travel like any other edit; only the group's settings go here.
+        # own, which travel like any other edit; only the group's settings go here. That waits like a
+        # change when this system signs in through the group and its members would lose its gateway,
+        # KDC or certificate checks (its local security level): they would then sign in another way.
         for name, when in (inc.get("deletedGroups") or {}).items():
-            if not isinstance(when, (int, float)):
+            if not isinstance(when, _NUMBER) or _future(when, now):
                 continue
             mine = groups.get(name)
             if mine is not None and when > mine.get("modified", 0):
+                settings = mine.get("settings") or {}
+                loosens = any(_address({}, settings)) or settings.get("security") in ("nla", "tls")
+                signs_in = mine.get("credential") or any(_signs_in_here(c, groups) for c in members(name))
+                if loosens and signs_in and not address_ok("group:" + name):
+                    report["pendingAddress"].append({
+                        "system": system, "id": "group:" + name, "name": "group " + name,
+                        "from": _describe_address(settings), "to": "(group deleted)"})
+                    continue
                 del groups[name]
             gone_groups[name] = max(gone_groups.get(name, 0), when)
 
-        listed = [ic for ic in inc.get("connections") or []
-                  if isinstance(ic, dict) and ic.get("id") and (ic.get("host") or "").strip()]
+        listed = [ic for ic in inc.get("connections") or [] if isinstance(ic, dict) and ic.get("id")]
+        # A value of another kind would stop this merge or a session; a change dated well ahead of
+        # this system's clock would win over every edit made here.
+        for ic in [ic for ic in listed if odd_types(ic)]:
+            report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic.get('host')))[:40]!r}: "
+                                    f"its {odd_types(ic)} is a value of the wrong kind")
+            listed.remove(ic)
+        listed = [ic for ic in listed if ic["host"].strip()]
+        for ic in [ic for ic in listed if _future(ic.get("modified", 0), now)]:
+            report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic['host']))[:40]!r}: "
+                                    "dated in the future")
+            listed.remove(ic)
         # Ids and hosts end up in commands and settings: a file that bends them is not taken in.
         odd = [ic for ic in listed if not ID_RE.match(str(ic["id"])) or not HOST_RE.match(ic["host"].strip())
                or any(not ID_RE.match(str(a)) for a in ic.get("aliases") or [])]
@@ -642,7 +728,7 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
 
         doomed = []
         for cid, when in (inc.get("deleted") or {}).items():
-            if not isinstance(when, (int, float)):
+            if not isinstance(when, _NUMBER) or _future(when, now):
                 continue
             c = next((c for c in conns if c.get("id") == cid), None) \
                 or next((c for c in conns if cid in ids_of(c)), None)
@@ -730,6 +816,8 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=(), allow_address=()
         try:
             with open(os.path.join(folder, name), encoding="utf-8") as f:
                 other = json.load(f)
+            if not isinstance(other, dict):
+                raise ValueError("not an OMARemote file")
             other["_path"] = name
             incoming.append(other)
         except (OSError, ValueError) as e:
@@ -788,6 +876,7 @@ def import_file(file_path, path=CONNECTIONS, now=None):
         incoming = json.load(f)
     if isinstance(incoming, dict):
         incoming["deleted"] = {}
+        incoming["deletedGroups"] = {}
     raw = load_raw(path)
     data = {k: raw.get(k) for k in ("connections", "groups", "trash", "deleted", "deletedGroups") if raw.get(k) is not None}
     # A file the user picked by hand: its addresses are what they asked for.
