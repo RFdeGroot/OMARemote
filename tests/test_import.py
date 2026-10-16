@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 
@@ -318,6 +319,21 @@ class ImportTest(unittest.TestCase):
         scan = self.scan(path)
         self.assertEqual(scan["entries"], [])
         self.assertIn("not a 1Remote database", scan["errors"][0])
+
+    def test_1remote_reads_the_file_it_checked(self):
+        # Swapped for another database after the checks (a race with whoever can write the folder):
+        # what is read is still the file that was checked.
+        path = self.oneremote(("RDP", {"DisplayName": "Checked", "Address": "checked.lan"}))
+        other = self.oneremote(("RDP", {"DisplayName": "Swapped", "Address": "swapped.lan"}), name="other.db")
+        real_fstat = session.os.fstat
+
+        def fstat_then_swap(fd):
+            st = real_fstat(fd)
+            os.replace(other, path)
+            return st
+        with mock.patch.object(session.os, "fstat", fstat_then_swap):
+            found, errors = session.parse_1remote(path)
+        self.assertEqual([c["host"] for c, _n in found], ["checked.lan"])
 
     def test_1remote_database_is_never_changed(self):
         path = self.oneremote(("RDP", {"DisplayName": "Files", "Address": "files.acme.lan", "Port": "3389"}))
