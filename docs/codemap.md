@@ -104,7 +104,8 @@ Build: `ninja -C native/build`.
   against gliff-proto's fixtures via gliff-proto-test, the ssh command, exit messages), test_session_keys.py (the session
   keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting), test_clipboard.py
   (a session tab's clipboard through tests/qml/clipboard.qml against a fake session socket: wl-paste only,
-  nothing when not shared, size and time limits).
+  nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc
+  against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

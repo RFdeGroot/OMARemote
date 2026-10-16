@@ -480,6 +480,10 @@ int main()
 	client->appData.useRemoteCursor = TRUE;
 	client->appData.shareDesktop = TRUE;
 	client->connectTimeout = 15;
+	// A server that stops in the middle of a message would hold libvncclient's read for good (it
+	// waits again on every EAGAIN and EINTR, so not even SIGTERM gets through): give up after this.
+	// Waiting for the next message is not a read; an idle session is not cut. readTimeout= is for tests.
+	client->readTimeout = unsigned(std::clamp(strtol(g.get("readTimeout", "30").c_str(), nullptr, 10), 1L, 300L));
 
 	const std::string quality = g.get("quality", "auto");
 	if (quality == "high")
