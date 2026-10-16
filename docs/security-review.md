@@ -62,6 +62,41 @@ can write the sync folder), and **another account** on the same machine.
   repository; no new download without that.
 - **Dependencies:** a new one is in the Arch repositories, and it is in the PKGBUILD and install.sh.
 
+## Lessons from past findings
+
+Each of these was a real hole (release notes in brackets). A new feature gets the same questions.
+When a finding comes in, check the whole class it belongs to, not only the reported path (0.9.3:
+an audit after two sync findings in a row found six more), and add the class here.
+
+- **Sync and import: judge a change by what a session would use, not by the fields that changed.**
+  Every path that ends in a connection here goes through the same check: an edit, a move into
+  another group (new, or one that gained a setting in the same file), a change to a group, a group
+  deleted, a restore from the trash, a new connection. Compare through the group (`_effective()`),
+  the port a session will use (a protocol change moves it), signing in here checked before *and*
+  after, members in the trash counted. A new sharing switch joins `SHARING_KEYS`; a new setting that
+  loosens a check joins `LOCAL_KEYS`. (0.8.2, 0.9.1, 0.9.2, 0.9.3)
+- **A credential set never follows a connection it was not picked for.** New synced connections,
+  imports, and a quick connect address changed to another host all drop it. (0.7.0, 0.8.0, 0.9.2)
+- **Broken input is skipped, never fatal.** A value of the wrong type, a file that is not an object,
+  a date far in the future: skip the entry and say so; one bad file must not stop sync or an import.
+  (0.8.3, 0.9.3)
+- **Everything from a server or another program is bounded in size, count and time.** Caches have a
+  cap (cursors: 64, LRU), pictures a largest side (cursors 512), text a byte limit (clipboard 1 MiB),
+  lists a length. Width × height and offsets are computed in 64 bits before any check. (0.9.0,
+  0.9.4, 0.9.5)
+- **Nothing waits without a deadline.** No unbounded read in the window's main thread (the clipboard
+  only through `oma::readClipboard`); every read in a session process has a timeout so a server
+  stopping mid-message ends the session; only ordinary files are opened (a FIFO hangs); queries on
+  a foreign database stop after a few seconds. (0.8.0, 0.8.3, 0.9.4, 0.9.5)
+- **A switch works for every protocol.** A new setting is checked in each session process (RDP, VNC,
+  SSH, Gliff): VNC shared the clipboard with the switch off. Off means untouched, not just unused.
+  (0.9.4)
+- **Check what you open, then use what you checked.** Read checked contents from memory instead of
+  opening the file by name again; never follow symlinks inside folders someone else can write.
+  (0.8.3, 0.9.0)
+- **Text into a line-based file stays one line.** Log lines (read back for "connected"/"failed"),
+  `~/.ssh/omaremote.conf` (a name with a line break added a `Host *` block). (0.8.0, 0.9.0)
+
 ## Then
 
 - Every finding fixed gets a test that fails without the fix.
