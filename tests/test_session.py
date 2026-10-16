@@ -192,6 +192,13 @@ class Kerberos(unittest.TestCase):
             self.assertTrue(rest.endswith("krb5.conf"))
             self.assertIn("kdc = dc9:88", open(path).read())
 
+    def test_env_refuses_a_realm_that_is_not_a_plain_name(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            env = session.kerberos_env({"domain": "../../x.lan", "host": "pc", "kdc": "dc9:88"}, runtime_dir=d)
+            self.assertEqual(env, {})
+            self.assertEqual(os.listdir(d), [])
+
     def test_env_empty_without_kdcs(self):
         self.assertEqual(session.kerberos_env({"domain": "acme.lan", "host": "pc"}, discover=lambda r: []), {})
 
@@ -1300,6 +1307,34 @@ class AddressGuard(unittest.TestCase):
         data, report = session.merge(local, [self.remote(self.c(host="new.lan", modified=200))], 1000)
         self.assertEqual(data["connections"][0]["host"], "new.lan")
         self.assertEqual(report["pendingAddress"], [])
+
+    def test_switching_on_sharing_waits_like_an_address(self):
+        local = self.local(self.c(savePassword=True))
+        for change in ({"homeDrive": True}, {"microphone": True}):
+            data, report = session.merge(local, [self.remote(self.c(modified=200, **change))], 1000)
+            self.assertEqual(len(report["pendingAddress"]), 1, change)
+            self.assertFalse(data["connections"][0].get(next(iter(change))), change)
+            self.assertIn(", ", report["pendingAddress"][0]["to"])
+        # Switching it off again, or any other setting, just arrives.
+        local = self.local(self.c(savePassword=True, homeDrive=True))
+        data, report = session.merge(local, [self.remote(self.c(modified=200, homeDrive=False, clipboard=False))], 1000)
+        self.assertEqual(report["pendingAddress"], [])
+        self.assertFalse(data["connections"][0]["homeDrive"])
+
+    def test_a_groups_sharing_waits_when_it_signs_in_here(self):
+        local = self.local(groups={"Servers": {"credential": "k1", "settings": {}, "modified": 1}})
+        incoming = self.remote(groups={"Servers": {"settings": {"homeDrive": True}, "modified": 9}})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertNotIn("homeDrive", data["groups"]["Servers"]["settings"])
+        self.assertEqual(report["pendingAddress"][0]["id"], "group:Servers")
+
+    def test_an_ssh_key_signs_in_here_too(self):
+        # The key would be offered to the new host, and omaremote.conf would name it for that host.
+        local = self.local(self.c(protocol="ssh", port=22, credential="custom", sshKey="~/.ssh/id_ed25519"))
+        data, report = session.merge(local, [self.remote(self.c(protocol="ssh", port=22, host="evil.example",
+                                                                modified=200))], 1000)
+        self.assertEqual(data["connections"][0]["host"], "files.lan")
+        self.assertEqual(len(report["pendingAddress"]), 1)
 
     def test_a_connection_using_its_groups_set_waits_too(self):
         local = self.local(self.c(credential="inherit", group="Servers"),

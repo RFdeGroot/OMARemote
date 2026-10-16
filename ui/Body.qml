@@ -1424,7 +1424,8 @@ FocusScope {
     }
 
     // Another system changed where connections that sign in here point: the credentials would go
-    // to the new address, so nothing changed yet (bin/omaremote-session, ADDRESS_KEYS).
+    // to the new address, so nothing changed yet (bin/omaremote-session, ADDRESS_KEYS and
+    // SHARING_KEYS).
     Rectangle {
         visible: Sync.pendingAddress.length > 0 && !Sync.pending
         z: 95
@@ -1448,9 +1449,10 @@ FocusScope {
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
                 text: Sync.pendingAddress.length === 1
-                      ? Sync.pendingAddress[0].system + " changed where " + Sync.pendingAddress[0].name + " connects"
+                      ? Sync.pendingAddress[0].system + " changed where " + Sync.pendingAddress[0].name
+                        + " connects or what it shares"
                       : (Sync.pendingAddress.length > 0 ? Sync.pendingAddress[0].system : "") + " changed where "
-                        + Sync.pendingAddress.length + " connections connect"
+                        + Sync.pendingAddress.length + " connections connect or what they share"
                 color: Theme.foreground
                 font.family: Theme.font
                 font.pixelSize: Theme.title
@@ -1469,9 +1471,10 @@ FocusScope {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
                 wrapMode: Text.Wrap
-                text: "This system signs in there with a saved password or a credential set, which would then go to "
-                      + "the new address. Accept it only if you made this change yourself; keep yours and it goes "
-                      + "back to the other systems."
+                text: "This system signs in there with a saved password, a credential set or an SSH key, which "
+                      + "would then go to the new address, or would share your home folder or microphone with it. "
+                      + "Accept it only if you made this change yourself; keep yours and it goes back to the other "
+                      + "systems."
                 color: Theme.muted
                 font.family: Theme.font
                 font.pixelSize: Theme.small

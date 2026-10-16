@@ -305,6 +305,9 @@ GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert
 # with a saved password or a credential set, waits for the user: it would send those credentials to
 # another server.
 ADDRESS_KEYS = ("host", "port", "gateway", "kdc")
+# What a connection hands the server it signs in to. A synced change that switches one on waits the
+# same way: the next session would share the home folder (or the microphone) with that server.
+SHARING_KEYS = (("homeDrive", "shares the home folder"), ("microphone", "with the microphone"))
 SYNC_SUFFIX = ".omaremote.json"
 TRASH_DAYS = 30
 DAY_MS = 24 * 3600 * 1000
@@ -433,13 +436,24 @@ def _describe_address(c):
     for k, label in (("gateway", "gateway"), ("kdc", "KDC")):
         if (c.get(k) or "").strip():
             out += f" via {label} {c[k].strip()}" if out else f"{label} {c[k].strip()}"
-    return out or "(none)"
+    out = out or "(none)"
+    for k, label in SHARING_KEYS:
+        if c.get(k):
+            out += ", " + label
+    return out
+
+
+def _widens(theirs, mine):
+    """Whether a synced change points elsewhere, or switches on sharing with the server."""
+    return _address({}, theirs) != _address({}, mine) or any(theirs.get(k) and not mine.get(k)
+                                                            for k, _ in SHARING_KEYS)
 
 
 def _signs_in_here(conn, groups):
     """Whether this system would send credentials to wherever the connection points: a saved
-    password (the connection's or its gateway's), a credential set, or its group's set."""
-    if conn.get("savePassword") or conn.get("gatewaySavePassword"):
+    password (the connection's or its gateway's), a credential set, its group's set, or a chosen
+    SSH key (also written into ~/.ssh/omaremote.conf for that host)."""
+    if conn.get("savePassword") or conn.get("gatewaySavePassword") or (conn.get("sshKey") or "").strip():
         return True
     mode = conn.get("credential") or "custom"
     if mode == "inherit":
@@ -498,7 +512,7 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             signs_in = mine is not None and (mine.get("credential") or any(
                 _signs_in_here(c, groups) for c in conns if (c.get("group") or "") == name))
             if signs_in and not address_ok("group:" + name) \
-                    and _address({}, theirs_settings) != _address({}, {k: v for k, v in (mine.get("settings") or {}).items()}):
+                    and _widens(theirs_settings, mine.get("settings") or {}):
                 report["pendingAddress"].append({
                     "system": system, "id": "group:" + name, "name": "group " + name,
                     "from": _describe_address(mine.get("settings") or {}), "to": _describe_address(theirs_settings)})
@@ -558,7 +572,7 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
                 or (by_host[0] if len(by_host) == 1 else None)
             if match is not None:
                 matched.add(match.get("id"))
-                if changed > match.get("modified", 0) and _address(ic) != _address(match) \
+                if changed > match.get("modified", 0) and _widens(ic, match) \
                         and _signs_in_here(match, groups) and not address_ok(match["id"]):
                     report["pendingAddress"].append({
                         "system": system, "id": match["id"], "name": match.get("name") or match.get("host"),
@@ -1976,7 +1990,8 @@ def ssh_managed_text(connections):
         host = (c.get("host") or "").strip()
         # One line each: a value with a line break or a space would add or bend ssh options (a
         # ProxyCommand runs commands). Names arrive by sync and import, so they lose control chars.
-        if c.get("protocol") != "ssh" or not key or not host or host in seen or re.search(r"[\s#]", host) \
+        # The host is a plain name: a pattern ("*", "!x", "a,b") would hand the key to other hosts.
+        if c.get("protocol") != "ssh" or not key or not host or host in seen or not HOST_RE.match(host) \
                 or re.search(r'[\s#"]', key) or CONTROL_RE.search(key):
             continue
         seen.add(host)
@@ -2619,16 +2634,17 @@ def kerberos_domain(conn):
 def kerberos_env(conn, runtime_dir=RUNTIME_DIR, discover=discover_kdcs):
     """Environment for FreeRDP so Kerberos goes straight to reachable KDCs; {} when not applicable."""
     realm = kerberos_realm(conn)
-    if not realm:
-        return {}
+    if not realm or not HOST_RE.match(realm):
+        return {}  # the realm names the cache and config files: a plain name only
     manual = [k.strip() for k in (conn.get("kdc") or "").split(",") if k.strip()]
     kdcs = manual or discover(realm)
     if not kdcs:
         return {}
     os.makedirs(runtime_dir, exist_ok=True)
+    text = krb5_config(realm, kdcs, conn.get("host", ""))  # refuses a realm that is not a plain name
     path = os.path.join(runtime_dir, "krb5-" + realm.lower() + ".conf")
     with open(path, "w", encoding="utf-8") as f:
-        f.write(krb5_config(realm, kdcs, conn.get("host", "")))
+        f.write(text)
     base = os.environ.get("KRB5_CONFIG") or "/etc/krb5.conf"
     return {"KRB5_CONFIG": path + ":" + base}
 

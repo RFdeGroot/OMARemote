@@ -223,6 +223,14 @@ class ImportTest(unittest.TestCase):
         self.assertNotIn("ProxyCommand", "\n".join(l for l in text.split("\n") if not l.startswith("#")))
         self.assertEqual([l for l in text.split("\n") if l.startswith("Host")], ["Host git.lan"])
 
+    def test_a_host_pattern_never_gets_a_key(self):
+        # "Host *" would hand the key, its IdentitiesOnly and the user to every server.
+        text, count = session.ssh_managed_text([
+            {"id": "c-%d" % i, "protocol": "ssh", "host": h, "sshKey": "~/.ssh/id", "username": "me"}
+            for i, h in enumerate(("*", "!a.lan", "a.lan,b.lan", "*.lan", "ok.lan"))])
+        self.assertEqual(count, 1)
+        self.assertEqual([l for l in text.split("\n") if l.startswith("Host")], ["Host ok.lan"])
+
     def test_the_ui_passes_sources_and_picks_outside_the_command_line(self):
         # File names are often server names (/proc/<pid>/cmdline is readable by other accounts).
         with open(os.path.join(HERE, "..", "ui", "Sync.qml"), encoding="utf-8") as f:
