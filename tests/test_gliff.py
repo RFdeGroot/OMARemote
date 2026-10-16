@@ -30,6 +30,16 @@ class Protocol(unittest.TestCase):
         out = subprocess.run([PROTO_TEST], capture_output=True, text=True, timeout=10)
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
 
+    @unittest.skipUnless(os.access(PROTO_TEST, os.X_OK), "native build missing: ninja -C native/build")
+    def test_a_servers_text_cannot_forge_log_lines(self):
+        """The supervisor reads the session log line by line; a server's error message with line breaks
+        must not add "connected to" or "connection failed" lines (security review 0.9.0)."""
+        out = subprocess.run([PROTO_TEST], capture_output=True, text=True, timeout=10).stdout
+        lines = out.splitlines()
+        self.assertTrue(any(l.startswith("[omaremote] server error 1: x ") for l in lines), out)
+        self.assertFalse(any(l.startswith("[omaremote] connected to") for l in lines))
+        self.assertEqual(session.SSH_FAILED_RE.findall(out), [])
+
 
 class Command(unittest.TestCase):
     def test_ssh_as_gliff_runs_it(self):

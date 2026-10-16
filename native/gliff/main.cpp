@@ -552,7 +552,10 @@ static void show(const gliff::VideoFrame& vf, bool dual)
 	const uint64_t tc = now_us();
 	for (const auto& d : rects)
 	{
-		int x0 = d.x, y0 = d.y, x1 = d.x + d.width, y1 = d.y + d.height;
+		// In 64 bits and inside the picture before rounding: the server's numbers may be anything.
+		auto inside = [](int64_t v, int hi) { return int(std::clamp<int64_t>(v, 0, hi)); };
+		int x0 = inside(d.x, w), y0 = inside(d.y, h);
+		int x1 = inside(int64_t(d.x) + d.width, w), y1 = inside(int64_t(d.y) + d.height, h);
 		gliff::even_rect(x0, y0, x1, y1, w, h);
 		if (x1 <= x0 || y1 <= y0)
 			continue;

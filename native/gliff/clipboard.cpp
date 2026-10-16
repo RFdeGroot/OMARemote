@@ -255,6 +255,14 @@ static bool list_files(const std::vector<std::string>& roots, std::vector<Clipbo
 	return validate_files(entries);
 }
 
+// A copied file, opened when the remote pastes it. Inside a copied folder a symlink is never
+// followed: the walk skipped them, and one put there since (another account, in a shared folder)
+// must not hand the remote a file of ours. A root is what the user copied, followed as chosen.
+int open_offered(const std::string& path, bool root)
+{
+	return ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | (root ? 0 : O_NOFOLLOW));
+}
+
 // ---------------------------------------------------------------- transfers
 
 struct Clipboard::Outgoing
@@ -485,7 +493,7 @@ void Clipboard::onRequest(const ClipRequest& r)
 			m_send(clipboardAbort(r.id), {});
 			return;
 		}
-		const int fd = ::open(m_localPaths[r.file].c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+		const int fd = open_offered(m_localPaths[r.file], m_localFiles[r.file].path.find('/') == std::string::npos);
 		if (fd < 0)
 		{
 			m_send(clipboardAbort(r.id), {});

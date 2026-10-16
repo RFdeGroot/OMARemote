@@ -49,6 +49,7 @@ std::string uri_list(const std::vector<std::string>& paths);
 std::string gnome_copied_files(const std::vector<std::string>& paths);
 bool safe_relative_path(const std::string& path);
 bool validate_files(const std::vector<ClipboardFile>& files);
+int open_offered(const std::string& path, bool root);
 
 class Clipboard
 {

@@ -305,7 +305,7 @@ def mark_connected(conn_id, path=CONNECTIONS):
 # off the server checks of a connection that signs in here.
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
               "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert",
-              "security")
+              "security", "gliffServer")
 GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security")
 # Where a connection signs in. A synced change to these, on a connection or group that signs in here
 # with a saved password or a credential set, waits for the user: it would send those credentials to

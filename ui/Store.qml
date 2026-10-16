@@ -62,7 +62,7 @@ Singleton {
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
         "gatewayDomain", "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey",
-        "ignoreCert", "security"]
+        "ignoreCert", "security", "gliffServer"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
     readonly property var connections: stored.map(function (c) { return root.resolve(c) })

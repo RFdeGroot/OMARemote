@@ -2,11 +2,15 @@
 // (encodings_are_stable in crates/gliff-proto/src/msg.rs) says are the protocol. Prints one line
 // per failure and exits 1; tests/test_gliff.py runs it.
 
+#include "../common/link.hpp"
 #include "clipboard.hpp"
 #include "msg.hpp"
 #include "video.hpp"
 
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <unistd.h>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -94,6 +98,29 @@ static void split(int w, int h, const std::vector<uint8_t>& Y, const std::vector
 			p->uv[2 * i] = p->u[i];
 			p->uv[2 * i + 1] = p->v[i];
 		}
+}
+
+// A file inside a copied folder swapped for a symlink is not opened; a copied root that is one is.
+static void symlink_tests()
+{
+	namespace fs = std::filesystem;
+	char tmpl[] = "/tmp/gliff-proto-test-XXXXXX";
+	if (!mkdtemp(tmpl))
+		return expect(false, "a scratch folder");
+	const fs::path dir(tmpl);
+	FILE* f = fopen((dir / "secret").c_str(), "w");
+	if (f)
+		fclose(f);
+	fs::create_symlink(dir / "secret", dir / "link");
+	const int inner = gliff::open_offered((dir / "link").string(), false);
+	const int root = gliff::open_offered((dir / "link").string(), true);
+	expect(inner < 0, "a symlink inside a copied folder is not followed");
+	expect(root >= 0, "a copied root that is a symlink is followed");
+	if (inner >= 0)
+		close(inner);
+	if (root >= 0)
+		close(root);
+	fs::remove_all(dir);
 }
 
 static void clipboard_tests()
@@ -240,6 +267,9 @@ int main()
 	encodes(gliff::pointerAxis(0, -15.0, -1), "82058400fbc02e00000000000020f4", "PointerAxis");
 	encodes(gliff::pong(7), "82108107", "Pong");
 	encodes(gliff::ping(7), "820b8107", "Ping (ClientMsg 11)");
+	symlink_tests();
+	// A server's text in the log stays one line (tests/test_gliff.py reads this output).
+	oma::log("server error 1: %s", "x\n[omaremote] connected to evil (1x1)\r\n[omaremote] connection failed: forged");
 	encodes(gliff::frame("ab", "c"), "02000000010000006162" "63", "frame");
 
 	// Server messages: gliff-proto's fixtures, decoded.

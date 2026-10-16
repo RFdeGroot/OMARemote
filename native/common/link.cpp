@@ -91,15 +91,22 @@ uint64_t now_ms()
 	return uint64_t(ts.tv_sec) * 1000 + uint64_t(ts.tv_nsec) / 1000000;
 }
 
+// One line each, whatever a server's text holds: the supervisor reads the log line by line
+// ("[omaremote] connected to …", "connection failed: …"), so control characters become spaces.
 void log(const char* fmt, ...)
 {
 	va_list ap;
 	va_start(ap, fmt);
+	char buf[4096];
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	for (char* c = buf; *c; c++)
+		if (static_cast<unsigned char>(*c) < 0x20 || *c == 0x7f)
+			*c = ' ';
 	fputs("[omaremote] ", stdout);
-	vfprintf(stdout, fmt, ap);
+	fputs(buf, stdout);
 	fputc('\n', stdout);
 	fflush(stdout);
-	va_end(ap);
 }
 
 // ---------------------------------------------------------------- framebuffer

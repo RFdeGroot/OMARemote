@@ -566,6 +566,18 @@ class Sync(unittest.TestCase):
         self.assertIn('"favourite": true', out)
         self.assertIn('"audio": "off"', out)
 
+    def test_a_gliff_server_path_never_travels(self):
+        """The program ssh runs on the remote is chosen here, like sshArgs: a sync or import file
+        never sets it (security review 0.9.0)."""
+        data = self.local(self.c(protocol="gliff", gliffServer="~/bin/gliff-server"))
+        self.assertNotIn("gliffServer", json.dumps(session.portable(data, "here")))
+        evil = self.c(protocol="gliff", modified=200, gliffServer="/tmp/planted")
+        merged, _ = session.merge(self.local(self.c(protocol="gliff", gliffServer="~/bin/gliff-server")),
+                                  [self.remote(evil)], self.NOW)
+        self.assertEqual(merged["connections"][0].get("gliffServer"), "~/bin/gliff-server")
+        added, _ = session.merge(self.local(), [self.remote(evil)], self.NOW)
+        self.assertNotEqual(added["connections"][0].get("gliffServer"), "/tmp/planted")
+
     def test_adds_unknown_connections_without_credentials(self):
         data, report = session.merge(self.local(), [self.remote(self.c())], self.NOW)
         self.assertEqual(report["added"], ["c1"])
