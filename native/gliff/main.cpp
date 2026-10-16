@@ -779,7 +779,8 @@ static void pointer_to(long x, long y)
 // the ordinary arrow, as Gliff's client does: the remote one then trails it in the picture.
 static void cursor_shape(const gliff::CursorShape& c, const uint8_t* argb)
 {
-	if (g.headless || c.width == 0 || c.height == 0 || c.width > uint32_t(oma::kMaxCursorSide) || c.height > uint32_t(oma::kMaxCursorSide) ||
+	const uint32_t most = oma::kMaxCursorSide;
+	if (g.headless || c.width == 0 || c.height == 0 || c.width > most || c.height > most ||
 	    c.argbLen != c.width * c.height * 4)
 		return;
 	bool visible = false;
