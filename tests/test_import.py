@@ -296,6 +296,29 @@ class ImportTest(unittest.TestCase):
         sqlite3.connect(empty).execute("CREATE TABLE x (y)").connection.close()
         self.assertIn("not a 1Remote database", self.scan(empty)["errors"][0])
 
+    def test_1remote_fields_of_the_wrong_type_are_ignored(self):
+        # Before the fix, a list or a number where 1Remote writes a choice or its tags stopped the scan.
+        path = self.oneremote(
+            ("RDP", {"Address": "a.lan", "AudioRedirectionMode": [1], "GatewayMode": [1], "GatewayHostName": "g.lan"}),
+            ("RDP", {"Address": "b.lan", "Tags": 5, "AudioRedirectionMode": True}),
+            ("RDP", {"Address": "c.lan", "Tags": "office"}))
+        scan = self.scan(path)
+        self.assertEqual(scan["errors"], [])
+        self.assertEqual([(e["host"], e["group"], e["gateway"]) for e in scan["entries"]],
+                         [("a.lan", "Imported", ""), ("b.lan", "Imported", ""), ("c.lan", "Imported", "")])
+
+    def test_1remote_servers_must_be_a_table(self):
+        # A view runs whatever query the file holds: this one would count for a long time.
+        import sqlite3
+        path = os.path.join(self.root, "view.db")
+        db = sqlite3.connect(path)
+        db.execute("CREATE VIEW Servers AS WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c)"
+                   " SELECT 'RDP' AS Protocol, '{}' AS Json FROM c WHERE x > 100000000")
+        db.close()
+        scan = self.scan(path)
+        self.assertEqual(scan["entries"], [])
+        self.assertIn("not a 1Remote database", scan["errors"][0])
+
     def test_1remote_database_is_never_changed(self):
         path = self.oneremote(("RDP", {"DisplayName": "Files", "Address": "files.acme.lan", "Port": "3389"}))
         with open(path, "rb") as f:
