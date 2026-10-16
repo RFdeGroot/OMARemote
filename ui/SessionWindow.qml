@@ -165,7 +165,7 @@ FocusScope {
         StatusBar {
             Layout.fillWidth: true
             showCounts: false
-            info: root.session && root.session.protocol === "gliff" ? (Sessions.stats[root.session.id] || "") : ""
+            info: root.live && root.session.protocol === "gliff" ? (Sessions.stats[root.session.id] || "") : ""
             hints: (root.hotkey ? [["ctrl+alt+h", "hide"]] : []).concat([["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
                     root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"]
                     : root.session && root.session.protocol === "gliff" ? Format.gliffKeyHint(Sessions.capturedSession === root.session.id)

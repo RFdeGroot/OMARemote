@@ -65,7 +65,7 @@ The manager window:
 | Editor.qml, GroupEditor.qml, CredentialEditor.qml | the editors |
 | SessionView.qml | one session: RdpView, the sign-in/certificate prompt, the ended panel, `chord()` (ctrl+alt keys) |
 | SessionWindow.qml | a session's own or hotkey window |
-| TabBar.qml, PinnedList.qml, StatusBar.qml | chrome |
+| TabBar.qml, PinnedList.qml, StatusBar.qml | chrome (StatusBar: a Gliff tab's stats, a health dot and the facts that fit, a click opens the card; words in Format.js `parseStats`/`statsParts`/`statsRows`) |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
 | Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim scrollbar on panes that scroll; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
@@ -83,7 +83,7 @@ The manager window:
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode` |
 | vnc/main.cpp | libvncclient client |
 | ssh/main.cpp | libssh + libvterm terminal: keys, selection/copy, scrollback |
-| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` |
+| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency) |
 | gliff/msg.hpp, cbor.hpp | Gliff's protocol v1 by hand (gliff-proto's msg.rs/frame.rs, clipboard messages); test.cpp = gliff-proto-test, its fixtures |
 | gliff/video.hpp | `convert420` / `convert444` (Dual420 recombined on the fly), BT.709 into BGRX, per damaged rectangle, OpenMP |
 | gliff/seat.cpp | the session process's own Wayland connection: keymap (wl_keyboard) and clipboard (ext-data-control, `OWN_MARK`) |

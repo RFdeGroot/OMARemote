@@ -110,6 +110,14 @@ inline std::string frameAck(uint64_t frameId, uint64_t decodedAtMs)
 }
 
 inline std::string requestKeyframe() { return variant(7, 0); }
+
+// Answered by the server's Pong with the same t: our round trip, on a still screen too.
+inline std::string ping(uint64_t t)
+{
+	std::string out = variant(11, 1);
+	cbor::uint(out, t);
+	return out;
+}
 inline std::string bye() { return variant(12, 0); }
 
 // The local keymap changed since Hello; XKB text as there.

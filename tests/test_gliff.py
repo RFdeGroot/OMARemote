@@ -1,4 +1,7 @@
 import importlib.machinery
+import json
+import re
+import shutil
 import importlib.util
 import os
 import subprocess
@@ -89,6 +92,42 @@ class Command(unittest.TestCase):
     def test_default_port(self):
         data = {"credentials": [], "groups": {}, "connections": []}
         self.assertEqual(session.resolve(gliff(), data)["port"], 22)
+
+
+QML = shutil.which("qml6") or shutil.which("qml")
+
+
+@unittest.skipUnless(QML, "needs qml6")
+class Stats(unittest.TestCase):
+    """The stats line in the bottom bar: Format.parseStats, statsParts (most important first, the
+    bar drops from the end) and statsRows (the card), through tests/qml/format.qml."""
+
+    @classmethod
+    def setUpClass(cls):
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1")
+        p = subprocess.run([QML, os.path.join(HERE, "qml", "format.qml")], env=env,
+                           capture_output=True, text=True, timeout=30)
+        found = re.search(r"RESULT (\{.*\})", p.stderr + p.stdout)
+        assert found, p.stderr
+        cls.r = json.loads(found.group(1))
+        assert "error" not in cls.r, cls.r["error"]
+
+    def test_a_good_link_starts_with_fps(self):
+        self.assertEqual(self.r["okParts"], ["60 fps", "4 ms ping", "42.3 Mbit/s", "decode 6.1 ms (VA-API)",
+                                             "3668×2064 4:4:4", "server GPU"])
+        self.assertEqual(self.r["okRows"][0], ["Connection", "good"])
+
+    def test_a_warning_names_its_reason_first(self):
+        self.assertEqual(self.r["warnParts"][:2], ["congested, at most 15 fps", "3 fps"])
+        # No round trip measured yet: no ping fact.
+        self.assertNotIn("-1 ms ping", self.r["warnParts"])
+
+    def test_reconnecting_has_only_the_reason(self):
+        self.assertEqual(self.r["reconnecting"], ["reconnecting"])
+
+    def test_unknown_health_is_ok_and_empty_is_nothing(self):
+        self.assertEqual(self.r["odd"], "ok")
+        self.assertIsNone(self.r["noStats"])
 
 
 class Exit(unittest.TestCase):

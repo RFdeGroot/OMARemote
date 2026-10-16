@@ -37,6 +37,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -125,6 +126,14 @@ struct Session
 	// Per second, for the stats line (as Gliff's client shows in its header).
 	uint64_t statFrames = 0, statBytes = 0, statDecodeUs = 0, statAt = 0;
 	uint64_t statXferUs = 0, statConvUs = 0; // of statDecodeUs: GPU download, colour conversion
+
+	// The link's health for the bar's dot: a Ping a second (works on a still screen, where the frame
+	// rate drops by design), the round trip smoothed as TCP does, and the server's own congestion
+	// verdict (its fps cap). A warning shows after 5 s and clears after 5 s fine, so it never flickers.
+	uint64_t pingAt = 0, pongAt = 0;
+	double srtt = -1, rttDev = 0;
+	std::string warn;               // the warning shown: "congested", "latency" or ""
+	uint64_t warnSince = 0, okSince = 0;
 
 	std::string get(const char* key, const char* fallback = "") const
 	{
@@ -573,27 +582,99 @@ static void redraw()
 	show(vf, dual);
 }
 
-// Once a second: frames shown, bandwidth, decode time, and what decodes and encodes.
+// Below this fps cap the server's ladder has given up more than its first step (30 fps), which it
+// also starts on and may hold for minutes after a blip: only from here on is the link "congested".
+constexpr uint32_t CONGESTED_FPS = 15;
+// A smoothed round trip, or its variation, beyond which the link is "slow".
+constexpr double SLOW_RTT_MS = 150, SLOW_DEV_MS = 50;
+// No Pong for this long: the server does not answer.
+constexpr uint64_t NO_REPLY_MS = 3000;
+constexpr uint64_t WARN_AFTER_MS = 5000;
+
+static void on_pong(uint64_t t)
+{
+	const uint64_t now = oma::now_ms();
+	if (t > now || t < g.attemptAt)
+		return; // not one of this connection's
+	const double rtt = double(now - t);
+	g.pongAt = now;
+	if (g.srtt < 0)
+	{
+		g.srtt = rtt;
+		g.rttDev = rtt / 2;
+	}
+	else
+	{
+		g.rttDev = 0.75 * g.rttDev + 0.25 * std::abs(rtt - g.srtt);
+		g.srtt = 0.875 * g.srtt + 0.125 * rtt;
+	}
+}
+
+// The health a stats line carries: ok, warn or bad, and why ("" when ok).
+static std::pair<const char*, std::string> health(uint64_t now)
+{
+	if (g.pingAt > g.pongAt && now - g.pongAt > NO_REPLY_MS)
+		return { "bad", "noreply" };
+	const bool congested = g.stream.fpsCap > 0 && g.stream.fpsCap <= CONGESTED_FPS;
+	const bool slow = g.srtt >= 0 && (g.srtt > SLOW_RTT_MS || g.rttDev > SLOW_DEV_MS);
+	const std::string now_warn = congested ? "congested" : slow ? "latency" : "";
+	if (!now_warn.empty())
+	{
+		g.okSince = 0;
+		if (!g.warnSince)
+			g.warnSince = now;
+		if (now - g.warnSince >= WARN_AFTER_MS || !g.warn.empty())
+			g.warn = now_warn;
+	}
+	else
+	{
+		g.warnSince = 0;
+		if (!g.okSince)
+			g.okSince = now;
+		if (now - g.okSince >= WARN_AFTER_MS)
+			g.warn.clear();
+	}
+	return { g.warn.empty() ? "ok" : "warn", g.warn };
+}
+
+// A stats line: words "key=value" (no spaces in a value) the bar fits to its width; see
+// Format.parseStats. Base64 on the link as before.
+static void send_stats_line(const std::string& text) { g.link.send("stats " + b64(text)); }
+
+// Once a second: frames shown, bandwidth, decode time, what decodes and encodes, the link's health.
 static void send_stats()
 {
 	const uint64_t now = oma::now_ms();
+	if (!g.connected)
+		return;
+	if (now - g.pingAt >= 1000)
+	{
+		if (!g.pongAt)
+			g.pongAt = now; // the clock for "no answer" starts with the first Ping
+		g.pingAt = now;
+		send_msg(gliff::ping(now));
+	}
 	if (!g.statAt)
 		g.statAt = now;
-	if (now - g.statAt < 1000 || !g.connected)
+	if (now - g.statAt < 1000)
 		return;
 	const double secs = double(now - g.statAt) / 1000.0;
-	char text[256];
 	const double f = g.statFrames ? double(g.statFrames) : 1.0;
 	if (getenv("OMAREMOTE_GLIFF_TIMING"))
 		log("timing: decode %.1f ms, of which download %.1f, convert %.1f", g.statDecodeUs / 1000.0 / f,
 		    g.statXferUs / 1000.0 / f, g.statConvUs / 1000.0 / f);
 	g.statXferUs = g.statConvUs = 0;
-	snprintf(text, sizeof(text), "%.0f fps · %.1f Mbit/s · decode %.1f ms %s · %u×%u %s · server %s", g.statFrames / secs,
-	         g.statBytes * 8.0 / secs / 1e6, g.statFrames ? g.statDecodeUs / 1000.0 / double(g.statFrames) : 0.0,
-	         g.hw && !g.hwBroken ? "(VA-API)" : "(CPU)", g.stream.width, g.stream.height,
+	const auto [state, why] = health(now);
+	char text[320];
+	snprintf(text, sizeof(text),
+	         "fps=%.0f mbit=%.1f decode=%.1f decoder=%s size=%ux%u chroma=%s server=%s cap=%u rtt=%.0f dev=%.0f "
+	         "health=%s why=%s",
+	         g.statFrames / secs, g.statBytes * 8.0 / secs / 1e6, g.statDecodeUs / 1000.0 / f,
+	         g.hw && !g.hwBroken ? "VA-API" : "CPU", g.stream.width, g.stream.height,
 	         g.stream.chroma == gliff::CHROMA_DUAL420 ? "4:4:4" : "4:2:0",
-	         g.stream.pipeline == 0 ? "GPU" : g.stream.pipeline == 1 ? "CPU" : "?");
-	g.link.send("stats " + b64(text));
+	         g.stream.pipeline == 0 ? "GPU" : g.stream.pipeline == 1 ? "CPU" : "?", g.stream.fpsCap,
+	         g.srtt, g.rttDev, state, why.c_str());
+	send_stats_line(text);
 	g.statAt = now;
 	g.statFrames = g.statBytes = g.statDecodeUs = 0;
 }
@@ -796,6 +877,14 @@ static bool handle_message(const uint8_t* body, uint32_t bodyLen, const uint8_t*
 				cursor_shape(m, payload);
 			break;
 		}
+		case gliff::S_PONG:
+			if (n >= 1)
+			{
+				const uint64_t t = r.u64();
+				if (!r.bad)
+					on_pong(t);
+			}
+			break;
 		case gliff::S_PING:
 			if (n >= 1)
 			{
@@ -1055,6 +1144,10 @@ static bool start_server()
 	g.fullRedraw = true;
 	g.sentW = g.sentH = g.sentScale = 0;
 	g.keysDown.clear();
+	g.pingAt = g.pongAt = g.warnSince = g.okSince = g.statAt = 0;
+	g.srtt = -1;
+	g.rttDev = 0;
+	g.warn.clear();
 	g.attemptAt = oma::now_ms();
 	if (!spawn())
 	{
@@ -1223,6 +1316,7 @@ int main()
 						g.connected = false;
 						g.link.send("state connecting");
 					}
+					send_stats_line("health=bad why=reconnecting");
 					continue;
 				}
 				rc = protocol ? (g.welcomed ? 147 : 131) : code == 0 && g.connected ? 0 : g.connected || g.retries ? 147 : 131;

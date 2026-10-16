@@ -218,3 +218,64 @@ function bytes(n) {
 function gliffKeyHint(captured) {
     return captured ? ["ctrl+alt+esc", "stop sending super"] : ["click", "send super"]
 }
+
+// A Gliff stats line from omaremote-gliff (send_stats): words "key=value". Null when empty.
+function parseStats(text) {
+    if (!text)
+        return null
+    var s = {}
+    String(text).split(" ").forEach(function (w) {
+        var i = w.indexOf("=")
+        if (i > 0)
+            s[w.slice(0, i)] = w.slice(i + 1)
+    })
+    s.health = s.health === "warn" || s.health === "bad" ? s.health : "ok"
+    return s
+}
+
+// Why the dot is not green, in words; "" when it is.
+function statsReason(s) {
+    if (!s || s.health === "ok")
+        return ""
+    if (s.why === "reconnecting") return "reconnecting"
+    if (s.why === "noreply") return "the server does not answer"
+    if (s.why === "congested") return "congested, at most " + s.cap + " fps"
+    if (s.why === "latency") return "slow link, " + s.rtt + " ms"
+    return "connection problem"
+}
+
+// The bar's line, most important first: it drops from the end to fit (the reason and fps stay).
+function statsParts(s) {
+    if (!s)
+        return []
+    var parts = []
+    var reason = statsReason(s)
+    if (reason)
+        parts.push(reason)
+    if (s.fps === undefined)
+        return parts
+    parts.push(s.fps + " fps")
+    if (Number(s.rtt) >= 0)
+        parts.push(s.rtt + " ms ping")
+    parts.push(s.mbit + " Mbit/s")
+    parts.push("decode " + s.decode + " ms (" + s.decoder + ")")
+    parts.push(String(s.size).replace("x", "×") + " " + s.chroma)
+    parts.push("server " + s.server)
+    return parts
+}
+
+// The card's rows: [label, value].
+function statsRows(s) {
+    if (!s)
+        return []
+    var rows = [["Connection", statsReason(s) || "good"]]
+    if (s.fps === undefined)
+        return rows
+    rows.push(["Round trip", Number(s.rtt) >= 0 ? s.rtt + " ms (± " + s.dev + " ms)" : "measuring…"])
+    rows.push(["Frame rate", s.fps + " fps" + (Number(s.cap) > 0 ? ", at most " + s.cap : "")])
+    rows.push(["Bandwidth", s.mbit + " Mbit/s"])
+    rows.push(["Decoding", s.decode + " ms a frame, " + (s.decoder === "CPU" ? "on the CPU" : "on the GPU (VA-API)")])
+    rows.push(["Stream", String(s.size).replace("x", "×") + ", " + s.chroma])
+    rows.push(["Server encodes", s.server === "?" ? "unknown" : "on the " + s.server])
+    return rows
+}

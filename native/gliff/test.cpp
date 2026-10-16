@@ -239,6 +239,7 @@ int main()
 	encodes(gliff::resize(1920, 1080, 1.5f), "820183190780190438fa3fc00000", "Resize");
 	encodes(gliff::pointerAxis(0, -15.0, -1), "82058400fbc02e00000000000020f4", "PointerAxis");
 	encodes(gliff::pong(7), "82108107", "Pong");
+	encodes(gliff::ping(7), "820b8107", "Ping (ClientMsg 11)");
 	encodes(gliff::frame("ab", "c"), "02000000010000006162" "63", "frame");
 
 	// Server messages: gliff-proto's fixtures, decoded.

@@ -1214,7 +1214,7 @@ FocusScope {
         }
 
         StatusBar {
-            info: root.currentIsGliff ? (Sessions.stats[root.currentTab] || "") : ""
+            info: root.debugStats || (root.currentIsGliff && !root.currentEnded ? (Sessions.stats[root.currentTab] || "") : "")
             id: statusBar
             Layout.fillWidth: true
             visible: !root.immersive
@@ -1757,6 +1757,7 @@ FocusScope {
 
     // Driven by the snapshot hook in boot/shell.qml: new, edit, down, connect, filter:<f>, query:<q>,
     // run:<keymap action>, focus (logs which item has the keyboard), update:<version> (as if GitHub had it).
+    property string debugStats: ""
     function debugAction(a) {
         var parts = a.split(":")
         if (a === "new") startNew()
@@ -1780,6 +1781,9 @@ FocusScope {
         else if (a === "gvfscard") gvfsFor = selectedId
         else if (a === "filescard") { Sessions.mountedFiles = [selectedId]; filesAsk = [selectedId] }
         else if (a === "settingsend") settingsPanel.scrollToEnd()
+        // stats:<words, comma separated> shows a Gliff stats line in the bar; statscard opens its card.
+        else if (parts[0] === "stats") debugStats = parts.slice(1).join(":").split(",").join(" ")
+        else if (a === "statscard") statusBar.statsOpen = true
         else if (parts[0] === "ui") {
             var v = parts.slice(2).join(":")
             try { v = JSON.parse(v) } catch (e) {} // a JSON value, else the text
