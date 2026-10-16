@@ -4,6 +4,10 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 [Flea](https://github.com/thisisgm/flea): a Quickshell UI built from Omarchy's own shell components
 (`/usr/share/omarchy/shell/Commons` and `Ui`), so it follows your theme, live.
 
+OMARemote 0.9 in 30 seconds: another Omarchy desktop over Gliff, then RDP, VNC and SSH.
+
+https://github.com/user-attachments/assets/fe9e0a48-631e-47a8-b5b3-4f7ddcde6d3f
+
 ![The connections: library, groups and credential sets in the sidebar, connections grouped, details of the selected one](docs/screenshots/connections.png)
 
 - **RDP** through FreeRDP, **VNC** through libvncclient, **SSH** in a terminal drawn in the tab, and
