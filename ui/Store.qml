@@ -394,6 +394,17 @@ Singleton {
             copy.modified = now
             return copy
         })
+        // One in the trash stays there, deleted again now: that goes back to the other systems too.
+        var gone = JSON.parse(JSON.stringify(deleted))
+        root.trash = trash.map(function (t) {
+            if (ids.indexOf(t.connection.id) < 0)
+                return t
+            var entry = JSON.parse(JSON.stringify(t))
+            entry.deleted = now
+            gone[t.connection.id] = now
+            return entry
+        })
+        root.deleted = gone
         edited()
     }
 

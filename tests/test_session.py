@@ -583,10 +583,12 @@ class Sync(unittest.TestCase):
         self.assertEqual(report["added"], ["c1"])
         self.assertEqual(data["connections"][0]["credential"], "custom")
 
-    def test_added_connection_follows_its_groups_credentials(self):
+    def test_an_added_connection_never_takes_its_groups_credentials(self):
+        """omarchy-plugin-marketplace#11837: a sync writer could add one for any host to a group
+        with a set, and the set's password would go there; the user picks the set here."""
         local = self.local(groups={"Servers": {"credential": "k1", "settings": {}}})
         data, _ = session.merge(local, [self.remote(self.c(group="Servers"))], self.NOW)
-        self.assertEqual(data["connections"][0]["credential"], "inherit")
+        self.assertEqual(data["connections"][0]["credential"], "custom")
 
     def test_an_added_ssh_connection_never_takes_a_credential_set(self):
         local = self.local(groups={"Servers": {"credential": "k1", "settings": {}}})
@@ -1371,6 +1373,50 @@ class AddressGuard(unittest.TestCase):
         data, report = session.merge(local, [incoming], 1000)
         self.assertEqual(report["pendingAddress"][0]["id"], "group:Gone")
         self.assertNotIn("Gone", data["groups"])
+
+    def binned(self, conn):
+        return dict(self.local(), trash=[{"connection": conn, "deleted": 150, "from": "local"}],
+                    deleted={conn["id"]: 150})
+
+    def test_a_restore_that_shares_more_waits(self):
+        """omarchy-plugin-marketplace#11837: a restore from the trash keeps this system's sign-in."""
+        for change in ({"homeDrive": True}, {"microphone": True}, {"host": "evil.example"},
+                       {"gateway": "gw.example"}, {"kdc": "kdc.example"}):
+            local = self.binned(self.c(savePassword=True, username="alice"))
+            incoming = self.remote(self.c(modified=200, **change))
+            data, report = session.merge(local, [incoming], 1000)
+            self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"], change)
+            self.assertEqual((data["connections"], len(data["trash"]), report["restored"]), ([], 1, []), change)
+            data, report = session.merge(local, [incoming], 1000, allow_address=("c1",))
+            self.assertEqual(report["restored"], ["Files"], change)
+            self.assertEqual(data["connections"][0]["username"], "alice", change)
+
+    def test_a_restore_into_a_group_with_sharing_waits(self):
+        local = self.binned(self.c(credential="k1"))
+        incoming = self.remote(self.c(group="Evil", modified=200), groups={"Evil": {"settings": {"homeDrive": True}, "modified": 9}})
+        data, report = session.merge(local, [incoming], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"])
+        self.assertEqual(data["connections"], [])
+
+    def test_a_restore_without_credentials_here_just_arrives(self):
+        local = self.binned(self.c(credential="custom"))
+        data, report = session.merge(local, [self.remote(self.c(host="new.lan", homeDrive=True, modified=200))], 1000)
+        self.assertEqual(report["pendingAddress"], [])
+        self.assertEqual(data["connections"][0]["host"], "new.lan")
+
+    def test_a_restore_that_widens_nothing_just_arrives(self):
+        local = self.binned(self.c(savePassword=True))
+        data, report = session.merge(local, [self.remote(self.c(name="Back", modified=200))], 1000)
+        self.assertEqual(report["pendingAddress"], [])
+        self.assertEqual(report["restored"], ["Back"])
+
+    def test_a_move_into_a_group_whose_set_signs_in_waits(self):
+        """Its own group has no set, the new one does: it signs in after the move, not before."""
+        local = self.local(self.c(credential="inherit"),
+                           groups={"Servers": {"credential": "k1", "settings": {}, "modified": 1}})
+        data, report = session.merge(local, [self.remote(self.c(host="evil.example", group="Servers", modified=200))], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"])
+        self.assertEqual(data["connections"][0]["host"], "files.lan")
 
     def test_a_move_that_widens_nothing_just_arrives(self):
         local = self.local(self.c(savePassword=True), groups={"Lab": {"credential": "", "settings": {"audio": "off"}, "modified": 1}})

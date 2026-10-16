@@ -493,6 +493,20 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
               "pendingAddress": [], "errors": []}
     address_ok = lambda key: allow_address == "*" or key in allow_address
 
+    def held(old, ic, new):
+        """Whether ic's change to old (here, or in the trash) waits for the user: it points elsewhere
+        or shares more, compared as a session would use them (a move into another group, new here
+        or with a gateway or sharing of its own, counts), and this system signs in there, before or
+        after it (new: old's sign-in with ic's fields)."""
+        was, will = _effective(old, groups_before), _effective(ic, groups)
+        if not _widens(will, was) or address_ok(old["id"]) \
+                or not (_signs_in_here(old, groups_before) or _signs_in_here(new, groups)):
+            return False
+        report["pendingAddress"].append({
+            "system": system, "id": old["id"], "name": old.get("name") or old.get("host"),
+            "from": _describe_address(was), "to": _describe_address(will)})
+        return True
+
     # An alias is another system's id for the same server; it can never be the id of a connection
     # of its own here. (Before 0.4.4 a duplicate, which keeps its original's host, was taken for the
     # original on other systems and recorded as its alias.)
@@ -593,15 +607,10 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
                 matched.add(match.get("id"))
                 # Compared as a session would use them: a move into another group (new here, or with
                 # a gateway or sharing of its own) widens it as much as a change of its own fields.
-                was, will = _effective(match, groups_before), _effective(ic, groups)
-                if changed > match.get("modified", 0) and _widens(will, was) \
-                        and _signs_in_here(match, groups) and not address_ok(match["id"]):
-                    report["pendingAddress"].append({
-                        "system": system, "id": match["id"], "name": match.get("name") or match.get("host"),
-                        "from": _describe_address(was), "to": _describe_address(will)})
+                new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
+                if changed > match.get("modified", 0) and held(match, ic, new):
                     continue
                 if changed > match.get("modified", 0):
-                    new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
                     conns[conns.index(match)] = new
                     report["updated"].append(new.get("name") or new.get("host"))
                 elif not theirs <= ids_of(match):
@@ -616,15 +625,18 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
                 if changed > binned.get("deleted", 0):
                     old = binned["connection"]
                     new = _with_aliases(dict(portable_connection(ic), **_local_part(old), id=old["id"]), old, ic)
+                    # A restore keeps this system's sign-in: it waits like a change (#11837).
+                    if held(old, ic, new):
+                        continue
                     trash.remove(binned)
                     deleted.pop(old["id"], None)
                     conns.append(new)
                     report["restored"].append(new.get("name") or new.get("host"))
                 continue
             new = portable_connection(ic)
-            # A group's credential set signs desktops in; SSH signs in with keys, never with a set.
-            grouped = (groups.get(new.get("group") or "") or {}).get("credential")
-            new["credential"] = "inherit" if grouped and new.get("protocol") not in ("ssh", "gliff") else "custom"
+            # Nothing of this system's signs a connection from elsewhere in: not its group's credential
+            # set either, until the user picks it here (#11837; imports do the same).
+            new["credential"] = "custom"
             conns.append(new)
             report["added"].append(new.get("name") or new.get("host"))
 
