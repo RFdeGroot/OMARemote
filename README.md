@@ -6,7 +6,8 @@ A keyboard-first remote desktop client for [Omarchy](https://omarchy.org), style
 
 ![The connections: library, groups and credential sets in the sidebar, connections grouped, details of the selected one](docs/screenshots/connections.png)
 
-- **RDP** through FreeRDP, **VNC** through libvncclient, and **SSH** in a terminal drawn in the tab.
+- **RDP** through FreeRDP, **VNC** through libvncclient, **SSH** in a terminal drawn in the tab, and
+  **Gliff**: another Omarchy machine's Hyprland desktop, streamed over ssh.
 - **Sessions in tabs** inside the app, or (RDP) in their own window for multi-monitor; pin the
   connections list beside them and the remote desktop resizes to fit.
 - **HiDPI scaling** that follows Hyprland: the remote desktop matches the tab's size and your scale.
@@ -23,11 +24,16 @@ left:
 
 ![A VNC session in a tab, with the connections list pinned beside it](docs/screenshots/session-pinned.png)
 
-| Editing a connection; its credentials come from its group | Every key, on `?` |
+| Editing a Gliff connection: a private screen, sharp text | Every key, on `?` |
 | --- | --- |
-| ![Editing a connection that takes its credentials from its group](docs/screenshots/editor.png) | ![The keymap sheet](docs/screenshots/keymap.png) |
+| ![Editing a Gliff connection: its own screen on the remote, sharp 4:4:4 text](docs/screenshots/editor.png) | ![The keymap sheet](docs/screenshots/keymap.png) |
 
-The screenshots use made-up sample data and a mock desktop.
+An Omarchy desktop over Gliff, with the link's health in the bottom bar:
+
+![Another Omarchy machine's desktop in a Gliff tab, its stats in the bottom bar](docs/screenshots/gliff.jpg)
+
+The screenshots use made-up sample data and a mock desktop; the Gliff one is a real Omarchy
+desktop.
 
 ## Install
 
@@ -141,6 +147,7 @@ the packages to install:
 | RDP | `freerdp` (3.x) |
 | VNC | `libvncserver` (for libvncclient) |
 | SSH | `openssh`, `libvterm`, `libxkbcommon` |
+| Gliff | `ffmpeg`, `libva`, `libglvnd`, `libdrm`, `wayland`, `wayland-protocols`, `qt6-shadertools` |
 | optional | `libnotify` (a notification when a session fails) |
 
 `./install.sh --install-deps` installs the missing packages with pacman (it asks first),
@@ -421,6 +428,60 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   OMARemote's, as in every session.
 - A session that ends normally just closes; one where ssh could not connect shows ssh's reason.
 
+## Gliff
+
+[Gliff](https://github.com/omacom/gliff) streams a Hyprland desktop over ssh, made for Omarchy
+machines. Pick **Gliff** as a connection's protocol: OMARemote speaks Gliff's protocol itself and
+shows the desktop in a tab, on par with Gliff's own client (tested with gliff 0.4.0). This machine
+needs nothing besides OMARemote.
+
+**Gliff must be installed on the computer you connect to**, which runs `gliff-server`. It is set
+to come preinstalled with Omarchy 4.5; until then, install it there yourself. It is in the edge
+channel of the [Omarchy Package Repository](https://github.com/omacom/omarchy-pkgs):
+
+```bash
+omarchy pkg add gliff
+```
+
+If that says `target not found: gliff` (or on Arch without that repository), build it from source
+as [Gliff's README](https://github.com/omacom/gliff#install) explains:
+`git clone https://github.com/omacom/gliff.git && cd gliff && bin/install`. That computer must also
+accept ssh from yours, as for an SSH connection.
+
+- **Sign in** is ssh, as for SSH connections: your keys, ssh-agent and `~/.ssh/config`, a key per
+  connection, *Extra ssh options*. OMARemote runs `ssh … gliff-server --stdio` and nothing else.
+- **Screen**: *Mirror* shows a remote screen as it is (*Screen name*, or empty for the focused
+  one); *Private screen* gives the tab a screen of its own on the remote that follows the tab's size
+  and scale, and goes away when you disconnect.
+- **Sharp text**: with VA-API here and a GPU-encoding remote, the picture is 4:4:4 (two H.264
+  streams recombined, as Gliff does); *Colour* can ask *Low bandwidth* (4:2:0) or *Full 4:4:4*.
+  Pictures go from the decoder to the screen as GPU buffers, without a copy; *Decoding: CPU* is
+  there for a GPU driver that misbehaves.
+- **Keys**: your own keyboard layout goes along. While the tab has the keyboard and the pointer is
+  on the picture, the tab takes Hyprland's shortcuts, `super` included, as Gliff's own client does.
+  Moving the pointer off gives them back, and so do `ctrl+alt+esc` and `shift+esc` (Settings ›
+  Keyboard: or *Double Esc*, or nothing else); a click takes them again.
+- **Clipboard** both ways, text, images and files: nothing moves until you paste, slow pastes show
+  their progress with a cancel button, files land in `~/.cache/omaremote/clipboard/`. It is shared
+  only while the tab has the keyboard, and never a password manager's selection.
+- **A dropped link** is tried again five times, from 1 to 16 seconds apart.
+- **The bottom bar** shows the link's health and as many facts as fit: a green dot, orange when the
+  server is congested or the round trip is slow, red when the server does not answer or while
+  reconnecting. A click shows everything: round trip, frame rate, bandwidth, decoding, stream.
+  The frame rate drops on a still screen: Gliff only sends a picture when the screen changes.
+- **Known issue: monitor tools on the remote.** A tool that manages monitors on the remote machine,
+  such as the [hyprmoncfg](https://github.com/crmne/omarchy-hyprmoncfg) plugin (its daemon
+  `hyprmoncfgd`) or another monitor profile plugin, can treat a *Private screen* as an unknown
+  display and change it (hyprmoncfg sets it to 1920x1080) right after it appears; gliff-server then
+  stalls and the picture stops. This is between Gliff and that tool: Gliff's own client has the same
+  problem. *Mirror* is not affected. Until it is fixed, use *Mirror*, or stop the tool on the remote
+  while you connect (for hyprmoncfg: `systemctl --user stop hyprmoncfgd`). A stalled gliff-server
+  that is stopped can leave its screen (`gliff-<number>`) behind on the remote:
+  `hyprctl output remove gliff-<number>` takes it away.
+- *Capture: Read back* is for a remote VM whose screen stays black; *Server* is gliff-server's
+  path when it is not on the remote's `PATH`. Both, like *Screen name*, only take plain names: they
+  reach the remote shell.
+
 ## How it works
 
 ```
@@ -430,6 +491,7 @@ bin/omaremote-session    backend: session settings, keyring, Kerberos discovery,
 native/rdp/              omaremote-rdp: an RDP session for a tab (libfreerdp)
 native/vnc/              omaremote-vnc: a VNC session for a tab (libvncclient)
 native/ssh/              omaremote-ssh: an SSH session for a tab (ssh in a pty, libvterm, drawn with Qt)
+native/gliff/            omaremote-gliff: a Gliff session for a tab (Gliff's protocol, H.264 via libavcodec/VA-API)
 native/common/           the link both share with the UI
 native/plugin/           RdpView, the Qt Quick item that shows a session in a tab
 ```
@@ -438,7 +500,9 @@ native/plugin/           RdpView, the Qt Quick item that shows a session in a ta
 Each session is its own process, so one crashing never takes the window or other tabs with it:
 
 - libfreerdp or libvncclient renders into a shared-memory framebuffer (memfd); for SSH,
-  omaremote-ssh runs ssh in a pseudo-terminal and draws libvterm's screen into one;
+  omaremote-ssh runs ssh in a pseudo-terminal and draws libvterm's screen into one; omaremote-gliff
+  hands over its decoder's pictures as dmabufs, which the tab converts on the GPU (or, without
+  VA-API, a framebuffer like the others);
 - the UI attaches over a Unix socket in `$XDG_RUNTIME_DIR/omaremote/sessions/`, receives that
   framebuffer as a file descriptor plus damage rectangles, and sends input back: keys (scancodes
   for RDP, keysyms for VNC, keysyms and typed text for SSH), mouse, wheel, text clipboard, and resizes with the HiDPI scale;
@@ -458,8 +522,8 @@ running program, so OMARemote never puts a connection's name, host, user name or
 one: sessions read their settings from stdin, keyring entries are labelled by id, a failure
 notification says only that a connection failed (which one, and why, is in OMARemote), the
 Kerberos DNS lookup runs in-process, and the Omarchy bar plugin and hotkey bindings name
-connections by id. One exception: an SSH session runs `ssh` itself, whose command line holds the
-host (and the user name, port and key when set), the same as typing `ssh` in a terminal; *Browse
+connections by id. One exception: an SSH or Gliff session runs `ssh` itself, whose command line
+holds the host (and the user name, port and key when set), the same as typing `ssh` in a terminal; *Browse
 files* likewise runs `gio mount sftp://user@host`. To keep
 other accounts out of `/proc` altogether, mount it with `hidepid=invisible`.
 

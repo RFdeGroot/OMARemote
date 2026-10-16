@@ -1830,6 +1830,7 @@ FocusScope {
         else if (parts[0] === "filter") filter = parts.slice(1).join(":")
         else if (parts[0] === "create") { startNew(); editor.set("host", parts[1]); editor.set("group", "Lab"); editor.save() }
         else if (parts[0] === "query") query = parts.slice(1).join(":")
+        else if (parts[0] === "select") selectedId = parts[1]
         else if (parts[0] === "scroll") editor.children[0].children[1].contentY = parseInt(parts[1])
     }
 
