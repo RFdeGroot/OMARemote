@@ -86,8 +86,25 @@ CONFIG_DIR = os.path.join(CONFIG_HOME, APP)
 CONNECTIONS = os.path.join(CONFIG_DIR, "connections.json")
 # When each connection was last up ({id: seconds}): the UI is the only writer of connections.json.
 LAST_CONNECTED = os.path.join(CONFIG_DIR, "last-connected.json")
+
+
+def private_tmp_base():
+    """Without XDG_RUNTIME_DIR (Omarchy always sets it): /tmp/omaremote-<uid>, made 0700, and used
+    only when it is this user's own folder and no one else's: its name is predictable, and another
+    user who made it first would hold every session's socket and record."""
+    base = f"/tmp/{APP}-{os.getuid()}"
+    try:
+        os.mkdir(base, 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(base)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        sys.exit(f"{APP}: XDG_RUNTIME_DIR is not set, and {base} is not a private folder of this user's")
+    return base
+
+
 RUNTIME_DIR = os.environ.get("OMAREMOTE_RUNTIME_DIR") or os.path.join(
-    os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/{APP}-{os.getuid()}", APP)
+    os.environ.get("XDG_RUNTIME_DIR") or private_tmp_base(), APP)
 SESSIONS_DIR = os.path.join(RUNTIME_DIR, "sessions")
 # Rewritten in place (never replaced) on every state change, so the UI's inotify watch survives.
 CHANGES = os.path.join(RUNTIME_DIR, "changes")
@@ -216,13 +233,18 @@ def load_data(path=CONNECTIONS):
         data = {}
     if isinstance(data, list):  # the very first format
         data = {"connections": data}
+    # Whatever a hand edit left: a part of the wrong type counts as empty, never as a crash (the
+    # bar's list goes through here).
+    if not isinstance(data, dict):
+        data = {}
+    part = lambda key, kind: data.get(key) if isinstance(data.get(key), kind) else kind()
     return {
-        "connections": [c for c in data.get("connections", []) if isinstance(c, dict)],
-        "credentials": [c for c in data.get("credentials", []) if isinstance(c, dict) and c.get("id")],
-        "groups": {k: v for k, v in (data.get("groups") or {}).items() if isinstance(v, dict)},
+        "connections": [c for c in part("connections", list) if isinstance(c, dict)],
+        "credentials": [c for c in part("credentials", list) if isinstance(c, dict) and c.get("id")],
+        "groups": {k: v for k, v in part("groups", dict).items() if isinstance(v, dict)},
         # Quick connections (a host typed in the search field): this system's only, never synced
         # or exported, kept until saved as a connection or pushed out by newer ones.
-        "quick": [c for c in data.get("quick", []) if isinstance(c, dict) and c.get("id")],
+        "quick": [c for c in part("quick", list) if isinstance(c, dict) and c.get("id")],
     }
 
 
@@ -355,6 +377,14 @@ def load_raw(path=CONNECTIONS):
         data = {}
     if isinstance(data, list):
         data = {"connections": data}
+    # Sync, export and import write what they read back: a file of another shape is refused whole,
+    # as the window does (Store.broken), never half taken in.
+    if not isinstance(data, dict):
+        raise ValueError("connections.json is not an OMARemote file")
+    for key, kind in (("connections", list), ("credentials", list), ("trash", list), ("quick", list),
+                      ("groups", dict), ("ui", dict), ("deleted", dict), ("deletedGroups", dict)):
+        if data.get(key) is not None and not isinstance(data[key], kind):
+            raise ValueError(f"connections.json: {key} is not a{'n object' if kind is dict else ' list'}")
     return data
 
 
@@ -1508,8 +1538,11 @@ def hypr_managed_text(connections, launcher):
         # No name: Hyprland's descriptions reach Omarchy's menus, and from there who knows where.
         label = "OMARemote: hotkey window"
         command = "%s toggle %s" % (shlex.quote(launcher), shlex.quote(c["id"]))
-        lines.append("o.bind(%s, %s, %s)" % (json.dumps(shortcut), json.dumps(label, ensure_ascii=False),
-                                             json.dumps(command)))
+        # Lua reads UTF-8 as it is, but not JSON's \uXXXX escapes: a home such as /home/josé
+        # stays as written.
+        lines.append("o.bind(%s, %s, %s)" % (json.dumps(shortcut, ensure_ascii=False),
+                                             json.dumps(label, ensure_ascii=False),
+                                             json.dumps(command, ensure_ascii=False)))
         count += 1
     return "\n".join(lines) + "\n", count
 
@@ -1538,7 +1571,8 @@ def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=Tru
     changed = False
     block = HYPR_MARKER_BEGIN + "\n" + hypr_loader_line() + "\n" + HYPR_MARKER_END
     try:
-        managed_before = open(managed, encoding="utf-8").read()
+        with open(managed, encoding="utf-8") as f:
+            managed_before = f.read()
     except OSError:
         managed_before = None
     try:
@@ -2233,14 +2267,16 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
     # A config generated or managed elsewhere (read-only) is its owner's to change.
     config_writable = user_config is None or user_file_writable(config)
 
-    if not enabled and ours and config_writable:
+    # The marker as a line of its own (trailing spaces or a CRLF from an editor allowed); elsewhere
+    # in a line, it is not ours to take out.
+    lines = (user_config or "").split("\n")
+    at = next((i for i, line in enumerate(lines) if line.strip() == SSH_MARKER), None)
+    if not enabled and ours and at is not None and config_writable:
         # Out again: the marker, the Include under it and the blank line after, nothing else.
-        lines = user_config.split("\n")
-        at = lines.index(SSH_MARKER)
         cut = 1
-        if at + 1 < len(lines) and SSH_INCLUDE_RE.match(lines[at + 1]):
+        if at + 1 < len(lines) and SSH_INCLUDE_RE.match(lines[at + 1].rstrip()):
             cut = 2
-            if at + 2 < len(lines) and lines[at + 2] == "":
+            if at + 2 < len(lines) and lines[at + 2].strip() == "":
                 cut = 3
         _write_private(config, "\n".join(lines[:at] + lines[at + cut:]), like=config)
         user_config = "\n".join(lines[:at] + lines[at + cut:])
@@ -3095,6 +3131,8 @@ def list_sessions():
             with open(os.path.join(SESSIONS_DIR, name), encoding="utf-8") as f:
                 s = json.load(f)
         except (OSError, ValueError):
+            continue
+        if not isinstance(s, dict):
             continue
         if s.get("state") in ("connecting", "connected") and not _alive(s.get("supervisor")):
             s["state"] = "failed"

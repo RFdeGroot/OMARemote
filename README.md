@@ -53,6 +53,9 @@ download the newest one for your machine, and pacman installs it together with e
 ```bash
 url=$(curl -s https://api.github.com/repos/RFdeGroot/OMARemote/releases | grep -o "https://[^\"]*-$(uname -m)\.pkg\.tar\.zst" | head -1)
 curl -LO "$url"
+curl -L -o omaremote.sig "$url.sig"
+curl -L -o omaremote-release.gpg https://raw.githubusercontent.com/RFdeGroot/OMARemote/main/packaging/arch/omaremote-release.gpg
+gpgv --keyring ./omaremote-release.gpg omaremote.sig "${url##*/}"   # must say: Good signature
 sudo pacman -U "./${url##*/}"
 omaremote                    # or "OMARemote" from the launcher
 ```
@@ -60,8 +63,11 @@ omaremote                    # or "OMARemote" from the launcher
 (The first line asks GitHub for the newest release, pre-releases included; you can also download a
 package from the [releases page](https://github.com/RFdeGroot/OMARemote/releases) by hand.)
 
-Release packages are not signed yet. pacman installs an unsigned package from a file on disk, but
-refuses one straight from a URL (`failed retrieving file '….pkg.tar.zst.sig'`), hence the download.
+Every release is signed with OMARemote's release key, fingerprint
+`D7FC 432C F643 656A 400B  DDEB 3BE7 753B BB50 B393`; `gpgv` checks the package against it, and the
+updater does the same from then on. The signature is saved under another name on purpose: pacman
+checks a `.sig` it finds beside a package against its own keyring, which does not hold this key, and
+refuses.
 
 #### Updating
 

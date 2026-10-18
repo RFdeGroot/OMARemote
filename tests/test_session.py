@@ -132,6 +132,59 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class OddFiles(unittest.TestCase):
+    # A hand edit of another shape: the bar's list and a launch read it as empty, sync, export and
+    # import refuse it whole (they write back what they read).
+    SHAPES = ['5', 'null', '"x"', '{"connections": 5}', '{"groups": [1]}', '{"ui": [1]}', '{"quick": {}}']
+
+    def test_readers_never_crash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "connections.json")
+            for text in self.SHAPES:
+                with open(path, "w") as f:
+                    f.write(text)
+                self.assertEqual(session.load_connections(path), [], text)
+                with self.assertRaises(ValueError, msg=text):
+                    session.export_file(os.path.join(d, "out.json"), path)
+
+    def test_an_odd_session_record_is_skipped(self):
+        import tempfile
+        saved = session.SESSIONS_DIR
+        with tempfile.TemporaryDirectory() as d:
+            session.SESSIONS_DIR = d
+            try:
+                with open(os.path.join(d, "s1.json"), "w") as f:
+                    f.write("[1]")
+                self.assertEqual(session.list_sessions(), [])
+            finally:
+                session.SESSIONS_DIR = saved
+
+
+class RuntimeFallback(unittest.TestCase):
+    # Without XDG_RUNTIME_DIR the runtime folder is in /tmp under a predictable name.
+    def test_only_a_private_folder_of_ours_is_used(self):
+        import shutil
+        saved = session.APP
+        session.APP = "omaremote-test-%d" % os.getpid()
+        base = "/tmp/%s-%d" % (session.APP, os.getuid())
+        try:
+            self.assertEqual(session.private_tmp_base(), base)
+            self.assertEqual(os.stat(base).st_mode & 0o777, 0o700)
+            os.chmod(base, 0o755)
+            with self.assertRaises(SystemExit):
+                session.private_tmp_base()
+            os.rmdir(base)
+            os.symlink("/tmp", base)
+            with self.assertRaises(SystemExit):
+                session.private_tmp_base()
+        finally:
+            session.APP = saved
+            if os.path.islink(base):
+                os.unlink(base)
+            shutil.rmtree(base, ignore_errors=True)
+
+
 class QuickConnections(unittest.TestCase):
     # A host typed in the search field: started like a saved connection, but this system's only.
     def data(self):
@@ -149,11 +202,13 @@ class QuickConnections(unittest.TestCase):
             self.assertEqual(found["q-1"]["host"], "srv.lan")
             self.assertEqual(found["q-1"]["protocol"], "ssh")
             self.assertIn("c1", found)
-            before = open(path).read()
+            with open(path) as f:
+                before = f.read()
             stamps = os.path.join(d, "last-connected.json")
             session.mark_connected("q-1", stamps)
             # The UI is the only writer of connections.json; the stamp goes into a file of its own.
-            self.assertEqual(open(path).read(), before)
+            with open(path) as f:
+                self.assertEqual(f.read(), before)
             with open(stamps) as f:
                 self.assertGreater(json.load(f)["q-1"], 0)
 
@@ -207,7 +262,8 @@ class Kerberos(unittest.TestCase):
                                        runtime_dir=d, discover=lambda realm: self.fail("should not discover"))
             path, rest = env["KRB5_CONFIG"].split(":", 1)
             self.assertTrue(rest.endswith("krb5.conf"))
-            self.assertIn("kdc = dc9:88", open(path).read())
+            with open(path) as f:
+                self.assertIn("kdc = dc9:88", f.read())
 
     def test_env_refuses_a_realm_that_is_not_a_plain_name(self):
         import tempfile
@@ -259,7 +315,8 @@ class Rename(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg, cache = os.path.join(d, "config"), os.path.join(d, "cache")
             os.makedirs(os.path.join(cfg, "oma-remote"))
-            open(os.path.join(cfg, "oma-remote", "connections.json"), "w").write("{}")
+            with open(os.path.join(cfg, "oma-remote", "connections.json"), "w") as f:
+                f.write("{}")
             os.makedirs(os.path.join(cache, "omaremote"))  # already new: left alone
             os.makedirs(os.path.join(cache, "oma-remote"))
             saved = session.CONFIG_DIR, session.CACHE_DIR
@@ -492,6 +549,16 @@ class SshKeys(unittest.TestCase):
         self.assertTrue(os.path.islink(os.path.join(self.ssh, "config")))
         with open(os.path.join(dots, "ssh_config")) as f:
             self.assertEqual(f.read(), "Host mine\n    User me\n")
+
+    def test_the_marker_is_found_with_trailing_space_or_crlf(self):
+        # ssh_config_sync tested for the marker as a substring, then looked it up as an exact line:
+        # an editor's trailing space or CRLF raised ValueError.
+        for end in (" ", "\r"):
+            self.write("config", session.SSH_MARKER + end + "\n" + session.SSH_INCLUDE + end + "\n\nHost mine\n")
+            self.connections(conn(id="c1", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"), terminal=False)
+            session.ssh_config_sync(self.conf, self.ssh)
+            with open(os.path.join(self.ssh, "config")) as f:
+                self.assertEqual(f.read(), "Host mine\n", repr(end))
 
     def test_a_read_only_ssh_config_is_left_to_its_owner(self):
         self.write("config", "Host mine\n")
@@ -1361,6 +1428,13 @@ class NoInjection(unittest.TestCase):
         text, _ = session.hypr_managed_text([{"id": "c-1", "host": "pc", "protocol": "rdp", "openIn": "hotkey",
                                               "hotkey": "SUPER + W"}], "/opt/my apps/omaremote")
         self.assertIn("'/opt/my apps/omaremote' toggle c-1", text)
+
+    def test_a_non_ascii_home_reaches_lua_as_written(self):
+        # JSON's \\u00e9 is no escape Lua knows: the binding pointed nowhere.
+        text, _ = session.hypr_managed_text([{"id": "c-1", "host": "pc", "protocol": "rdp", "openIn": "hotkey",
+                                              "hotkey": "SUPER + W"}], "/home/josé/.local/bin/omaremote")
+        self.assertIn("'/home/josé/.local/bin/omaremote' toggle c-1", text)
+        self.assertNotIn("\\u", text)
 
 
 class AddressGuard(unittest.TestCase):

@@ -9,6 +9,8 @@
 #
 # Releasing: set _tag/pkgver in packaging/arch/PKGBUILD, commit, tag (v0.2.0, v0.3.0-beta, …), push the tag.
 # A tag with a suffix (-alpha, -beta, -rc) becomes a GitHub pre-release.
+# Actions are pinned by commit (the version beside it), never by a tag that can move: this job holds
+# the signing key. Moving to a newer version means looking up its commit by hand.
 # For a tag pushed before this workflow existed: Actions → Release → Run workflow, with the tag.
 name: Release
 
@@ -40,7 +42,7 @@ jobs:
             image: archlinuxarm:local
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Check the PKGBUILD is for this tag
         run: |
@@ -73,7 +75,7 @@ jobs:
             -e PACKAGER="OMARemote release workflow <$GITHUB_SERVER_URL/$GITHUB_REPOSITORY>" \
             ${{ matrix.image }} bash /src/packaging/arch/ci-build.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: package-${{ matrix.arch }}
           path: out/*.pkg.tar.zst
@@ -86,9 +88,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: package-*
           merge-multiple: true
