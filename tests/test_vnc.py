@@ -16,7 +16,7 @@ HELPER = os.path.join(HERE, "..", "native", "build", "omaremote-vnc")
 # up after readTimeout seconds, and an idle session is still not cut.
 
 
-def fake_server(listener, stall):
+def fake_server(listener, stall, size=(64, 48)):
     """RFB 3.8 without a password; then half a FramebufferUpdate (stall) or a whole empty one."""
     conn, _ = listener.accept()
     with conn:
@@ -27,7 +27,7 @@ def fake_server(listener, stall):
         conn.sendall(struct.pack(">I", 0))
         conn.recv(1)  # ClientInit
         pixel = struct.pack(">BBBBHHHBBB3x", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
-        conn.sendall(struct.pack(">HH", 64, 48) + pixel + struct.pack(">I", 4) + b"fake")
+        conn.sendall(struct.pack(">HH", *size) + pixel + struct.pack(">I", 4) + b"fake")
         time.sleep(0.3)  # SetPixelFormat, SetEncodings, the first update request
         if stall:
             conn.sendall(struct.pack(">BxH", 0, 1) + b"\x00\x00\x00\x00")  # 4 of the 12 header bytes
@@ -47,14 +47,14 @@ def fake_server(listener, stall):
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build (ninja -C native/build)")
 class ReadDeadline(unittest.TestCase):
-    def start(self, stall):
+    def start(self, stall, size=(64, 48)):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         self.addCleanup(listener.close)
-        threading.Thread(target=fake_server, args=(listener, stall), daemon=True).start()
+        threading.Thread(target=fake_server, args=(listener, stall, size), daemon=True).start()
         port = listener.getsockname()[1]
         p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s")), text=True)
@@ -75,6 +75,18 @@ class ReadDeadline(unittest.TestCase):
         self.assertIn("connected to fake", log)
         self.assertEqual(rc, 147, log)
         self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_desktop_past_8192_a_side_ends_the_session(self):
+        # 65535x65535 would be a 17 GB shared framebuffer, mapped by the manager window.
+        p = self.start(stall=False, size=(65535, 65535))
+        try:
+            rc = p.wait(15)
+        except subprocess.TimeoutExpired:
+            self.fail("omaremote-vnc took a 65535x65535 desktop")
+        log = p.stdout.read()
+        self.assertIn("larger than OMARemote shows", log)
+        self.assertNotIn("connected to fake", log)
+        self.assertNotEqual(rc, 0)
 
     def test_an_idle_session_is_not_cut(self):
         p = self.start(stall=False)

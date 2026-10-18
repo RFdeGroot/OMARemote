@@ -396,10 +396,22 @@ static void ensure_framebuffer(uint32_t w, uint32_t h)
 {
 	if (g.frame.data && g.frame.width == w && g.frame.height == h)
 		return;
+	// A size refused once is refused again: not tried (and logged) on every picture.
+	static uint32_t refusedW = 0, refusedH = 0;
+	if (!g.frame.data && w == refusedW && h == refusedH)
+		return;
 	oma::Framebuffer old = g.frame;
 	oma::Framebuffer fb = oma::fb_alloc(w, h);
 	if (!fb.data)
+	{
+		// Never left with the old one: show() would write this size into it.
+		refusedW = w;
+		refusedH = h;
+		g.frame = {};
+		if (old.data)
+			oma::fb_release(old.data);
 		return;
+	}
 	g.frame = fb;
 	log("desktop is %ux%u", w, h);
 	g.link.sendFrame(g.frame);

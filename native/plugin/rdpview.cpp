@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <utility>
@@ -383,16 +384,25 @@ void releaseMapping(void* info)
 void RdpView::mapFrame(int fd, int w, int h, int stride)
 {
 	unmapFrame();
+	// The session's numbers, checked before anything is mapped: a side past MaxFrameSide would
+	// take this window (and every tab in it) down, and a memfd shorter than stride * h would
+	// SIGBUS on the first read past its end.
+	struct stat st {};
+	const bool sane = w > 0 && h > 0 && w <= MaxFrameSide && h <= MaxFrameSide &&
+	                  stride >= w * 4 && stride <= MaxFrameSide * 4 && fstat(fd, &st) == 0 &&
+	                  S_ISREG(st.st_mode) &&
+	                  st.st_size >= static_cast<off_t>(static_cast<size_t>(stride) * static_cast<size_t>(h));
+	if (!sane)
+	{
+		qWarning("omaremote: a %dx%d frame (stride %d) from the session was not shown", w, h, stride);
+		close(fd);
+		return;
+	}
 	const size_t size = static_cast<size_t>(stride) * static_cast<size_t>(h);
 	void* p = mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
 	close(fd);
 	if (p == MAP_FAILED)
 		return;
-	if (w <= 0 || h <= 0)
-	{
-		munmap(p, size);
-		return;
-	}
 	// BGRX in memory is 0xffRRGGBB as a little-endian word: Qt's RGB32. The mapping lives as long
 	// as any copy of the image: the render thread uploads from a copy after sync, so unmapping
 	// here when the session resizes would pull the pixels out from under that upload.
@@ -453,7 +463,7 @@ void RdpView::addSurface(const QList<QByteArray>& w)
 			const int at = layerAt + 1 + i * 4;
 			s.layers[i] = { w[at].toUInt(), w[at + 1].toInt(), w[at + 2].toUInt(), w[at + 3].toUInt() };
 		}
-		ok = s.width > 0 && s.height > 0 && s.width <= 8192 && s.height <= 8192;
+		ok = s.width > 0 && s.height > 0 && s.width <= MaxFrameSide && s.height <= MaxFrameSide;
 	}
 	if (!ok)
 	{

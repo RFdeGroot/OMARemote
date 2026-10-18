@@ -83,6 +83,8 @@ public:
 	// recently used one goes first, so a server sending new shapes cannot fill memory.
 	static constexpr int MaxCursorSide = 512;
 	static constexpr int MaxCursors = 64;
+	// The largest desktop mapped (as link.hpp's kMaxFrameSide; addSurface holds to the same).
+	static constexpr int MaxFrameSide = 8192;
 
 	Q_INVOKABLE void answerCertificate(int answer);
 	Q_INVOKABLE void answerCredentials(const QString& user, const QString& domain, const QString& password);

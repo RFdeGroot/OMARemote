@@ -69,10 +69,10 @@ class Runtime(unittest.TestCase):
         with open(self.calls) as f:
             return len(f.read().splitlines())
 
-    def run_view(self, share, ms=1500, send=(), lines=()):
+    def run_view(self, share, ms=1500, send=(), lines=(), frames=()):
         """Runs the view; the fake session sends `send` 800 ms after the view attaches. Returns the
         RESULT, the clipboard texts the view offered the session, and Qt's log. `lines` are sent
-        as they are, after `send`."""
+        as they are, after `send`; `frames` are (memfd size, "frame w h stride") sent with the fd."""
         path = os.path.join(self.dir, "s")
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(path)
@@ -89,10 +89,18 @@ class Runtime(unittest.TestCase):
                 conn.settimeout(0.1)
                 start = time.monotonic()
                 pending = [b"clip " + base64.b64encode(t) for t in send] + list(lines)
+                fds = list(frames)
                 while True:
                     if pending and time.monotonic() - start > 0.8:
                         conn.sendall(b"".join(l + b"\n" for l in pending))
                         pending = []
+                    if fds and time.monotonic() - start > 0.8:
+                        for size, line in fds:
+                            fd = os.memfd_create("frame")
+                            os.ftruncate(fd, size)
+                            socket.send_fds(conn, [line + b"\n"], [fd])
+                            os.close(fd)
+                        fds = []
                     try:
                         chunk = conn.recv(65536)
                     except socket.timeout:
@@ -161,6 +169,17 @@ class Runtime(unittest.TestCase):
 
     # omarchy-plugin-marketplace#11853: every cursor shape a server sent was kept for good, and the
     # size check multiplied in int (32768 x 16384 x 4 wraps to INT_MIN and passed with 4 bytes).
+    # A desktop size from the session is checked before it is mapped: 65535 a side would be a 17 GB
+    # mapping in the window, and a memfd shorter than stride * height a SIGBUS on the first read.
+    def test_frames_past_the_limit_or_past_the_memfd_are_not_mapped(self):
+        frames = [(4096, b"frame 65535 65535 262140"),
+                  (4096, b"frame 640 480 2560"),
+                  (64 * 4 * 48, b"frame 64 48 100"),
+                  (64 * 4 * 48, b"frame 64 48 256")]
+        result, _, err = self.run_view(False, frames=frames)
+        self.assertEqual(result["remote"], [64, 48], err)
+        self.assertEqual(err.count("from the session was not shown"), 3, err)
+
     def test_cursors_are_kept_to_a_number(self):
         self.stub(b"")
         pixel = base64.b64encode(b"\xff" * 16)  # 2 x 2

@@ -121,6 +121,11 @@ static std::map<void*, Mapping> g_mappings;
 Framebuffer fb_alloc(uint32_t width, uint32_t height)
 {
 	Framebuffer fb;
+	if (width == 0 || height == 0 || width > kMaxFrameSide || height > kMaxFrameSide)
+	{
+		log("a %ux%u desktop is larger than OMARemote shows (%u a side at most)", width, height, kMaxFrameSide);
+		return fb;
+	}
 	const uint32_t stride = width * 4;
 	const size_t size = size_t(stride) * height;
 	const int fd = memfd_create("omaremote-fb", MFD_CLOEXEC);

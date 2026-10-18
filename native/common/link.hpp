@@ -25,6 +25,9 @@ constexpr size_t kMaxClipBytes = 1024 * 1024;
 // The widest and tallest cursor passed to the UI, in pixels (RDP's large pointers go to 384); a
 // larger one from the remote side is not shown (the UI holds to the same, RdpView::MaxCursorSide).
 constexpr int kMaxCursorSide = 512;
+// The widest and tallest desktop: a server may claim up to 65535x65535 (17 GB of shared memory). A
+// larger one ends the session instead (the UI holds to the same, RdpView::MaxFrameSide).
+constexpr uint32_t kMaxFrameSide = 8192;
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // A shared-memory framebuffer, 32 bits per pixel, B G R X in memory (Qt's RGB32).
@@ -37,7 +40,7 @@ struct Framebuffer
 	uint32_t stride = 0;
 };
 
-// Maps a new framebuffer; nullptr data on failure. The mapping lives until fb_release(data),
+// Maps a new framebuffer; nullptr data on failure, also for a side of 0 or above kMaxFrameSide. The mapping lives until fb_release(data),
 // whose signature fits FreeRDP's pfree, so gdi can own it.
 Framebuffer fb_alloc(uint32_t width, uint32_t height);
 void fb_release(void* data);
