@@ -468,6 +468,7 @@ void Clipboard::offerLocal()
 		{
 			m_uriFd = m_seat.receive(fm);
 			m_uriBuf.clear();
+			m_uriSince = oma::now_ms();
 			if (m_uriFd >= 0)
 				return; // finishLocalOffer once it is read
 		}
@@ -1043,6 +1044,14 @@ void Clipboard::handleFds(const std::vector<pollfd>& fds)
 void Clipboard::tick()
 {
 	const uint64_t now = oma::now_ms();
+	// Nothing waits without a deadline: a local owner that never finishes the URI list.
+	if (m_uriFd >= 0 && now - m_uriSince > CLIP_URI_MS)
+	{
+		oma::log("the local clipboard's file list took too long: offered without files");
+		close(m_uriFd);
+		m_uriFd = -1;
+		finishLocalOffer("");
+	}
 	// A transfer that makes no progress for 30 seconds is given up, as Gliff does.
 	std::vector<uint32_t> stale;
 	for (auto& [id, o] : m_out)

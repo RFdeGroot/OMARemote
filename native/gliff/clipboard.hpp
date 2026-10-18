@@ -36,6 +36,8 @@ constexpr uint64_t CLIP_MAX_ITEM = 32ull * 1024 * 1024;
 constexpr uint64_t CLIP_MAX_FILES_TOTAL = 4ull * 1024 * 1024 * 1024;
 constexpr size_t CLIP_MAX_PATH_BYTES = 512 * 1024;
 constexpr uint64_t CLIP_IDLE_MS = 30000;
+// The longest the local URI list may take to read before an offer goes out without files.
+constexpr uint64_t CLIP_URI_MS = 5000;
 
 // ---- the pure rules (gliff-proto's), tested in gliff-proto-test
 
@@ -132,6 +134,7 @@ class Clipboard
 	uint64_t m_localChangedAt = 0;
 	uint64_t m_offeredAt = 0; // when our last offer (or withdrawal) went
 	int m_uriFd = -1; // reading the local URI list before files can be offered
+	uint64_t m_uriSince = 0; // when that read began: an owner that never closes the pipe is given up
 	std::string m_uriBuf;
 
 	// The remote's offer.
