@@ -12,13 +12,15 @@ check=$("$here/omaremote-session" update-check "${current:-0}") || {
   echo "Could not reach GitHub to look for a newer OMARemote."
   exit 1
 }
-read -r latest url < <(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["latest"] or "-", d["url"] or "-")' <<<"$check")
+read -r latest url newer < <(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["latest"] or "-", d["url"] or "-", "yes" if d.get("newer") else "no")' <<<"$check")
 if [[ $url == - ]]; then
   echo "The newest OMARemote release has no package for $(uname -m)."
   exit 1
 fi
-if [[ $latest == "$current" ]]; then
-  echo "OMARemote $current is the newest release already."
+# Only ever forward: a release pulled from GitHub, or a newer one without a package for this
+# machine, leaves an older one listed as the newest.
+if [[ $newer != yes ]]; then
+  echo "OMARemote ${current:-(this version)} is the newest release already."
   exit 0
 fi
 
@@ -26,6 +28,8 @@ fi
 # beside the UI): a package whose signature does not check out against it is never installed.
 keyring=/usr/share/omaremote/omaremote-release.gpg
 [[ -f $keyring ]] || keyring="$(dirname "$here")/packaging/arch/omaremote-release.gpg"
+# And by that key only, whatever else the keyring file may hold.
+release_key=D7FC432CF643656A400BDDEB3BE7753BBB50B393
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -39,7 +43,8 @@ curl -fsSL --proto '=https' -o "$signature" "$url.sig" || {
   echo "The release has no signature ($url.sig): not installing it."
   exit 1
 }
-if ! gpgv --status-fd 1 --keyring "$keyring" "$signature" "$package" 2>/dev/null | grep -q '^\[GNUPG:\] VALIDSIG '; then
+if ! gpgv --status-fd 1 --keyring "$keyring" "$signature" "$package" 2>/dev/null |
+    awk -v key="$release_key" '$1 == "[GNUPG:]" && $2 == "VALIDSIG" && ($3 == key || $NF == key) { found = 1 } END { exit !found }'; then
   echo "The package's signature does not check out against OMARemote's release key: not installing it."
   exit 1
 fi

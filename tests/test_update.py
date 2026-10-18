@@ -24,7 +24,7 @@ class Update(unittest.TestCase):
         shutil.copy(UPDATE, os.path.join(self.bin, "omaremote-update"))
         url = "https://example.invalid/omaremote-9.9.9-1-x86_64.pkg.tar.zst"
         self.script("bin/omaremote", 'echo "omaremote 1.0.0"')
-        self.script("bin/omaremote-session", "echo '%s'" % json.dumps({"latest": "9.9.9", "url": url}))
+        self.script("bin/omaremote-session", "echo '%s'" % json.dumps({"latest": "9.9.9", "url": url, "newer": True}))
         # curl -o <file> <url>: the package, or its signature.
         self.script("stubs/curl", 'out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && { out=$2; shift; }; shift; done; '
                                   'echo data > "$out"')
@@ -62,6 +62,23 @@ class Update(unittest.TestCase):
 
     def test_a_bad_signature_installs_nothing(self):
         self.script("stubs/gpgv", 'echo "[GNUPG:] BADSIG D7FC432CF643656A400BDDEB3BE7753BBB50B393 x"')
+        out = self.run_update()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_an_older_release_is_never_installed(self):
+        # 0.9.7 installed, 0.9.6 listed as the newest (a pulled release): no downgrade.
+        url = "https://example.invalid/omaremote-0.9.6-1-x86_64.pkg.tar.zst"
+        self.script("bin/omaremote", 'echo "omaremote 0.9.7"')
+        self.script("bin/omaremote-session", "echo '%s'" % json.dumps({"latest": "0.9.6", "url": url, "newer": False}))
+        out = self.run_update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertIn("newest release already", out.stdout)
+        self.assertNotIn("Updating", out.stdout)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_a_good_signature_by_another_key_installs_nothing(self):
+        self.script("stubs/gpgv", 'echo "[GNUPG:] VALIDSIG 0123456789ABCDEF0123456789ABCDEF01234567 x 0123456789ABCDEF0123456789ABCDEF01234567"')
         out = self.run_update()
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(os.path.exists(self.log))
