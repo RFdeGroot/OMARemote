@@ -39,14 +39,11 @@ RdpView::RdpView(QQuickItem* parent) : QQuickItem(parent)
 	connect(&m_sizeTimer, &QTimer::timeout, this, &RdpView::sendSize);
 
 	connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
+		// Copied elsewhere since: that wins over what the session sent.
+		m_hasHeldClip = false;
+		m_heldClip.clear();
 		if (hasActiveFocus())
 			sendClipboard();
-		else
-		{
-			// Copied elsewhere since: that wins over what the session sent.
-			m_hasHeldClip = false;
-			m_heldClip.clear();
-		}
 	});
 }
 
@@ -957,8 +954,15 @@ void RdpView::focusInEvent(QFocusEvent* e)
 	send("focus " + QByteArray::number(kSyncNum));
 	(void)kSyncScroll;
 	(void)kSyncCaps;
-	applyHeldClip();
-	sendClipboard();
+	// Held text is set a moment later: on Wayland the desktop's newer selection reaches us around
+	// the keyboard's arrival, and must get the chance to drop it first.
+	if (m_hasHeldClip)
+		QTimer::singleShot(150, this, [this] {
+			if (hasActiveFocus())
+				applyHeldClip();
+		});
+	else
+		sendClipboard();
 }
 
 void RdpView::applyHeldClip()

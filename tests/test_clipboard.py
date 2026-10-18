@@ -156,6 +156,11 @@ class Runtime(unittest.TestCase):
         result, _, err = self.run_view(True, ms=2500, send=[b"from the session"], mode="copy-away")
         self.assertEqual(result["clipboard"], "copied later", err)
 
+    def test_a_copy_arriving_with_the_keyboard_wins_too(self):
+        self.stub(b"from the desktop")
+        result, _, err = self.run_view(True, ms=2500, send=[b"from the session"], mode="copy-return-away")
+        self.assertEqual(result["clipboard"], "copied on return", err)
+
     def test_text_from_the_session_is_set_up_to_the_limit(self):
         self.stub(b"from the desktop")
         result, _, _ = self.run_view(True, send=[b"x" * (MAX + 1), b"from the session"])

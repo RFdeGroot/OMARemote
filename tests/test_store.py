@@ -51,8 +51,11 @@ class StoreFile(unittest.TestCase):
             cfg = os.path.join(d, "config", "omaremote")
             os.makedirs(cfg)
             path = os.path.join(cfg, "connections.json")
-            with open(path, "w") as f:
-                f.write(text)
+            if text is None:
+                os.mkdir(path)
+            else:
+                with open(path, "w") as f:
+                    f.write(text)
             if stamps is not None:
                 with open(os.path.join(cfg, "last-connected.json"), "w") as f:
                     json.dump(stamps, f)
@@ -61,8 +64,11 @@ class StoreFile(unittest.TestCase):
             out = subprocess.run([QS, "-p", shell], env=env, capture_output=True, text=True, timeout=30)
             probe = [l for l in (out.stdout + out.stderr).splitlines() if "PROBE " in l]
             self.assertTrue(probe, out.stderr[-2000:])
-            with open(path) as f:
-                after = f.read()
+            self.last_err = out.stderr
+            after = None
+            if os.path.isfile(path):
+                with open(path) as f:
+                    after = f.read()
             broken = os.path.join(cfg, "connections.json.broken")
             kept = None
             if os.path.exists(broken):
@@ -76,6 +82,14 @@ class StoreFile(unittest.TestCase):
         self.assertTrue(probe["broken"])
         self.assertEqual(after, text)
         self.assertEqual(kept, text)
+
+    def test_a_path_that_cannot_be_read_is_broken_not_new(self):
+        # Only a missing file is a fresh start: anything else that fails to load must not be
+        # replaced by an empty list (a folder in its place here; Store's own chmod 600 would
+        # undo an unreadable file's mode).
+        probe, after, _ = self.run_store(None)
+        self.assertTrue(probe["broken"], self.last_err[-1500:])
+        self.assertIsNone(after)
 
     def test_a_non_object_is_broken_too(self):
         probe, after, _ = self.run_store("5")

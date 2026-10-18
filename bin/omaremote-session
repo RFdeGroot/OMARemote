@@ -829,6 +829,11 @@ def write_json_atomic(path, data):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".",
                                suffix=".tmp")
     try:
+        # As readable as any file the user writes (mkstemp makes it 0600): a sync folder may be
+        # shared by two accounts on one machine.
+        umask = os.umask(0)
+        os.umask(umask)
+        os.fchmod(fd, 0o666 & ~umask)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
@@ -3180,7 +3185,7 @@ def session_socket(sid):
     path = os.path.join(SESSIONS_DIR, sid + ".sock")
     if len(path.encode()) < 100:
         return path
-    short = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", f"omaremote-{sid}.sock")
+    short = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or private_tmp_base(), f"omaremote-{sid}.sock")
     return short
 
 

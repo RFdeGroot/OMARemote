@@ -3,7 +3,9 @@ import OMARemote
 
 // Run by tests/test_clipboard.py: qml6 -platform offscreen clipboard.qml -- <socket> <share 0|1> <ms> <mode>.
 // mode "away": the view loses the keyboard at 600 ms and gets it back 300 ms before the end;
-// "copy-away": the same, with a copy elsewhere on the desktop at 1200 ms; anything else: focused.
+// "copy-away": the same, with a copy elsewhere on the desktop at 1200 ms; "copy-return-away": the
+// copy elsewhere arrives just after the view gets the keyboard back (Wayland sends the selection
+// around the keyboard's arrival); anything else: focused.
 // An RdpView attached to the test's fake session, focused, while the desktop clipboard changes;
 // prints one "RESULT {json}" line after <ms> and quits.
 Window {
@@ -66,6 +68,12 @@ Window {
             sink.paste()
             root.whileAway = sink.text
             view.forceActiveFocus()
+            if (root.mode === "copy-return-away") {
+                source.text = "copied on return"
+                source.selectAll()
+                source.copy()
+                view.forceActiveFocus()
+            }
         }
     }
     Timer { running: true; interval: root.ms; onTriggered: root.done() }

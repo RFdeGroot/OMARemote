@@ -694,7 +694,14 @@ Singleton {
         atomicWrites: false
         printErrors: false
         onLoaded: root.parse(text())
-        onLoadFailed: root.loaded = true
+        // No file yet is a fresh start; a file that is there but cannot be read is not.
+        onLoadFailed: function (error) {
+            if (error !== FileViewError.FileNotFound && !root.broken) {
+                console.warn("connections.json could not be read: " + FileViewError.toString(error))
+                root.broken = true
+            }
+            root.loaded = true
+        }
         onFileChanged: reload()
     }
 }

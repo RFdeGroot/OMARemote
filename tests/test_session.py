@@ -926,6 +926,17 @@ class Sync(unittest.TestCase):
             for name in ("fifo", "zero", "big"):
                 self.assertIn(name + ".omaremote.json", errors)
 
+    def test_our_file_is_as_readable_as_any_the_user_writes(self):
+        # mkstemp makes 0600: a sync folder shared by two accounts on one machine needs the umask's.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            old = os.umask(0o022)
+            try:
+                session.write_json_atomic(os.path.join(d, "a.json"), {})
+            finally:
+                os.umask(old)
+            self.assertEqual(os.stat(os.path.join(d, "a.json")).st_mode & 0o777, 0o644)
+
     def test_a_planted_symlink_never_redirects_our_write(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
