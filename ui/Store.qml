@@ -3,6 +3,7 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "js/Format.js" as Format
 
 // The saved connections. This window is the only writer of connections.json; it is watched (sync
 // and hand edits land in it) and written in place, so the watch keeps firing. When each connection
@@ -64,7 +65,6 @@ Singleton {
     readonly property var settingKeys: ["display", "width", "height", "scale", "multimon", "clipboard", "audio",
         "microphone", "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
         "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn", "vncScaling", "vncQuality", "viewOnly"]
-    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22 })
     readonly property var resolvedOnly: ["credentialSource", "secretKind", "secretId"]
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
@@ -135,7 +135,7 @@ Singleton {
         for (k in c)
             out[k] = c[k]
         if (!c.port)
-            out.port = defaultPorts[out.protocol || "rdp"] || 3389
+            out.port = Format.defaultPort(out.protocol)
         out.lastConnected = Math.max(Number(out.lastConnected) || 0, Number(root.lastSeen[c.id]) || 0)
         var mode = c.credential || "custom"
         if (mode === "custom") {

@@ -28,7 +28,6 @@ FocusScope {
     signal closed()
 
     readonly property var parsed: Format.quickSpec(address, true)
-    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22 })
     readonly property bool isSsh: protocol === "ssh"
 
     // What gets connected: the address as typed, under the protocol shown.
@@ -38,7 +37,7 @@ FocusScope {
             return null
         return {
             protocol: protocol, host: p.host,
-            port: p.portGiven ? p.port : defaultPorts[protocol],
+            port: p.portGiven ? p.port : Format.defaultPort(protocol),
             username: isSsh ? sshUser.trim() : (credential === "custom" ? p.username : ""),
             domain: !isSsh && credential === "custom" ? p.domain : "",
             credential: isSsh ? "custom" : credential,
@@ -105,7 +104,7 @@ FocusScope {
         protocolPicked = true
     }
     function fill(c) {
-        var port = Number(c.port) !== defaultPorts[c.protocol] ? ":" + c.port : ""
+        var port = Number(c.port) !== Format.defaultPort(c.protocol) ? ":" + c.port : ""
         address = (c.username && c.protocol === "ssh" ? c.username + "@" : "") + c.host + port
         protocol = c.protocol
         protocolPicked = true

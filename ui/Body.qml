@@ -76,7 +76,7 @@ FocusScope {
                 return root.listed
         }
         var who = spec.username ? (spec.domain ? spec.domain + "\\" : "") + spec.username + "@" : ""
-        var defaultPort = { rdp: 3389, vnc: 5900, ssh: 22 }[spec.protocol]
+        var defaultPort = Format.defaultPort(spec.protocol)
         // A whole connection (a blank one with what was typed), so the detail pane reads like any other.
         var row = Store.resolve(Object.assign(Store.blankIn(""), {
             id: root.quickRowId, protocol: spec.protocol, host: spec.host, port: spec.port,

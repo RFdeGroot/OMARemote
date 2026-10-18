@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import "js/Format.js" as Format
 
 // What an import from another client (.rdp files, Remmina, 1Remote, ~/.ssh/config) would add, before it
 // does: one row per connection found, the new ones switched on. What is here already, listed
@@ -173,7 +174,7 @@ FocusScope {
                                 elide: Text.ElideRight
                                 text: [modelData.protocol.toUpperCase() + "  "
                                        + (modelData.username ? modelData.username + "@" : "") + modelData.host
-                                       + (modelData.port !== ({ rdp: 3389, vnc: 5900, ssh: 22 })[modelData.protocol]
+                                       + (modelData.port !== Format.defaultPort(modelData.protocol)
                                           ? ":" + modelData.port : "")
                                        // Where the sign-in goes too: a gateway is shown, never hidden.
                                        + (modelData.gateway ? "  via gateway " + modelData.gateway : ""),

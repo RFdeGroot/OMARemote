@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui as Kit
 import "js/Limits.js" as Limits
+import "js/Format.js" as Format
 
 // Create or edit one connection. Works on a copy (`d`); nothing is stored until save.
 Rectangle {
@@ -25,13 +26,12 @@ Rectangle {
     // SSH and Gliff both sign in through ssh: a user, a key, extra options, no passwords.
     readonly property bool viaSsh: isSsh || isGliff
     readonly property bool isRdp: !isVnc && !viaSsh
-    readonly property var defaultPorts: ({ rdp: 3389, vnc: 5900, ssh: 22, gliff: 22 })
 
     // Switching protocol moves the port along when it is still the old protocol's default.
     function pickProtocol(value) {
         var next = Object.assign({}, d)
-        if (!next.port || Number(next.port) === defaultPorts[next.protocol || "rdp"])
-            next.port = defaultPorts[value]
+        if (!next.port || Number(next.port) === Format.defaultPort(next.protocol))
+            next.port = Format.defaultPort(value)
         next.protocol = value
         d = next
     }
@@ -157,7 +157,7 @@ Rectangle {
         if (!c.name.trim())
             c.name = c.host
         var port = parseInt(c.port)
-        c.port = port > 0 && port < 65536 ? port : defaultPorts[c.protocol || "rdp"]
+        c.port = port > 0 && port < 65536 ? port : Format.defaultPort(c.protocol)
         // SSH signs in with keys and the agent (ssh asks for anything else): no credential sets.
         if (c.protocol === "ssh" || c.protocol === "gliff")
             c.credential = "custom"
@@ -280,7 +280,7 @@ Rectangle {
                             maximumLength: Limits.port
                             Layout.preferredWidth: 72
                             width: 72
-                            placeholderText: String(root.defaultPorts[root.d.protocol || "rdp"])
+                            placeholderText: String(Format.defaultPort(root.d.protocol))
                             text: root.d.port ? String(root.d.port) : ""
                             validator: IntValidator { bottom: 1; top: 65535 }
                             onTextEdited: root.set("port", text)

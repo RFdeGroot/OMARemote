@@ -26,7 +26,7 @@ ShellRoot {
             stop()
             var c = Store.connections.filter(function (c) { return c.id === "c1" })[0]
             console.log("PROBE " + JSON.stringify({ loaded: Store.loaded, broken: Store.broken,
-                count: Store.stored.length, last: c ? c.lastConnected : null }))
+                count: Store.stored.length, last: c ? c.lastConnected : null, port: c ? c.port : null }))
             Store.setUi("pinned", true)
             done.start()
         }
@@ -43,6 +43,7 @@ class StoreFile(unittest.TestCase):
             shell = os.path.join(d, "shell")
             os.makedirs(os.path.join(shell, "store"))
             shutil.copy(os.path.join(UI, "Store.qml"), os.path.join(shell, "store"))
+            shutil.copytree(os.path.join(UI, "js"), os.path.join(shell, "store", "js"))
             with open(os.path.join(shell, "store", "qmldir"), "w") as f:
                 f.write("singleton Store 1.0 Store.qml\n")
             with open(os.path.join(shell, "shell.qml"), "w") as f:
@@ -82,10 +83,11 @@ class StoreFile(unittest.TestCase):
         self.assertEqual(after, "5")
 
     def test_a_good_file_is_written_and_shows_the_stamp(self):
-        text = json.dumps({"connections": [{"id": "c1", "host": "a.lan", "lastConnected": 100}]})
+        text = json.dumps({"connections": [{"id": "c1", "host": "a.lan", "protocol": "gliff", "lastConnected": 100}]})
         probe, after, kept = self.run_store(text, {"c1": 200})
         self.assertFalse(probe["broken"])
         self.assertEqual(probe["last"], 200)
+        self.assertEqual(probe["port"], 22)
         self.assertIsNone(kept)
         data = json.loads(after)
         self.assertTrue(data["ui"]["pinned"])

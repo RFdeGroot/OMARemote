@@ -24,6 +24,8 @@ Item {
             r.reconnecting = Format.statsParts(Format.parseStats("health=bad why=reconnecting"))
             r.odd = Format.parseStats("health=weird why=x").health
             r.noStats = Format.parseStats("")
+            r.ports = Format.defaultPorts
+            r.gliffAddress = Format.address({ protocol: "gliff", host: "pc.lan", port: 22 })
         } catch (e) {
             r.error = String(e)
         }

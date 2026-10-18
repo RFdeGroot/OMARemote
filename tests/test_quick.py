@@ -1,3 +1,5 @@
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -8,6 +10,9 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 CARD = os.path.join(HERE, "..", "ui", "QuickConnectCard.qml")
 QML = shutil.which("qml6") or shutil.which("qml")
+_loader = importlib.machinery.SourceFileLoader("session", os.path.join(HERE, "..", "bin", "omaremote-session"))
+session = importlib.util.module_from_spec(importlib.util.spec_from_loader("session", _loader))
+_loader.exec_module(session)
 
 # The quick connect card never sends a credential set's password to a server nobody chose it for:
 # a set filled in from a recent quick connection is let go when the address changes to another host.
@@ -35,6 +40,11 @@ class QuickCredential(unittest.TestCase):
     def test_a_set_picked_by_hand_stays(self):
         self.assertEqual(self.r["picked"], {"credential": "k1", "filledFor": ""})
         self.assertEqual(self.r["none"], {"credential": "custom", "filledFor": ""})
+
+    def test_one_port_table_equal_to_the_backend(self):
+        # Gliff connections without a port of their own showed host:3389 (Store had no gliff).
+        self.assertEqual(self.r["ports"], session.DEFAULT_PORTS)
+        self.assertEqual(self.r["gliffAddress"], "pc.lan")
 
 
 class Card(unittest.TestCase):

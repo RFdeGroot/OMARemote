@@ -24,12 +24,18 @@ function clock(seconds) {
     return pad(t.getHours()) + ":" + pad(t.getMinutes())
 }
 
+// Each protocol's own port: the one table the UI reads (DEFAULT_PORTS in bin/omaremote-session).
+var defaultPorts = { rdp: 3389, vnc: 5900, ssh: 22, gliff: 22 }
+
+function defaultPort(protocol) {
+    return defaultPorts[protocol || "rdp"] || 3389
+}
+
 function address(c) {
     if (!c)
         return ""
     var host = c.host || ""
-    var standard = c.protocol === "vnc" ? 5900 : c.protocol === "ssh" || c.protocol === "gliff" ? 22 : 3389
-    return (c.port && Number(c.port) !== standard) ? host + ":" + c.port : host
+    return (c.port && Number(c.port) !== defaultPort(c.protocol)) ? host + ":" + c.port : host
 }
 
 function account(c) {
@@ -147,8 +153,7 @@ function quickSpec(query, alone) {
         user = user.slice(slash + 1)
     }
     var protocol = scheme || (domain ? "rdp" : user || port === 22 ? "ssh" : (port >= 5900 && port <= 5999 ? "vnc" : "rdp"))
-    var defaults = { rdp: 3389, vnc: 5900, ssh: 22 }
-    return { protocol: protocol, host: host, port: port || defaults[protocol], portGiven: port > 0,
+    return { protocol: protocol, host: host, port: port || defaultPort(protocol), portGiven: port > 0,
              schemeGiven: !!scheme, username: user, domain: domain }
 }
 
