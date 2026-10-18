@@ -79,15 +79,19 @@ an audit after two sync findings in a row found six more), and add the class her
   imports, and a quick connect address changed to another host all drop it. (0.7.0, 0.8.0, 0.9.2)
 - **Broken input is skipped, never fatal.** A value of the wrong type, a file that is not an object,
   a date far in the future: skip the entry and say so; one bad file must not stop sync or an import.
-  (0.8.3, 0.9.3)
+  A file we write back is never rewritten from a failed read: refuse to write until it reads (the
+  window wiped a connections.json with a trailing comma on the next setting change). (0.8.3, 0.9.3,
+  0.9.7)
 - **Everything from a server or another program is bounded in size, count and time.** Caches have a
-  cap (cursors: 64, LRU), pictures a largest side (cursors 512), text a byte limit (clipboard 1 MiB),
-  lists a length. Width × height and offsets are computed in 64 bits before any check. (0.9.0,
-  0.9.4, 0.9.5)
+  cap (cursors: 64, LRU), pictures a largest side (cursors 512, desktops 8192), text a byte limit
+  (clipboard 1 MiB, titles 4 KiB), files a size (sync 16 MiB), lists a length. Width × height and
+  offsets are computed in 64 bits before any check, and a shared buffer is checked to be as long as
+  its numbers say before it is mapped. (0.9.0, 0.9.4, 0.9.5, 0.9.7)
 - **Nothing waits without a deadline.** No unbounded read in the window's main thread (the clipboard
   only through `oma::readClipboard`); every read in a session process has a timeout so a server
-  stopping mid-message ends the session; only ordinary files are opened (a FIFO hangs); queries on
-  a foreign database stop after a few seconds. (0.8.0, 0.8.3, 0.9.4, 0.9.5)
+  stopping mid-message ends the session; only ordinary files are opened (a FIFO hangs: sync files
+  too); queries on a foreign database stop after a few seconds; a sync round and a clipboard owner's
+  pipe have one too. (0.8.0, 0.8.3, 0.9.4, 0.9.5, 0.9.7)
 - **A switch works for every protocol.** A new setting is checked in each session process (RDP, VNC,
   SSH, Gliff): VNC shared the clipboard with the switch off. Off means untouched, not just unused.
   (0.9.4)
@@ -96,6 +100,22 @@ an audit after two sync findings in a row found six more), and add the class her
   check, through the *whole* path without symlinks (`openat2` with `RESOLVE_BENEATH |
   RESOLVE_NO_SYMLINKS`; `O_NOFOLLOW` covers the last part only), then `fstat`: an ordinary file
   with the device and inode that were checked. (0.8.3, 0.9.0, 0.9.6)
+- **Never a fixed name in a folder others write.** A temporary file in the sync folder (or any
+  shared folder) gets a random name with `O_EXCL` (`mkstemp`), then `os.replace`: a fixed name can
+  be planted as a symlink to any file of the user's. The same for files two of our own processes
+  rewrite: a unique temp name and a lock around read-modify-write (session records). One writer per
+  file where possible (lastConnected moved out of connections.json). (0.9.7)
+- **A server acts on the desktop only while its tab has the keyboard.** What a session sends for
+  the clipboard waits until the view is focused and is dropped when the desktop copied since (Gliff,
+  then RDP, VNC and SSH's OSC 52). (0.9.7)
+- **Text that reaches a systemd unit's command line is expanded by systemd first.** Since systemd
+  262, `uwsm-app` and `omarchy launch … terminal` expand `${…}` anywhere in the command line, also
+  inside shell quotes, and blank names they cannot read. No `${` in a command we hand them, and
+  nothing a connection holds may produce one (hosts pass HOST_RE, user names are URL-encoded).
+  (plugin 0.4.11; checked for OMARemote in 0.9.7)
+- **Updates only go forward, signed by our key.** The updater installs only a release newer than
+  this one, and takes a signature only from the release key's fingerprint, whatever else a keyring
+  holds; CI Actions are pinned by commit while the job holds the signing key. (0.9.7)
 - **Text into a line-based file stays one line.** Log lines (read back for "connected"/"failed"),
   `~/.ssh/omaremote.conf` (a name with a line break added a `Host *` block). (0.8.0, 0.9.0)
 

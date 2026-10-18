@@ -1750,6 +1750,17 @@ class Files(unittest.TestCase):
             with self.assertRaises(ValueError):
                 session.sftp_uri(bad)
 
+    def test_nothing_a_connection_holds_puts_a_dollar_brace_on_the_terminal_line(self):
+        # The browse retry runs through omarchy launch … terminal, a systemd unit: systemd 262
+        # expands ${…} anywhere in its command line, also inside shell quotes. The URI is all a
+        # (synced) connection adds there.
+        self.assertEqual(session.sftp_uri({"protocol": "ssh", "host": "srv", "username": "${HOME}$x"}),
+                         "sftp://%24%7BHOME%7D%24x@srv/")
+        with self.assertRaises(ValueError):
+            session.sftp_uri({"protocol": "ssh", "host": "${HOME}"})
+        with self.assertRaises(ValueError):
+            session.sftp_uri({"protocol": "ssh", "host": "a${HOME}@srv"})
+
     def test_the_folder_layer_is_found_in_the_mount_table(self):
         fuse = session.GVFS_FUSE
         self.assertTrue(session.gvfs_fuse_ready(f"gvfsd-fuse {fuse} fuse.gvfsd-fuse rw 0 0\n"))
