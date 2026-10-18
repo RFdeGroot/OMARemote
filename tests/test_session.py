@@ -906,6 +906,26 @@ class Views(unittest.TestCase):
     def listed(self):
         return {s["id"]: s for s in session.list_sessions()}["s1"]
 
+    def test_the_supervisor_and_the_window_never_undo_each_other(self):
+        # Both rewrite sessions/s1.json, from separate processes, at the same moment: the record
+        # stays whole, the supervisor's state and the window's view both survive.
+        import multiprocessing as mp
+        ctx = mp.get_context("fork")
+        for trial in range(40):
+            self.record(state="connecting", view="tab")
+            sup = ctx.Process(target=lambda: [session.write_session({"id": "s1", "state": "connected", "n": i})
+                                              for i in range(3)])
+            win = ctx.Process(target=lambda: [session.set_view("s1", "window", 4242) for _ in range(3)])
+            win.start()
+            sup.start()
+            sup.join(10)
+            win.join(10)
+            self.assertEqual((sup.exitcode, win.exitcode), (0, 0))
+            with open(os.path.join(session.SESSIONS_DIR, "s1.json")) as f:
+                rec = json.load(f)
+            self.assertEqual((rec["state"], rec["view"], rec["viewer"]), ("connected", "window", 4242))
+        self.assertEqual(sorted(os.listdir(session.SESSIONS_DIR)), [".lock", "s1.json"])
+
     def test_supervisor_rewrite_keeps_the_window_view(self):
         state = self.record()
         self.assertTrue(session.set_view("s1", "window", os.getpid()))

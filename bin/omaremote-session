@@ -49,6 +49,7 @@ so closing the window never closes a remote desktop.
 """
 
 import configparser
+import contextlib
 import errno
 import fcntl
 import glob
@@ -1142,14 +1143,18 @@ def update_check(current):
 
 def set_view(sid, view, viewer=None):
     """Records where a session is shown; False when there is no such session."""
-    try:
-        with open(_session_path(sid), encoding="utf-8") as f:
-            state = json.load(f)
-    except (OSError, ValueError):
-        return False
-    state["view"] = view
-    state["viewer"] = int(viewer) if view == "window" and viewer else None
-    write_session(state, keep=())
+    with _sessions_lock():
+        try:
+            with open(_session_path(sid), encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(state, dict) or state.get("id") != sid:
+            return False
+        state["view"] = view
+        state["viewer"] = int(viewer) if view == "window" and viewer else None
+        _write_session_locked(state, keep=())
+    touch_changes()
     return True
 
 
@@ -3006,20 +3011,44 @@ def _session_path(sid):
 VIEW_KEYS = ("view", "viewer")
 
 
-def write_session(state, keep=VIEW_KEYS):
+@contextlib.contextmanager
+def _sessions_lock():
+    """Held around every read-modify-write of a session record: the supervisor and set_view (the
+    window showing it) both rewrite the same file, and one must not undo the other."""
     os.makedirs(SESSIONS_DIR, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(SESSIONS_DIR, ".lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _write_session_locked(state, keep):
     try:
         with open(_session_path(state["id"]), encoding="utf-8") as f:
             current = json.load(f)
         for key in keep:
             if key in current:
                 state[key] = current[key]
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         pass
-    tmp = _session_path(state["id"]) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f)
-    os.replace(tmp, _session_path(state["id"]))
+    fd, tmp = tempfile.mkstemp(dir=SESSIONS_DIR, prefix="." + state["id"] + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, _session_path(state["id"]))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_session(state, keep=VIEW_KEYS):
+    with _sessions_lock():
+        _write_session_locked(state, keep)
     touch_changes()
 
 
