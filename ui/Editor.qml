@@ -576,12 +576,13 @@ Rectangle {
                     }
                 }
 
-                Section { text: "DEVICES"; visible: !root.isSsh }
+                Section { text: "DEVICES" }
                 FormRow {
                     inherited: root.fromGroup("clipboard")
                     label: "Clipboard"
-                    visible: !root.isSsh
-                    help: root.isGliff ? "Shared while the tab has the keyboard; data moves only when pasted" : ""
+                    help: root.isGliff ? "Shared while the tab has the keyboard; data moves only when pasted"
+                        : root.isSsh ? "Programs on the server (tmux, Neovim) may set it; copying a selection always works"
+                        : "What the server copies arrives once the tab has the keyboard"
                     Check {
                         checked: !!root.d.clipboard
                         onToggled: root.set("clipboard", !checked)

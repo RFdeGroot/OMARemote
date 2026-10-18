@@ -69,7 +69,7 @@ class Runtime(unittest.TestCase):
         with open(self.calls) as f:
             return len(f.read().splitlines())
 
-    def run_view(self, share, ms=1500, send=(), lines=(), frames=()):
+    def run_view(self, share, ms=1500, send=(), lines=(), frames=(), mode="focused"):
         """Runs the view; the fake session sends `send` 800 ms after the view attaches. Returns the
         RESULT, the clipboard texts the view offered the session, and Qt's log. `lines` are sent
         as they are, after `send`; `frames` are (memfd size, "frame w h stride") sent with the fd."""
@@ -115,7 +115,7 @@ class Runtime(unittest.TestCase):
         thread.start()
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1",
                    QML_IMPORT_PATH=PLUGIN, PATH=os.pathsep.join([self.bin, os.environ.get("PATH", "")]))
-        p = subprocess.run([QML, os.path.join(HERE, "qml", "clipboard.qml"), "--", path, "1" if share else "0", str(ms)],
+        p = subprocess.run([QML, os.path.join(HERE, "qml", "clipboard.qml"), "--", path, "1" if share else "0", str(ms), mode],
                            env=env, capture_output=True, text=True, timeout=30)
         server.close()
         thread.join(5)
@@ -142,6 +142,19 @@ class Runtime(unittest.TestCase):
         self.assertEqual(self.wl_paste_calls(), 0)
         self.assertEqual(offered, [])
         self.assertEqual(result["clipboard"], "copied")
+
+    # A server never rewrites the clipboard while the user works elsewhere: what it sends while the
+    # view lacks the keyboard is set when the view gets it back, unless the desktop copied since.
+    def test_text_from_the_session_waits_for_the_keyboard(self):
+        self.stub(b"from the desktop")
+        result, _, err = self.run_view(True, ms=2500, send=[b"from the session"], mode="away")
+        self.assertEqual(result["whileAway"], "copied", err)
+        self.assertEqual(result["clipboard"], "from the session", err)
+
+    def test_a_copy_elsewhere_wins_over_held_text(self):
+        self.stub(b"from the desktop")
+        result, _, err = self.run_view(True, ms=2500, send=[b"from the session"], mode="copy-away")
+        self.assertEqual(result["clipboard"], "copied later", err)
 
     def test_text_from_the_session_is_set_up_to_the_limit(self):
         self.stub(b"from the desktop")

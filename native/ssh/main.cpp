@@ -590,9 +590,12 @@ static int cb_sb_clear(void*)
 	return 1;
 }
 
-// OSC 52 from the remote program (tmux, Neovim): it sets our clipboard. Reading it is not offered.
+// OSC 52 from the remote program (tmux, Neovim): it sets our clipboard, unless the connection's
+// Clipboard switch is off (copying a selection still works). Reading it is not offered.
 static int cb_selection_set(VTermSelectionMask, VTermStringFragment frag, void*)
 {
+	if (g.get("clipboard", "1") == "0")
+		return 1;
 	if (frag.initial)
 	{
 		g.osc52.clear();

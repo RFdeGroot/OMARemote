@@ -204,6 +204,12 @@ private:
 	QHash<quint32, CachedCursor> m_cursors;
 	quint64 m_cursorClock = 0;
 	QString m_lastClip;
+	// Text from the session while this view did not have the keyboard: set when it gets it back,
+	// dropped when the desktop's clipboard changes first (whichever changed last wins, as Gliff).
+	// A server never rewrites the clipboard while the user works elsewhere.
+	QString m_heldClip;
+	bool m_hasHeldClip = false;
+	void applyHeldClip();
 	bool m_shareClipboard = false;
 	bool m_clipReading = false; // a read is under way; one more follows it when asked meanwhile
 	bool m_clipAgain = false;

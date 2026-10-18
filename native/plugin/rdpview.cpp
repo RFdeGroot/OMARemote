@@ -41,6 +41,12 @@ RdpView::RdpView(QQuickItem* parent) : QQuickItem(parent)
 	connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
 		if (hasActiveFocus())
 			sendClipboard();
+		else
+		{
+			// Copied elsewhere since: that wins over what the session sent.
+			m_hasHeldClip = false;
+			m_heldClip.clear();
+		}
 	});
 }
 
@@ -325,8 +331,16 @@ void RdpView::handleLine(const QByteArray& line)
 		const QByteArray text = w[1] == "-" ? QByteArray() : QByteArray::fromBase64(w[1]);
 		if (text.size() > MaxClipBytes)
 			return;
-		m_lastClip = QString::fromUtf8(text);
-		QGuiApplication::clipboard()->setText(m_lastClip);
+		if (hasActiveFocus())
+		{
+			m_lastClip = QString::fromUtf8(text);
+			QGuiApplication::clipboard()->setText(m_lastClip);
+		}
+		else
+		{
+			m_heldClip = QString::fromUtf8(text);
+			m_hasHeldClip = true;
+		}
 	}
 	else if (cmd == "cert" && w.size() >= 8)
 	{
@@ -943,7 +957,19 @@ void RdpView::focusInEvent(QFocusEvent* e)
 	send("focus " + QByteArray::number(kSyncNum));
 	(void)kSyncScroll;
 	(void)kSyncCaps;
+	applyHeldClip();
 	sendClipboard();
+}
+
+void RdpView::applyHeldClip()
+{
+	if (!m_hasHeldClip)
+		return;
+	m_hasHeldClip = false;
+	m_lastClip = m_heldClip;
+	m_heldClip.clear();
+	if (m_shareClipboard)
+		QGuiApplication::clipboard()->setText(m_lastClip);
 }
 
 void RdpView::cancelPaste(int job)
@@ -1001,6 +1027,8 @@ void RdpView::setShareClipboard(bool share)
 	if (share == m_shareClipboard)
 		return;
 	m_shareClipboard = share;
+	m_hasHeldClip = false;
+	m_heldClip.clear();
 	emit shareClipboardChanged();
 	if (share && hasActiveFocus())
 		sendClipboard(true);

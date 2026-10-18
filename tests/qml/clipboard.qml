@@ -1,7 +1,9 @@
 import QtQuick
 import OMARemote
 
-// Run by tests/test_clipboard.py: qml6 -platform offscreen clipboard.qml -- <socket> <share 0|1> <ms>.
+// Run by tests/test_clipboard.py: qml6 -platform offscreen clipboard.qml -- <socket> <share 0|1> <ms> <mode>.
+// mode "away": the view loses the keyboard at 600 ms and gets it back 300 ms before the end;
+// "copy-away": the same, with a copy elsewhere on the desktop at 1200 ms; anything else: focused.
 // An RdpView attached to the test's fake session, focused, while the desktop clipboard changes;
 // prints one "RESULT {json}" line after <ms> and quits.
 Window {
@@ -19,7 +21,7 @@ Window {
     RdpView {
         id: view
         anchors.fill: parent
-        shareClipboard: root.args[root.args.length - 2] === "1"
+        shareClipboard: root.args[root.args.length - 3] === "1"
     }
 
     function done() {
@@ -27,7 +29,7 @@ Window {
         sink.paste()
         console.log("RESULT " + JSON.stringify({ focused: view.activeFocus, attached: view.attached,
                                                  clipboard: sink.text, ticks: ticks,
-                                                 cursors: view.cachedCursors(),
+                                                 cursors: view.cachedCursors(), whileAway: root.whileAway,
                                                  remote: [view.remoteSize.width, view.remoteSize.height] }))
         Qt.exit(0)
     }
@@ -41,11 +43,30 @@ Window {
         onTriggered: {
             root.requestActivate()
             view.forceActiveFocus()
-            view.socketPath = root.args[root.args.length - 3]
+            view.socketPath = root.args[root.args.length - 4]
             change.start()
         }
     }
     // A copy elsewhere on the desktop while the session has the keyboard.
     Timer { id: change; interval: 400; onTriggered: { source.text = "copied"; source.selectAll(); source.copy() } }
-    Timer { running: true; interval: parseInt(root.args[root.args.length - 1]); onTriggered: root.done() }
+    readonly property string mode: root.args[root.args.length - 1]
+    readonly property int ms: parseInt(root.args[root.args.length - 2])
+    property string whileAway: ""
+    Timer { running: root.mode.endsWith("away"); interval: 600; onTriggered: sink.forceActiveFocus() }
+    Timer {
+        running: root.mode === "copy-away"
+        interval: 1200
+        onTriggered: { source.text = "copied later"; source.selectAll(); source.copy() }
+    }
+    Timer {
+        running: root.mode.endsWith("away")
+        interval: root.ms - 300
+        onTriggered: {
+            sink.text = ""
+            sink.paste()
+            root.whileAway = sink.text
+            view.forceActiveFocus()
+        }
+    }
+    Timer { running: true; interval: root.ms; onTriggered: root.done() }
 }

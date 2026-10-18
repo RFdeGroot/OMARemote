@@ -2330,7 +2330,7 @@ def build_ssh_config(conn):
     """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
     lines = [f"arg={a}" for a in build_ssh_command(conn)]
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size():g}",
-              f"theme={THEME_TERMINAL}"]
+              f"theme={THEME_TERMINAL}", f"clipboard={0 if conn.get('clipboard') is False else 1}"]
     return check_lines(lines)
 
 

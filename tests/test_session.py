@@ -402,6 +402,9 @@ class Ssh(unittest.TestCase):
         self.assertEqual(lines[:2], ["arg=ssh", "arg=pc.lan"])
         self.assertIn("font=monospace", lines)
         self.assertTrue(any(l.startswith("theme=") and l.endswith("foot.ini") for l in lines))
+        # OSC 52 (a program on the server setting the clipboard) follows the Clipboard switch.
+        self.assertIn("clipboard=1", lines)
+        self.assertIn("clipboard=0", session.build_ssh_config(self.ssh(clipboard=False)))
 
     def test_shell_exit_codes_are_not_failures(self):
         self.assertIsNone(session.describe_exit(0, "", "ssh"))
