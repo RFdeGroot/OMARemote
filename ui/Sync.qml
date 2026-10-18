@@ -59,7 +59,7 @@ Singleton {
     property var allowAddress: []
 
     function syncNow(allowDeletionsFrom, allowAddressFor) {
-        if (!enabled || !Store.loaded)
+        if (!enabled || !Store.loaded || Store.broken)
             return
         if (runner.running || paused) {
             again.restart()
@@ -116,7 +116,7 @@ Singleton {
             try {
                 result = JSON.parse(syncOut.text)
             } catch (e) {
-                root.lastError = "sync gave no answer"
+                root.lastError = runnerDeadline.hit ? "sync took longer than a minute and was stopped" : "sync gave no answer"
                 return
             }
             if (result.error) {
@@ -153,6 +153,19 @@ Singleton {
     }
 
     // After an edit here, and again whenever a round was skipped or outdated.
+    // Nothing waits without a deadline: a sync folder that hangs (a stalled network share) ends the
+    // round instead of stopping sync until a restart.
+    Timer {
+        id: runnerDeadline
+        property bool hit: false
+        interval: 60000
+        running: runner.running
+        onRunningChanged: if (running) hit = false
+        onTriggered: {
+            hit = true
+            runner.running = false
+        }
+    }
     Timer { id: again; interval: 3000; onTriggered: root.syncNow(root.allow, root.allowAddress) }
     Timer {
         interval: Math.max(1, root.interval) * 60000

@@ -830,6 +830,48 @@ class Sync(unittest.TestCase):
             t.join(3)
             self.assertEqual(out.getvalue().split(), ["macbook.omaremote.json"])
 
+    def sync_setup(self, d):
+        folder = os.path.join(d, "sync")
+        os.makedirs(folder)
+        conf = os.path.join(d, "connections.json")
+        with open(conf, "w") as f:
+            json.dump({"connections": [], "ui": {"sync": {"folder": folder, "system": "here"}}}, f)
+        return folder, conf
+
+    def test_others_files_are_ordinary_small_files_or_skipped(self):
+        # Whoever writes the sync folder: a FIFO would block the round forever, a symlink to
+        # /dev/zero or a huge file would eat the memory.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            os.mkfifo(os.path.join(folder, "fifo.omaremote.json"))
+            os.symlink("/dev/zero", os.path.join(folder, "zero.omaremote.json"))
+            with open(os.path.join(folder, "big.omaremote.json"), "w") as f:
+                f.write('{"pad": "' + "x" * (session.SYNC_MAX_BYTES + 1) + '"}')
+            with open(os.path.join(folder, "laptop.omaremote.json"), "w") as f:
+                json.dump(self.remote(self.c("c2", host="other.lan")), f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(out["report"]["added"], ["c2"])
+            errors = " ".join(out["report"]["errors"])
+            for name in ("fifo", "zero", "big"):
+                self.assertIn(name + ".omaremote.json", errors)
+
+    def test_a_planted_symlink_never_redirects_our_write(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            victim = os.path.join(d, "victim.txt")
+            with open(victim, "w") as f:
+                f.write("mine\n")
+            os.symlink(victim, os.path.join(folder, ".here.omaremote.json.tmp"))
+            os.symlink(victim, os.path.join(folder, "here.omaremote.json"))
+            session.sync_folder(conf, self.NOW)
+            with open(victim) as f:
+                self.assertEqual(f.read(), "mine\n")
+            own = os.path.join(folder, "here.omaremote.json")
+            self.assertFalse(os.path.islink(own))
+            self.assertEqual(session.read_json_file(own)["format"], "omaremote-sync")
+
     def test_a_missing_sync_folder_is_an_error_not_a_new_folder(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

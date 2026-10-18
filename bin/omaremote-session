@@ -49,6 +49,7 @@ so closing the window never closes a remote desktop.
 """
 
 import configparser
+import errno
 import fcntl
 import glob
 import json
@@ -791,12 +792,48 @@ def system_name(raw=None):
 
 
 def write_json_atomic(path, data):
-    """Written whole, then renamed into place: a syncing client never picks up half a file."""
-    tmp = os.path.join(os.path.dirname(path) or ".", "." + os.path.basename(path) + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)
+    """Written whole, then renamed into place: a syncing client never picks up half a file. The
+    temporary file gets a new random name (O_EXCL): others write the sync folder, and a fixed name
+    planted there as a symlink would have this write any file of the user's."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# The largest sync or export file read: far above any real library, below running out of memory.
+SYNC_MAX_BYTES = 16 << 20
+
+
+def read_json_file(path, follow=True):
+    """A JSON file others may have put there: only an ordinary file (a FIFO would never end, a
+    device never stop), at most SYNC_MAX_BYTES; follow=False refuses a symlink too."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ValueError("a symlink, not a file") from None
+        raise
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not an ordinary file")
+        raw = f.read(SYNC_MAX_BYTES + 1)
+    if len(raw) > SYNC_MAX_BYTES:
+        raise ValueError("larger than 16 MiB")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        raise ValueError(str(e)) from None
 
 
 def _same_content(a, b):
@@ -821,8 +858,8 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=(), allow_address=()
     mine = portable(data, system, "sync", now)
     own = os.path.join(folder, system + SYNC_SUFFIX)
     try:
-        with open(own, encoding="utf-8") as f:
-            unchanged = _same_content(json.load(f), mine)
+        theirs = read_json_file(own, follow=False)
+        unchanged = isinstance(theirs, dict) and _same_content(theirs, mine)
     except (OSError, ValueError):
         unchanged = False
     if not unchanged:
@@ -832,8 +869,7 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=(), allow_address=()
         if not name.endswith(SYNC_SUFFIX) or name == system + SYNC_SUFFIX or name.startswith("."):
             continue
         try:
-            with open(os.path.join(folder, name), encoding="utf-8") as f:
-                other = json.load(f)
+            other = read_json_file(os.path.join(folder, name), follow=False)
             if not isinstance(other, dict):
                 raise ValueError("not an OMARemote file")
             other["_path"] = name
@@ -890,8 +926,7 @@ def watch_folder(folder, out=sys.stdout, wait=30.0, stop=None):
 
 def import_file(file_path, path=CONNECTIONS, now=None):
     """A manual import: adds and updates, never removes. Returns {"data", "report"}."""
-    with open(os.path.expanduser(file_path), encoding="utf-8") as f:
-        incoming = json.load(f)
+    incoming = read_json_file(os.path.expanduser(file_path))
     if isinstance(incoming, dict):
         incoming["deleted"] = {}
         incoming["deletedGroups"] = {}
