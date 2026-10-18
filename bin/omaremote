@@ -42,11 +42,12 @@ require_omarchy() {
   fi
 }
 
-# The process of the open OMARemote window, if there is one.
+# The process of the open OMARemote window, if there is one. Never fails: under set -e a failing
+# hyprctl (no Hyprland yet) would end open, quick, adopt and restart without a word.
 running_pid() {
   hyprctl clients -j 2>/dev/null | python3 -c 'import json,sys
 for c in json.load(sys.stdin):
-    if c.get("class") == "omaremote": print(c["pid"]); break' 2>/dev/null
+    if c.get("class") == "omaremote": print(c["pid"]); break' 2>/dev/null || true
 }
 
 case "${1:-}" in
