@@ -49,6 +49,7 @@ so closing the window never closes a remote desktop.
 """
 
 import configparser
+import fcntl
 import glob
 import json
 import os
@@ -81,6 +82,8 @@ SESSION_APP_ID = "omaremote-session"
 CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
 CONFIG_DIR = os.path.join(CONFIG_HOME, APP)
 CONNECTIONS = os.path.join(CONFIG_DIR, "connections.json")
+# When each connection was last up ({id: seconds}): the UI is the only writer of connections.json.
+LAST_CONNECTED = os.path.join(CONFIG_DIR, "last-connected.json")
 RUNTIME_DIR = os.environ.get("OMAREMOTE_RUNTIME_DIR") or os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/{APP}-{os.getuid()}", APP)
 SESSIONS_DIR = os.path.join(RUNTIME_DIR, "sessions")
@@ -275,19 +278,34 @@ def find_connection(key, connections):
     return None
 
 
-def mark_connected(conn_id, path=CONNECTIONS):
-    """Stamp lastConnected; rewrites in place so the UI's watch on the file keeps firing."""
+LAST_CONNECTED_KEPT = 500
+
+
+def mark_connected(conn_id, path=LAST_CONNECTED):
+    """Stamp when a connection was last up, in a file of its own (the UI shows the newer of this and
+    its own lastConnected). Rewritten in place under a lock, so the UI's watch on it keeps firing and
+    two sessions coming up at once do not lose a stamp."""
     try:
-        with open(path, "r+", encoding="utf-8") as f:
-            data = json.load(f)
-            for c in data.get("connections", []) + data.get("quick", []):
-                if c.get("id") == conn_id:
-                    c["lastConnected"] = int(time.time())
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError:
+        return
+    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                data = json.loads(f.read(1 << 20) or "{}")
+            except ValueError:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            data = {k: v for k, v in data.items() if isinstance(k, str) and ID_RE.match(k) and type(v) is int}
+            data[conn_id] = int(time.time())
+            newest = sorted(data.items(), key=lambda kv: kv[1], reverse=True)[:LAST_CONNECTED_KEPT]
             f.seek(0)
-            f.write(json.dumps(data, indent=2))
+            f.write(json.dumps(dict(newest)))
             f.truncate()
-    except (OSError, ValueError):
-        pass
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------- export, import and sync

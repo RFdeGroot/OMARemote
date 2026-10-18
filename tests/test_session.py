@@ -149,9 +149,26 @@ class QuickConnections(unittest.TestCase):
             self.assertEqual(found["q-1"]["host"], "srv.lan")
             self.assertEqual(found["q-1"]["protocol"], "ssh")
             self.assertIn("c1", found)
-            session.mark_connected("q-1", path)
-            with open(path) as f:
-                self.assertGreater(json.load(f)["quick"][0]["lastConnected"], 0)
+            before = open(path).read()
+            stamps = os.path.join(d, "last-connected.json")
+            session.mark_connected("q-1", stamps)
+            # The UI is the only writer of connections.json; the stamp goes into a file of its own.
+            self.assertEqual(open(path).read(), before)
+            with open(stamps) as f:
+                self.assertGreater(json.load(f)["q-1"], 0)
+
+    def test_stamps_survive_a_broken_file_and_odd_entries(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            stamps = os.path.join(d, "last-connected.json")
+            with open(stamps, "w") as f:
+                f.write('{"c1": 5, "../x": 1, "c2": "soon"')
+            session.mark_connected("c3", stamps)
+            with open(stamps) as f:
+                self.assertEqual(list(json.load(f)), ["c3"])
+            session.mark_connected("c1", stamps)
+            with open(stamps) as f:
+                self.assertEqual(sorted(json.load(f)), ["c1", "c3"])
 
     def test_it_never_syncs_or_exports(self):
         for kind in ("sync", "export"):

@@ -4,8 +4,9 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// The saved connections. connections.json is shared with bin/omaremote-session, which stamps
-// lastConnected in place, so the file is watched and written in place too.
+// The saved connections. This window is the only writer of connections.json; it is watched (sync
+// and hand edits land in it) and written in place, so the watch keeps firing. When each connection
+// was last up comes from bin/omaremote-session through last-connected.json.
 Singleton {
     id: root
 
@@ -41,6 +42,12 @@ Singleton {
     // merge computed before the latest one.
     property int localRevision: 0
     property bool loaded: false
+    // connections.json did not read as ours (a hand edit gone wrong, half a file): nothing is
+    // written until it reads again, or the next write would replace it with an empty list. A copy is
+    // kept beside it as connections.json.broken.
+    property bool broken: false
+    // When each connection was last up ({id: seconds}), stamped by the supervisor.
+    property var lastSeen: ({})
 
     // Keep in step with DEFAULTS in bin/omaremote-session.
     readonly property var defaults: ({
@@ -129,6 +136,7 @@ Singleton {
             out[k] = c[k]
         if (!c.port)
             out.port = defaultPorts[out.protocol || "rdp"] || 3389
+        out.lastConnected = Math.max(Number(out.lastConnected) || 0, Number(root.lastSeen[c.id]) || 0)
         var mode = c.credential || "custom"
         if (mode === "custom") {
             out.credentialSource = "custom"
@@ -263,6 +271,8 @@ Singleton {
             var data = JSON.parse(text || "{}")
             if (Array.isArray(data))
                 data = { connections: data }
+            if (data === null || typeof data !== "object")
+                throw new Error("not an object")
             root.stored = (data.connections || []).filter(function (c) { return c && c.id })
             root.credentials = (data.credentials || []).filter(function (c) { return c && c.id })
             root.groupSettings = data.groups || {}
@@ -271,13 +281,22 @@ Singleton {
             root.deleted = data.deleted || {}
             root.deletedGroups = data.deletedGroups || {}
             root.quick = (data.quick || []).filter(function (c) { return c && c.id })
+            root.broken = false
         } catch (e) {
             console.warn("connections.json is not valid JSON, leaving it untouched: " + e)
+            if (!root.broken)
+                keepBroken.running = true
+            root.broken = true
         }
         root.loaded = true
     }
 
     function write() {
+        // Before the file is read, or while it does not read, a write would wipe what it holds.
+        if (!root.loaded || root.broken) {
+            console.warn("connections.json not written: " + (root.broken ? "it is not valid JSON" : "not read yet"))
+            return
+        }
         file.setText(JSON.stringify({ version: 3, ui: ui, credentials: credentials, groups: groupSettings,
                                       connections: stored, trash: trash, deleted: deleted,
                                       deletedGroups: deletedGroups, quick: quick }, null, 2) + "\n")
@@ -644,6 +663,27 @@ Singleton {
         // Only the user reads it: user names, hosts and domains, even with the passwords in the keyring.
         command: ["sh", "-c", "mkdir -p -m 700 \"$1\" && chmod 700 \"$1\" && { [ ! -e \"$1/connections.json\" ] || chmod 600 \"$1/connections.json\"; }", "sh", root.configDir]
         running: true
+    }
+
+    Process {
+        id: keepBroken
+        command: ["cp", "--", root.path, root.path + ".broken"]
+    }
+
+    FileView {
+        path: root.configDir + "/last-connected.json"
+        watchChanges: true
+        printErrors: false
+        onLoaded: {
+            try {
+                var data = JSON.parse(text())
+                if (data && typeof data === "object" && !Array.isArray(data))
+                    root.lastSeen = data
+            } catch (e) {
+                // Caught mid-write: the next change brings it whole.
+            }
+        }
+        onFileChanged: reload()
     }
 
     FileView {
