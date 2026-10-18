@@ -142,6 +142,8 @@ struct Session
 };
 
 static Session g;
+// The longest window title a server may set (OSC 0/2).
+static constexpr size_t kMaxTitleBytes = 4096;
 
 // ---------------------------------------------------------------- theme
 
@@ -533,7 +535,9 @@ static int cb_settermprop(VTermProp prop, VTermValue* val, void*)
 		case VTERM_PROP_TITLE:
 			if (val->string.initial)
 				g.title.clear();
-			g.title.append(val->string.str, val->string.len);
+			// An OSC 2 that never ends would grow without limit: the rest of a long one is dropped.
+			if (g.title.size() < kMaxTitleBytes)
+				g.title.append(val->string.str, std::min(val->string.len, kMaxTitleBytes - g.title.size()));
 			if (val->string.final)
 				g.link.send("title " + b64(g.title));
 			break;
