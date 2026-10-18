@@ -18,6 +18,7 @@
 #include "seat.hpp"
 
 #include <poll.h>
+#include <sys/types.h>
 
 #include <cstdint>
 #include <functional>
@@ -49,7 +50,18 @@ std::string uri_list(const std::vector<std::string>& paths);
 std::string gnome_copied_files(const std::vector<std::string>& paths);
 bool safe_relative_path(const std::string& path);
 bool validate_files(const std::vector<ClipboardFile>& files);
-int open_offered(const std::string& path, bool root);
+// One offered entry, as list_files found it: its root (an index into the root descriptors), the
+// path below that root ("" for the root itself), and the file it was then.
+struct OfferedFile
+{
+	int root = 0;
+	std::string inRoot;
+	dev_t dev = 0;
+	ino_t ino = 0;
+};
+bool list_files(const std::vector<std::string>& roots, std::vector<ClipboardFile>& entries,
+                std::vector<OfferedFile>& files, std::vector<int>& rootFds);
+int open_offered(int rootFd, const OfferedFile& file);
 
 class Clipboard
 {
@@ -89,6 +101,7 @@ class Clipboard
 	void offerLocal();
 	void finishLocalOffer(const std::string& uriList);
 	void withdraw();
+	void clearOffered();
 	void applyRemote();
 	void paste(const std::string& mime, int fd);
 	void startPaste(Paste& p);
@@ -113,7 +126,8 @@ class Clipboard
 	std::vector<std::string> m_offeredMimes;
 	std::vector<std::string> m_localMimes; // the local selection's own mime types
 	std::vector<ClipboardFile> m_localFiles;
-	std::vector<std::string> m_localPaths; // absolute, one per m_localFiles entry
+	std::vector<OfferedFile> m_offered; // one per m_localFiles entry
+	std::vector<int> m_rootFds;         // the copied roots, opened once (O_PATH) when offered
 	bool m_localOffered = false;
 	uint64_t m_localChangedAt = 0;
 	uint64_t m_offeredAt = 0; // when our last offer (or withdrawal) went

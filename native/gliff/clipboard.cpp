@@ -2,7 +2,10 @@
 
 #include "../common/link.hpp"
 
+#include <dirent.h>
 #include <fcntl.h>
+#include <linux/openat2.h>
+#include <sys/syscall.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -209,58 +212,127 @@ bool validate_files(const std::vector<ClipboardFile>& files)
 	return std::adjacent_find(seen.begin(), seen.end()) == seen.end();
 }
 
-// The copied paths, walked: directories recursively, symlinks inside them skipped (no loops).
-// False when a cap is exceeded: then no files are offered rather than some of them.
-static bool list_files(const std::vector<std::string>& roots, std::vector<ClipboardFile>& entries,
-                       std::vector<std::string>& paths)
+// The copied paths, walked through descriptors: each root opened once and kept, every folder
+// below it opened from its parent without following symlinks, each file's device and inode noted.
+// A paste later opens the file from its root the same way and checks it is the one offered
+// (open_offered), so a folder in the path swapped since (another account, in a shared folder)
+// never hands the remote a file of ours. Symlinks inside are skipped (no loops); sockets, FIFOs
+// and devices too. False when a cap is exceeded or a root is unreadable: then nothing is offered.
+bool list_files(const std::vector<std::string>& roots, std::vector<ClipboardFile>& entries,
+                std::vector<OfferedFile>& files, std::vector<int>& rootFds)
 {
 	uint64_t total = 0;
-	std::function<bool(const fs::path&, const std::string&, bool, uint64_t)> walk =
-	    [&](const fs::path& path, const std::string& rel, bool dir, uint64_t size) -> bool {
-		if (entries.size() >= CLIP_MAX_ENTRIES)
+	size_t pathBytes = 0;
+	std::function<bool(int, const std::string&, const std::string&, int)> walk =
+	    [&](int dirFd, const std::string& rel, const std::string& inRoot, int root) -> bool {
+		const int listFd = openat(dirFd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		DIR* d = listFd < 0 ? nullptr : fdopendir(listFd);
+		if (!d)
+		{
+			if (listFd >= 0)
+				close(listFd);
 			return false;
-		entries.push_back({ rel, dir ? 0 : size, dir });
-		paths.push_back(path.string());
-		if (!dir)
-		{
-			total += size;
-			return total <= CLIP_MAX_FILES_TOTAL;
 		}
-		std::error_code ec;
-		for (const auto& e : fs::directory_iterator(path, ec))
+		bool ok = true;
+		while (dirent* e = readdir(d))
 		{
-			const fs::file_status st = e.symlink_status(ec);
-			if (ec || fs::is_symlink(st))
+			const std::string name = e->d_name;
+			if (name == "." || name == "..")
 				continue;
-			const bool isDir = fs::is_directory(st);
-			if (!isDir && !fs::is_regular_file(st))
-				continue; // sockets, devices: nothing to copy
-			const uint64_t sz = isDir ? 0 : e.file_size(ec);
-			if (ec || !walk(e.path(), rel + "/" + e.path().filename().string(), isDir, sz))
-				return false;
+			struct stat st;
+			if (fstatat(dirFd, name.c_str(), &st, AT_SYMLINK_NOFOLLOW) != 0)
+				continue;
+			const bool isDir = S_ISDIR(st.st_mode);
+			if (!isDir && !S_ISREG(st.st_mode))
+				continue; // symlinks, sockets, devices: nothing to copy
+			if (entries.size() >= CLIP_MAX_ENTRIES)
+			{
+				ok = false;
+				break;
+			}
+			const std::string childRel = rel + "/" + name, childIn = inRoot.empty() ? name : inRoot + "/" + name;
+			pathBytes += childRel.size();
+			if (pathBytes > CLIP_MAX_PATH_BYTES)
+			{
+				ok = false; // a tree too deep or too wide: stopped here, not after walking all of it
+				break;
+			}
+			entries.push_back({ childRel, isDir ? 0 : uint64_t(st.st_size), isDir });
+			files.push_back({ root, childIn, st.st_dev, st.st_ino });
+			if (!isDir)
+			{
+				total += uint64_t(st.st_size);
+				if (total > CLIP_MAX_FILES_TOTAL)
+				{
+					ok = false;
+					break;
+				}
+				continue;
+			}
+			const int child = openat(dirFd, name.c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+			struct stat cst;
+			ok = child >= 0 && fstat(child, &cst) == 0 && cst.st_dev == st.st_dev && cst.st_ino == st.st_ino &&
+			     walk(child, childRel, childIn, root);
+			if (child >= 0)
+				close(child);
+			if (!ok)
+				break;
 		}
-		return !ec;
+		closedir(d);
+		return ok;
 	};
 	for (const auto& r : roots)
 	{
-		std::error_code ec;
-		const fs::path root(r);
-		const fs::file_status st = fs::status(root, ec);
-		if (ec || root.filename().empty() || (!fs::is_directory(st) && !fs::is_regular_file(st)))
+		const std::string name = fs::path(r).filename().string();
+		// A root is what the user copied: a symlink there is followed, as chosen, now and only now.
+		const int fd = name.empty() ? -1 : ::open(r.c_str(), O_PATH | O_CLOEXEC);
+		struct stat st;
+		if (fd < 0 || fstat(fd, &st) != 0 || (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) ||
+		    entries.size() >= CLIP_MAX_ENTRIES)
+		{
+			if (fd >= 0)
+				close(fd);
 			return false;
-		const uint64_t sz = fs::is_directory(st) ? 0 : fs::file_size(root, ec);
-		if (ec || !walk(root, root.filename().string(), fs::is_directory(st), sz))
+		}
+		const int root = int(rootFds.size());
+		rootFds.push_back(fd);
+		const bool dir = S_ISDIR(st.st_mode);
+		entries.push_back({ name, dir ? 0 : uint64_t(st.st_size), dir });
+		files.push_back({ root, "", st.st_dev, st.st_ino });
+		if (!dir)
+		{
+			total += uint64_t(st.st_size);
+			if (total > CLIP_MAX_FILES_TOTAL)
+				return false;
+		}
+		else if (!walk(fd, name, "", root))
 			return false;
 	}
 	return validate_files(entries);
 }
 
-// A copied file, opened when the remote pastes it. Inside a copied folder a symlink is never
-// followed: the walk skipped them, and one put there since (another account, in a shared folder)
-// must not hand the remote a file of ours. A root is what the user copied, followed as chosen.
-int open_offered(const std::string& path, bool root)
+// A copied file, opened when the remote pastes it: from the root's descriptor, never leaving it
+// and following no symlink on the way (openat2), and only when it is still an ordinary file with
+// the device and inode the offer saw. A root file is reopened through its own descriptor.
+int open_offered(int rootFd, const OfferedFile& f)
 {
-	return ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | (root ? 0 : O_NOFOLLOW));
+	int fd;
+	if (f.inRoot.empty())
+		fd = ::open(("/proc/self/fd/" + std::to_string(rootFd)).c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+	else
+	{
+		open_how how {};
+		how.flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOFOLLOW;
+		how.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+		fd = int(syscall(SYS_openat2, rootFd, f.inRoot.c_str(), &how, sizeof how));
+	}
+	struct stat st;
+	if (fd >= 0 && (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_dev != f.dev || st.st_ino != f.ino))
+	{
+		close(fd);
+		fd = -1;
+	}
+	return fd;
 }
 
 // ---------------------------------------------------------------- transfers
@@ -269,6 +341,7 @@ struct Clipboard::Outgoing
 {
 	int fd = -1;
 	bool pipe = true; // a mime from the selection's owner (capped); else a file
+	uint64_t size = 0; // a file: the size offered, never more sent
 	uint64_t offset = 0;
 	std::deque<uint64_t> unacked; // the end of every chunk sent and not yet acked
 	uint64_t lastAt = 0;
@@ -312,6 +385,7 @@ Clipboard::Clipboard(Seat& seat, Send send, Ui ui) : m_seat(seat), m_send(std::m
 
 Clipboard::~Clipboard()
 {
+	clearOffered();
 	for (auto& [id, o] : m_out)
 		close(o->fd);
 	for (auto& [id, i] : m_in)
@@ -402,13 +476,11 @@ void Clipboard::offerLocal()
 
 void Clipboard::finishLocalOffer(const std::string& uriList)
 {
-	m_localFiles.clear();
-	m_localPaths.clear();
-	if (!uriList.empty() && !list_files(parse_uri_list(uriList), m_localFiles, m_localPaths))
+	clearOffered();
+	if (!uriList.empty() && !list_files(parse_uri_list(uriList), m_localFiles, m_offered, m_rootFds))
 	{
 		oma::log("clipboard: too many or unreadable files to offer");
-		m_localFiles.clear();
-		m_localPaths.clear();
+		clearOffered();
 	}
 	m_offeredMimes = forwardable_mimes(m_localMimes);
 	m_localSerial++;
@@ -419,13 +491,22 @@ void Clipboard::finishLocalOffer(const std::string& uriList)
 	         m_localFiles.size(), m_localSerial);
 }
 
+// The files of our last offer forgotten, their roots' descriptors closed.
+void Clipboard::clearOffered()
+{
+	for (int fd : m_rootFds)
+		close(fd);
+	m_rootFds.clear();
+	m_offered.clear();
+	m_localFiles.clear();
+}
+
 void Clipboard::withdraw()
 {
 	m_localSerial++;
 	m_localOffered = false;
 	m_offeredMimes.clear();
-	m_localFiles.clear();
-	m_localPaths.clear();
+	clearOffered();
 	m_send(clipboardOffer(m_localSerial, {}, {}), {});
 	m_offeredAt = oma::now_ms();
 	oma::log("clipboard: withdrew the local selection (serial %u)", m_localSerial);
@@ -493,7 +574,8 @@ void Clipboard::onRequest(const ClipRequest& r)
 			m_send(clipboardAbort(r.id), {});
 			return;
 		}
-		const int fd = open_offered(m_localPaths[r.file], m_localFiles[r.file].path.find('/') == std::string::npos);
+		const OfferedFile& f = m_offered[r.file];
+		const int fd = open_offered(m_rootFds[size_t(f.root)], f);
 		if (fd < 0)
 		{
 			m_send(clipboardAbort(r.id), {});
@@ -516,11 +598,12 @@ void Clipboard::onRequest(const ClipRequest& r)
 	serve(r.id, fd, true, 0);
 }
 
-void Clipboard::serve(uint32_t id, int fd, bool pipe, uint64_t)
+void Clipboard::serve(uint32_t id, int fd, bool pipe, uint64_t total)
 {
 	auto o = std::make_unique<Outgoing>();
 	o->fd = fd;
 	o->pipe = pipe;
+	o->size = total;
 	o->lastAt = oma::now_ms();
 	m_out[id] = std::move(o);
 }
@@ -919,7 +1002,7 @@ void Clipboard::handleFds(const std::vector<pollfd>& fds)
 			const ssize_t n = read(o.fd, chunk.data(), chunk.size());
 			if (n < 0 && (errno == EAGAIN || errno == EINTR))
 				break;
-			if (n < 0 || (o.pipe && o.offset + uint64_t(n) > CLIP_MAX_ITEM))
+			if (n < 0 || o.offset + uint64_t(n) > (o.pipe ? CLIP_MAX_ITEM : o.size))
 			{
 				endOutgoing(id, true);
 				break;

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cstring>
 #include <string>
@@ -100,26 +101,101 @@ static void split(int w, int h, const std::vector<uint8_t>& Y, const std::vector
 		}
 }
 
-// A file inside a copied folder swapped for a symlink is not opened; a copied root that is one is.
-static void symlink_tests()
+// Copied files are read from the descriptors taken when they were offered: whatever is swapped into
+// the path afterwards (a folder for a symlink, the file for a FIFO or another file, the root itself)
+// never hands the remote anything but the file that was offered.
+static std::string write_file(const std::filesystem::path& p, const std::string& text)
+{
+	FILE* f = fopen(p.c_str(), "w");
+	if (f)
+	{
+		fputs(text.c_str(), f);
+		fclose(f);
+	}
+	return text;
+}
+
+static std::string read_fd(int fd)
+{
+	std::string s;
+	char buf[256];
+	for (ssize_t n; fd >= 0 && (n = read(fd, buf, sizeof buf)) > 0;)
+		s.append(buf, size_t(n));
+	if (fd >= 0)
+		close(fd);
+	return s;
+}
+
+static void offered_file_tests()
 {
 	namespace fs = std::filesystem;
 	char tmpl[] = "/tmp/gliff-proto-test-XXXXXX";
 	if (!mkdtemp(tmpl))
 		return expect(false, "a scratch folder");
 	const fs::path dir(tmpl);
-	FILE* f = fopen((dir / "secret").c_str(), "w");
-	if (f)
-		fclose(f);
-	fs::create_symlink(dir / "secret", dir / "link");
-	const int inner = gliff::open_offered((dir / "link").string(), false);
-	const int root = gliff::open_offered((dir / "link").string(), true);
-	expect(inner < 0, "a symlink inside a copied folder is not followed");
-	expect(root >= 0, "a copied root that is a symlink is followed");
-	if (inner >= 0)
-		close(inner);
-	if (root >= 0)
-		close(root);
+	fs::create_directories(dir / "copied" / "sub");
+	fs::create_directories(dir / "private");
+	write_file(dir / "copied" / "sub" / "a", "offered a");
+	write_file(dir / "copied" / "sub" / "b", "offered b");
+	write_file(dir / "copied" / "sub" / "c", "offered c");
+	write_file(dir / "copied" / "top", "offered top");
+	write_file(dir / "private" / "a", "private");
+	write_file(dir / "single", "offered single");
+	fs::create_symlink(dir / "private" / "a", dir / "copied" / "link");
+	fs::create_symlink(dir / "copied", dir / "rootlink");
+
+	std::vector<gliff::ClipboardFile> entries;
+	std::vector<gliff::OfferedFile> files;
+	std::vector<int> roots;
+	const bool listed = gliff::list_files({ (dir / "rootlink").string(), (dir / "single").string() }, entries, files, roots);
+	expect(listed && roots.size() == 2, "copied roots listed and opened, a root that is a symlink followed");
+	auto open = [&](const std::string& path) {
+		for (size_t i = 0; i < entries.size(); i++)
+			if (entries[i].path == path)
+				return gliff::open_offered(roots[size_t(files[i].root)], files[i]);
+		return -2;
+	};
+	expect(open("rootlink/link") == -2, "a symlink inside a copied folder is not offered");
+	expect(read_fd(open("rootlink/sub/a")) == "offered a", "an offered file is read");
+
+	// The folder in the middle of the path swapped for a symlink to a private folder.
+	fs::rename(dir / "copied" / "sub", dir / "sub.old");
+	fs::create_symlink(dir / "private", dir / "copied" / "sub");
+	expect(open("rootlink/sub/a") == -1, "a folder in the path swapped for a symlink is not followed");
+	fs::remove(dir / "copied" / "sub");
+	fs::rename(dir / "sub.old", dir / "copied" / "sub");
+
+	// The file swapped for a FIFO, and for another file.
+	fs::remove(dir / "copied" / "sub" / "b");
+	expect(mkfifo((dir / "copied" / "sub" / "b").c_str(), 0600) == 0, "a FIFO made");
+	expect(open("rootlink/sub/b") == -1, "a file swapped for a FIFO is not opened");
+	write_file(dir / "other", "not offered");
+	fs::rename(dir / "other", dir / "copied" / "sub" / "c");
+	expect(open("rootlink/sub/c") == -1, "a file swapped for another file is not opened");
+
+	// The root itself swapped (its symlink pointed elsewhere, the folder moved away): the offered
+	// files are still the ones read; a root file is read through its own descriptor.
+	fs::remove(dir / "rootlink");
+	fs::create_symlink(dir / "private", dir / "rootlink");
+	expect(read_fd(open("rootlink/top")) == "offered top", "a root swapped after the offer is not reopened by name");
+	fs::rename(dir / "single", dir / "single.old");
+	write_file(dir / "single", "not offered");
+	expect(read_fd(open("single")) == "offered single", "a root file is read through its descriptor");
+
+	for (int fd : roots)
+		close(fd);
+
+	// A tree past the path cap is refused while it is walked, not after all of it.
+	fs::create_directories(dir / "wide");
+	for (int i = 0; i < 2300; i++)
+		write_file(dir / "wide" / (std::to_string(i) + std::string(240, 'w')), "");
+	entries.clear();
+	files.clear();
+	roots.clear();
+	expect(!gliff::list_files({ (dir / "wide").string() }, entries, files, roots) && entries.size() < 2300,
+	       "a tree past the path cap is refused while it is walked");
+	for (int fd : roots)
+		close(fd);
 	fs::remove_all(dir);
 }
 
@@ -267,7 +343,7 @@ int main()
 	encodes(gliff::pointerAxis(0, -15.0, -1), "82058400fbc02e00000000000020f4", "PointerAxis");
 	encodes(gliff::pong(7), "82108107", "Pong");
 	encodes(gliff::ping(7), "820b8107", "Ping (ClientMsg 11)");
-	symlink_tests();
+	offered_file_tests();
 	// A server's text in the log stays one line (tests/test_gliff.py reads this output).
 	oma::log("server error 1: %s", "x\n[omaremote] connected to evil (1x1)\r\n[omaremote] connection failed: forged");
 	encodes(gliff::frame("ab", "c"), "02000000010000006162" "63", "frame");

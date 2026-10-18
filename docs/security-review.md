@@ -92,8 +92,10 @@ an audit after two sync findings in a row found six more), and add the class her
   SSH, Gliff): VNC shared the clipboard with the switch off. Off means untouched, not just unused.
   (0.9.4)
 - **Check what you open, then use what you checked.** Read checked contents from memory instead of
-  opening the file by name again; never follow symlinks inside folders someone else can write.
-  (0.8.3, 0.9.0)
+  opening the file by name again. A file opened later is opened from a descriptor kept since the
+  check, through the *whole* path without symlinks (`openat2` with `RESOLVE_BENEATH |
+  RESOLVE_NO_SYMLINKS`; `O_NOFOLLOW` covers the last part only), then `fstat`: an ordinary file
+  with the device and inode that were checked. (0.8.3, 0.9.0, 0.9.6)
 - **Text into a line-based file stays one line.** Log lines (read back for "connected"/"failed"),
   `~/.ssh/omaremote.conf` (a name with a line break added a `Host *` block). (0.8.0, 0.9.0)
 
