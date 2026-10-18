@@ -1219,7 +1219,7 @@ FocusScope {
             Layout.fillWidth: true
             visible: !root.immersive
             // A broken connections.json stays on screen: nothing is saved until it is fixed.
-            notice: root.notice || (Store.broken ? "connections.json is not valid JSON: nothing is saved until it is fixed (a copy is in connections.json.broken)" : "")
+            notice: root.notice || (Store.broken ? "connections.json could not be read: nothing is saved until it is fixed (a copy is in connections.json.broken)" : "")
             noticeIsError: root.notice ? root.noticeIsError : Store.broken
             hints: root.currentTab !== "home" && root.currentEnded
                        ? [["⏎", "reconnect"], ["l", "log"], ["w", "close tab"], ["ctrl+alt+home", "connections"],

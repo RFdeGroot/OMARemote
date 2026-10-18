@@ -294,7 +294,7 @@ Singleton {
     function write() {
         // Before the file is read, or while it does not read, a write would wipe what it holds.
         if (!root.loaded || root.broken) {
-            console.warn("connections.json not written: " + (root.broken ? "it is not valid JSON" : "not read yet"))
+            console.warn("connections.json not written: " + (root.broken ? "it could not be read" : "not read yet"))
             return
         }
         file.setText(JSON.stringify({ version: 3, ui: ui, credentials: credentials, groups: groupSettings,
