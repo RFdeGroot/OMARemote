@@ -56,13 +56,16 @@ FocusScope {
             sessionId = s.id
             Sessions.stop(replacedSession)
         } else {
+            // Back to the old one while it runs; else the failed new one, whose panel says why.
             var old = Sessions.sessions.filter(function (x) { return x.id === root.replacedSession })[0]
+            notice = "Reconnect failed" + (s && s.error ? ": " + s.error : "")
+            noticeTimer.restart()
             if (old && Sessions.isActive(old)) {
                 sessionId = replacedSession
-                notice = "Reconnect failed" + (s && s.error ? ": " + s.error : "")
-                noticeTimer.restart()
                 if (s)
                     Sessions.forget(s.id)
+            } else if (s) {
+                sessionId = s.id
             }
         }
         replacedSession = ""

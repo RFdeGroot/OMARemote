@@ -61,7 +61,9 @@ Item {
                                               { id: "old", connection: "c1", state: "failed", started: 100 }),
                 newFailed: Format.failureReplaced([{ id: "new", connection: "c1", state: "failed", started: 200 },
                                                    { id: "old", connection: "c1", state: "connected", started: 100 }],
-                                                  { id: "new", connection: "c1", state: "failed", started: 200 })
+                                                  { id: "new", connection: "c1", state: "failed", started: 200 }),
+                ssh: Format.failureReplaced([{ id: "b", connection: "c1", protocol: "ssh", state: "connected", started: 200 }],
+                                            { id: "a", connection: "c1", protocol: "ssh", state: "failed", started: 100 })
             }
         } catch (e) {
             r.error = String(e)

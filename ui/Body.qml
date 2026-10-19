@@ -284,6 +284,10 @@ FocusScope {
         var at = openTabs.indexOf(id)
         if (at < 0)
             return
+        // Not while it reconnects: the swap needs the tab (it would leave a session in neither).
+        for (var conn in replacing)
+            if (replacing[conn].old === id || replacing[conn].shown === id)
+                return say("Reconnecting: move it to its own window once it is connected", true)
         openTabs = openTabs.filter(function (t) { return t !== id })
         if (currentTab === id)
             showTab(openTabs.length > 0 ? openTabs[Math.min(at, openTabs.length - 1)] : "home")
@@ -359,6 +363,17 @@ FocusScope {
             var r = Object.assign({}, replacing[id])
             var s = Format.reconnectCandidate(Sessions.sessions, id, r.old, r.at)
             var step = Format.reconnectStep(s, r.at, now)
+            // Its tab left some other way: the session out of sight stops (the new one before it is
+            // shown, the old one running behind a shown new one).
+            if (!r.cancelled && openTabs.indexOf(r.shown || r.old) < 0) {
+                if (r.shown) {
+                    Sessions.stop(r.old)
+                    delete next[id]
+                    continue
+                }
+                r.cancelled = true
+                next[id] = r
+            }
             if (r.cancelled) {
                 // Closed while it connected: the new one goes too, as soon as it shows up.
                 if (s && Sessions.isActive(s))

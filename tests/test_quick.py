@@ -60,6 +60,8 @@ class QuickCredential(unittest.TestCase):
         self.assertTrue(st["replaced"])
         self.assertFalse(st["alone"])
         self.assertFalse(st["newFailed"])
+        # SSH, VNC and Gliff run twice: one dropping is news.
+        self.assertFalse(st["ssh"])
 
     def test_unlock_on_return_rdp_only_and_bounded(self):
         u = self.r["unlock"]

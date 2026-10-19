@@ -321,8 +321,11 @@ function reconnectStep(s, requestedAt, now) {
 }
 
 // Whether a failed session is news: not when a newer session of its connection is running (a
-// reconnect replaced it, and Windows ended it for the new sign-in).
+// reconnect replaced it, and Windows ended it for the new sign-in). RDP only: SSH, VNC and Gliff
+// can run twice, and one dropping is news.
 function failureReplaced(sessions, s) {
+    if ((s.protocol || "rdp") !== "rdp")
+        return false
     for (var i = 0; i < (sessions || []).length; i++) {
         var o = sessions[i]
         if (o.id !== s.id && o.connection === s.connection && (Number(o.started) || 0) >= (Number(s.started) || 0)
