@@ -143,6 +143,10 @@ static rfbBool malloc_framebuffer(rfbClient* client)
 
 static void got_update(rfbClient*, int x, int y, int w, int h)
 {
+	// RFB's fourth byte is padding, not alpha. Qt RGB32 requires opaque alpha.
+	for (int row = y; row < y + h; ++row)
+		for (int col = x; col < x + w; ++col)
+			g.frame.data[size_t(row) * g.frame.stride + size_t(col) * 4 + 3] = 0xff;
 	if (!g.dirty)
 	{
 		g.dx0 = x;
