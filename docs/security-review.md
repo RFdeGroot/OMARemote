@@ -37,7 +37,8 @@ can write the sync folder), and **another account** on the same machine.
   (`ADDRESS_KEYS`) waits for the user when this system signs in there (`_signs_in_here`: saved
   password, credential set, group set, saved gateway password).
 - **Does a new setting weaken a check?** It must not sync (`LOCAL_KEYS` / `GROUP_LOCAL_SETTINGS`, and
-  `localKeys` in ui/Store.qml): certificate checks, security level, user names, keys, arguments.
+  `localKeys` in ui/Store.qml): certificate checks, security level, user names, keys, arguments,
+  and anything that signs in by itself or weakens a lock (`unlockAfter`).
 - **Do copies and deletions take secrets along?** A duplicate never inherits a saved password; a
   deletion for good, the trash's purge and sync's purge clear the keyring entries.
 

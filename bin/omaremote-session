@@ -143,6 +143,7 @@ DEFAULTS = {
     "vncScaling": "fit",     # fit | native | resize
     "vncQuality": "auto",    # auto | high | low
     "viewOnly": False,
+    "unlockAfter": 0,        # RDP: minutes away (not in front of you) after which coming back reconnects; 0 off
     "sshArgs": "",           # SSH: extra ssh options, the connection's own (never a group's)
     "sshKey": "",            # SSH: the key to sign in with (~/.ssh/…); also written to ~/.ssh/omaremote.conf
     "gliffScreen": "mirror",   # Gliff: mirror (the main screen, as Gliff's own client does) | private (one of its own)
@@ -219,7 +220,7 @@ def migrate_legacy():
 SETTING_KEYS = ("display", "width", "height", "scale", "multimon", "clipboard", "audio", "microphone",
                 "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
                 "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn",
-                "vncScaling", "vncQuality", "viewOnly")
+                "vncScaling", "vncQuality", "viewOnly", "unlockAfter")
 
 DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22, "gliff": 22}
 
@@ -344,11 +345,12 @@ def mark_connected(conn_id, path=LAST_CONNECTED):
 
 # Never leaves this machine (keep in step with localKeys in ui/Store.qml).
 # "Ignore certificate" and the security level are local too: a sync file must never be able to turn
-# off the server checks of a connection that signs in here.
+# off the server checks of a connection that signs in here. Nor switch on signing in again by
+# itself (unlockAfter).
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
               "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert",
-              "security", "gliffServer")
-GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security")
+              "security", "gliffServer", "unlockAfter")
+GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security", "unlockAfter")
 # Where a connection signs in. A synced change to these, on a connection or group that signs in here
 # with a saved password or a credential set, waits for the user: it would send those credentials to
 # another server.

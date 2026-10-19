@@ -657,6 +657,21 @@ class Sync(unittest.TestCase):
         self.assertIn('"favourite": true', out)
         self.assertIn('"audio": "off"', out)
 
+    def test_unlock_on_return_never_travels(self):
+        """Signing in again by itself is chosen here: a sync or import file neither sets nor
+        clears it, on a connection or a group."""
+        data = self.local(self.c(unlockAfter=10), groups={"Servers": {"settings": {"unlockAfter": 5}}})
+        self.assertNotIn("unlockAfter", json.dumps(session.portable(data, "here")))
+        evil = self.c(modified=200, unlockAfter=1)
+        added, _ = session.merge(self.local(), [self.remote(evil)], self.NOW)
+        self.assertNotIn("unlockAfter", added["connections"][0])
+        merged, _ = session.merge(self.local(self.c(unlockAfter=10)), [self.remote(evil)], self.NOW)
+        self.assertEqual(merged["connections"][0].get("unlockAfter"), 10)
+        local = self.local(groups={"Servers": {"settings": {"unlockAfter": 5}, "modified": 1}})
+        incoming = self.remote(groups={"Servers": {"settings": {"unlockAfter": 1}, "modified": 9}})
+        data, _ = session.merge(local, [incoming], self.NOW)
+        self.assertEqual(data["groups"]["Servers"]["settings"], {"unlockAfter": 5})
+
     def test_a_gliff_server_path_never_travels(self):
         """The program ssh runs on the remote is chosen here, like sshArgs: a sync or import file
         never sets it (security review 0.9.0)."""
@@ -1846,3 +1861,21 @@ class Files(unittest.TestCase):
         out, calls = self.run_browse(fuse=False)
         self.assertEqual(out, {"state": "needs-fuse"})
         self.assertEqual(calls, [])
+
+
+class UnlockOnReturn(unittest.TestCase):
+    def test_off_by_default(self):
+        self.assertEqual(session.DEFAULTS["unlockAfter"], 0)
+
+    def test_store_lists_equal_the_backend(self):
+        """ui/Store.qml keeps its own copies of LOCAL_KEYS and SETTING_KEYS: a key missing there
+        would travel from the UI's side."""
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "Store.qml"),
+                  encoding="utf-8") as f:
+            text = f.read()
+
+        def listed(name):
+            body = re.search(r"property var %s: \[(.*?)\]" % name, text, re.S).group(1)
+            return set(re.findall(r'"([^"]+)"', body))
+        self.assertEqual(listed("localKeys"), set(session.LOCAL_KEYS))
+        self.assertEqual(listed("settingKeys"), set(session.SETTING_KEYS))

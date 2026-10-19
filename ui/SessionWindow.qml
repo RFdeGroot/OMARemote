@@ -31,6 +31,33 @@ FocusScope {
     }
     // Reconnecting: the connection whose new session this window waits for.
     property string pendingConnection: ""
+    // The live session a reconnect replaces, stopped once the new one is shown.
+    property string replacedSession: ""
+    property real reconnectAt: 0
+
+    function stepReplacing() {
+        if (pendingConnection === "" || replacedSession === "")
+            return
+        var s = Format.reconnectCandidate(Sessions.sessions, pendingConnection, replacedSession, reconnectAt)
+        var step = Format.reconnectStep(s, reconnectAt, Date.now())
+        if (step === "wait")
+            return
+        pendingConnection = ""
+        if (step === "failed") {
+            if (s)
+                Sessions.forget(s.id)
+        } else {
+            sessionId = s.id
+            Sessions.stop(replacedSession)
+        }
+        replacedSession = ""
+    }
+    Timer {
+        interval: 500
+        repeat: true
+        running: root.replacedSession !== ""
+        onTriggered: root.stepReplacing()
+    }
 
     focus: true
 
@@ -62,9 +89,13 @@ FocusScope {
         Qt.callLater(function () { if (root.host) root.host.quit() })
     }
 
+    // A live session (ctrl+alt+r, or back after unlockAfter) stays on screen until the new one is
+    // up (Format.reconnectStep), then stops: a locked Windows desktop comes back signed in.
     function reconnect() {
-        if (!session)
+        if (!session || pendingConnection !== "")
             return
+        replacedSession = live ? sessionId : ""
+        reconnectAt = Date.now()
         pendingConnection = session.connection
         var dpr = Sessions.monitorScale / 100
         Sessions.launchInTab(session.connection, Math.round(view.width * dpr), Math.round(view.height * dpr), Math.round(dpr * 100))
@@ -81,6 +112,8 @@ FocusScope {
         function onSessionsChanged() {
             if (root.pendingConnection === "")
                 return
+            if (root.replacedSession !== "")
+                return root.stepReplacing()
             var list = Sessions.sessions
             for (var i = 0; i < list.length; i++) {
                 var s = list[i]

@@ -284,3 +284,37 @@ function statsRows(s) {
     rows.push(["Server encodes", s.server === "?" ? "unknown" : "on the " + s.server])
     return rows
 }
+
+// Whether coming back to a session after awayMs reconnects it (the connection's unlockAfter, in
+// minutes; RDP only). A value that is no whole number from 1 to 1440 counts as off.
+function unlockDue(protocol, unlockAfter, awayMs) {
+    var minutes = Number(unlockAfter)
+    if ((protocol || "rdp") !== "rdp" || typeof unlockAfter === "boolean" || !Number.isInteger(minutes)
+            || minutes < 1 || minutes > 1440)
+        return false
+    return Number(awayMs) >= minutes * 60000
+}
+
+// A reconnect of a live session (ctrl+alt+r, unlock on return) keeps the old one on screen until
+// the new one is up: its new session for that connection, started after requestedAt (ms), or none.
+function reconnectCandidate(sessions, connection, oldId, requestedAt) {
+    var found = null
+    for (var i = 0; i < (sessions || []).length; i++) {
+        var s = sessions[i]
+        if (s.connection === connection && s.id !== oldId && (Number(s.started) || 0) * 1000 >= requestedAt - 2000)
+            found = s
+    }
+    return found
+}
+
+// What to do with it: "swap" once connected, or after 5 s still connecting (it may be asking
+// something: a password, a certificate); "failed" (keep the old one); else "wait".
+function reconnectStep(s, requestedAt, now) {
+    if (!s)
+        return now - requestedAt > 60000 ? "failed" : "wait"
+    if (s.state === "connected")
+        return "swap"
+    if (s.state === "connecting")
+        return now - requestedAt >= 5000 ? "swap" : "wait"
+    return "failed"
+}

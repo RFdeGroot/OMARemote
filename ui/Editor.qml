@@ -627,6 +627,19 @@ Rectangle {
                         onToggled: root.set("grabKeyboard", !checked)
                     }
                 }
+                FormRow {
+                    inherited: root.fromGroup("unlockAfter")
+                    label: "Unlock on return"
+                    visible: root.isRdp
+                    help: "Reconnect when back after this long away; pick the remote's lock time"
+                    Segment {
+                        value: String(Number(root.d.unlockAfter) || 0)
+                        options: [{ value: "0", label: "Off" }, { value: "5", label: "5m" }, { value: "10", label: "10m" },
+                                  { value: "15", label: "15m" }, { value: "30", label: "30m" },
+                                  { value: "60", label: "60m" }]
+                        onPicked: function (v) { root.set("unlockAfter", Number(v)) }
+                    }
+                }
 
                 Section { text: "CONNECTION"; visible: !root.isVnc }
                 FormRow {

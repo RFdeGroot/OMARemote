@@ -58,18 +58,19 @@ Singleton {
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", gatewaySavePassword: false, kdc: "",
-        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, sshArgs: "", sshKey: "", gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
+        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, unlockAfter: 0, sshArgs: "", sshKey: "", gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
         favourite: false, lastConnected: 0
     })
     // Settings a group can set (SETTING_KEYS in bin/omaremote-session).
     readonly property var settingKeys: ["display", "width", "height", "scale", "multimon", "clipboard", "audio",
         "microphone", "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
-        "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn", "vncScaling", "vncQuality", "viewOnly"]
+        "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn", "vncScaling", "vncQuality", "viewOnly",
+        "unlockAfter"]
     readonly property var resolvedOnly: ["credentialSource", "secretKind", "secretId"]
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
         "gatewayDomain", "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey",
-        "ignoreCert", "security", "gliffServer"]
+        "ignoreCert", "security", "gliffServer", "unlockAfter"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
     readonly property var connections: stored.map(function (c) { return root.resolve(c) })

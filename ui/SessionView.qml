@@ -38,6 +38,23 @@ Item {
     }
 
     onCurrentChanged: if (current) Qt.callLater(focusDesktop)
+
+    // In front of the user: the shown tab of the active manager window, or the active own or hotkey
+    // window. Coming back after the connection's unlockAfter minutes away reconnects (RDP), so a
+    // desktop Windows locked meanwhile comes back signed in.
+    readonly property bool present: current && Window.active
+    property real awaySince: 0
+    onPresentChanged: {
+        if (!present) {
+            awaySince = Date.now()
+            return
+        }
+        var away = awaySince > 0 ? Date.now() - awaySince : 0
+        awaySince = 0
+        if (showDesktop && !hasPrompt && session
+                && Format.unlockDue(session.protocol, connection ? connection.unlockAfter : 0, away))
+            root.reconnectRequested()
+    }
     onHasPromptChanged: if (current) Qt.callLater(focusDesktop)
     onLiveChanged: {
         if (current)
@@ -184,6 +201,7 @@ Item {
         else if (event.key === Qt.Key_H && root.inWindow) root.navigate("hide")
         else if (event.key === Qt.Key_P) root.togglePinned()
         else if (event.key === Qt.Key_B && root.isSsh) Sessions.browse(root.session.connection)
+        else if (event.key === Qt.Key_R && live && root.session.protocol === "rdp") root.reconnectRequested()
         else if (event.key === Qt.Key_W) root.closeRequested()
         else return Keymap.sessionKeys === "rctrl"
         return true

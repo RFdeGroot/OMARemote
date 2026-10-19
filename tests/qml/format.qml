@@ -26,6 +26,33 @@ Item {
             r.noStats = Format.parseStats("")
             r.ports = Format.defaultPorts
             r.gliffAddress = Format.address({ protocol: "gliff", host: "pc.lan", port: 22 })
+            r.unlock = {
+                due: Format.unlockDue("rdp", 10, 10 * 60000),
+                soon: Format.unlockDue("rdp", 10, 9 * 60000),
+                off: Format.unlockDue("rdp", 0, 1e9),
+                unset: Format.unlockDue("rdp", undefined, 1e9),
+                text: Format.unlockDue("rdp", "10", 1e9),
+                odd: Format.unlockDue("rdp", "x", 1e9),
+                big: Format.unlockDue("rdp", 99999, 1e12),
+                bool: Format.unlockDue("rdp", true, 1e9),
+                vnc: Format.unlockDue("vnc", 10, 1e9),
+                ssh: Format.unlockDue("ssh", 10, 1e9),
+                gliff: Format.unlockDue("gliff", 10, 1e9)
+            }
+            var olds = [{ id: "old", connection: "c1", state: "connected", started: 100 },
+                        { id: "other", connection: "c2", state: "connecting", started: 200 },
+                        { id: "stale", connection: "c1", state: "ended", started: 50 }]
+            var fresh = { id: "new", connection: "c1", state: "connecting", started: 200 }
+            r.step = {
+                none: Format.reconnectCandidate(olds, "c1", "old", 200000),
+                found: Format.reconnectCandidate(olds.concat([fresh]), "c1", "old", 200000).id,
+                connecting: Format.reconnectStep(fresh, 200000, 201000),
+                slow: Format.reconnectStep(fresh, 200000, 205000),
+                connected: Format.reconnectStep({ state: "connected" }, 200000, 200500),
+                failed: Format.reconnectStep({ state: "failed" }, 200000, 200500),
+                missing: Format.reconnectStep(null, 200000, 210000),
+                gone: Format.reconnectStep(null, 200000, 270000)
+            }
         } catch (e) {
             r.error = String(e)
         }

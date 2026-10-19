@@ -209,6 +209,7 @@ chose. The status bar and the keymap sheet show the keys as they are.
 | `ctrl+alt+home` | back to the connections tab |
 | `ctrl+alt+pgup` / `pgdn` | previous / next tab |
 | `ctrl+alt+end` | send ctrl+alt+del |
+| `ctrl+alt+r` | RDP: reconnect, so a locked desktop comes back signed in |
 | `ctrl+alt+⏎` | fullscreen, chrome hidden |
 | `ctrl+alt+o` | move the session to its own window (`ctrl+alt+t` there: back into a tab) |
 | `ctrl+alt+w` | disconnect: close the tab (or its own window) |
@@ -383,6 +384,28 @@ just those, TCP only, through `KRB5_CONFIG`. `/etc/krb5.conf` is never touched.
   as that DNS domain (`acme.lan`), so Kerberos still works; NTLM accepts either.
 - **Kerberos KDC** in the editor pins specific DCs and skips discovery.
 - The session card shows whether the sign-in used Kerberos or NTLM.
+
+### A desktop that locked itself
+
+Windows locks a session after a while without input, and then wants the password typed inside
+the session. A reconnect brings the saved credentials back into that session past the lock screen.
+They come from the keyring and go over NLA as at every sign-in. OMARemote can do that for you:
+
+- **`ctrl+alt+r`** reconnects in place, in a tab, an own window or a hotkey window. The old
+  session stays on screen until the new one is up, then the new one takes its place.
+- **Unlock on return** (editor, RDP, off by default): when you come back to a session after this
+  many minutes away, it reconnects. Away means another tab, another window, or a hidden hotkey
+  window. RDP does not tell whether Windows locked, so pick the remote's own lock time (or a bit
+  more): then it only reconnects when the desktop really locked. A reconnect that was not needed
+  costs a few seconds; the Windows session, its programs and their work stay as they were.
+- The password is never typed into the session (it cannot end up in an open document): the
+  reconnect is a new sign-in, where FreeRDP hands it to Windows' sign-in over NLA (CredSSP,
+  inside TLS), exactly as when you first connect.
+- The remote's own lock stays: while you are away it locks as its owner wants, and only your
+  saved credentials open it again. Unlock on return is this system's own: it never syncs or
+  exports.
+- Without a saved password, a reconnect asks for it as usual. Kerberos without a password, or a
+  server set to always ask for the password, shows its lock or logon screen again after a reconnect.
 
 ## VNC
 

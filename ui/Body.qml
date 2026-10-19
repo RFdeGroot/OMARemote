@@ -37,6 +37,10 @@ FocusScope {
     property var openTabs: []
     // Connection ids launched into a tab whose session has not shown up in the list yet.
     property var pendingTabs: []
+    // Connection id -> {old: the live session a reconnect replaces, at: when asked (ms)}.
+    property var replacing: ({})
+    // Sessions a reconnect replaced: Windows ends them for the new one, which is no failure to report.
+    property var replacedIds: ({})
     // Connection ids launched for an own window, waiting for their session like pendingTabs.
     property var pendingWindows: []
     // Fullscreen with the chrome hidden, for a session tab.
@@ -308,9 +312,61 @@ FocusScope {
         showTab(all[(at + delta + all.length) % all.length])
     }
 
+    // An ended session: its tab closes and the connection starts again. A live one (ctrl+alt+r, or
+    // back after unlockAfter): a new session starts unseen and takes over the old one's tab once it
+    // is up (Format.reconnectStep), so a locked Windows desktop comes back signed in.
     function reconnect(s) {
-        closeTab(s.id)
-        connect(s.connection)
+        if (!s)
+            return
+        if (!Sessions.isActive(s)) {
+            closeTab(s.id)
+            connect(s.connection)
+            return
+        }
+        var c = Store.get(s.connection)
+        if (!c || replacing[c.id])
+            return
+        var swap = Object.assign({}, replacing)
+        swap[c.id] = { old: s.id, at: Date.now() }
+        replacing = swap
+        var quiet = Object.assign({}, replacedIds)
+        quiet[s.id] = true
+        replacedIds = quiet
+        say("Reconnecting to " + (c.name || c.host) + "…")
+        var dpr = Sessions.monitorScale / 100
+        Sessions.launchInTab(c.id, Math.round(sessionArea.width * dpr), Math.round(sessionArea.height * dpr), Math.round(dpr * 100))
+    }
+
+    // The reconnects under way: each new session takes its old one's place in the tabs once it is up.
+    function stepReplacing() {
+        var rest = Object.assign({}, replacing)
+        var now = Date.now()
+        for (var id in replacing) {
+            var r = replacing[id]
+            var s = Format.reconnectCandidate(Sessions.sessions, id, r.old, r.at)
+            var step = Format.reconnectStep(s, r.at, now)
+            if (step === "wait")
+                continue
+            delete rest[id]
+            if (step === "failed") {
+                if (s)
+                    Sessions.forget(s.id)
+                continue
+            }
+            openTabs = openTabs.map(function (t) { return t === r.old ? s.id : t })
+            if (openTabs.indexOf(s.id) < 0)
+                openTabs = openTabs.concat([s.id])
+            if (currentTab === r.old)
+                showTab(s.id)
+            Sessions.stop(r.old)
+        }
+        replacing = rest
+    }
+    Timer {
+        interval: 500
+        repeat: true
+        running: Object.keys(root.replacing).length > 0
+        onTriggered: root.stepReplacing()
     }
 
     function togglePinned() {
@@ -1619,12 +1675,13 @@ FocusScope {
                 var s = Sessions.sessions[i]
                 if (s.state === "failed") {
                     next[s.id] = true
-                    if (!root.seenFailures[s.id] && root.ready)
+                    if (!root.seenFailures[s.id] && root.ready && !root.replacedIds[s.id])
                         root.say(s.name + ": " + (s.error || "connection failed"), true)
                 }
             }
             root.seenFailures = next
             root.adoptTabs()
+            root.stepReplacing()
             root.ready = true
         }
     }

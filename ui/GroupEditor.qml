@@ -314,6 +314,17 @@ Rectangle {
                     help: "Send to remote"
                     Segment { value: root.boolValue("grabKeyboard"); options: root.onOff; onPicked: function (v) { root.setBool("grabKeyboard", v) } }
                 }
+                FormRow {
+                    label: "Unlock on return"
+                    help: "Reconnect when back after"
+                    Segment {
+                        value: root.value("unlockAfter")
+                        options: root.notSet.concat([{ value: "0", label: "Off" }, { value: "5", label: "5m" }, { value: "10", label: "10m" },
+                                                     { value: "15", label: "15m" }, { value: "30", label: "30m" },
+                                                     { value: "60", label: "60m" }])
+                        onPicked: function (v) { root.set("unlockAfter", v === "" ? "" : Number(v)) }
+                    }
+                }
 
                 Section { text: "VNC" }
                 FormRow {

@@ -46,6 +46,21 @@ class QuickCredential(unittest.TestCase):
         self.assertEqual(self.r["ports"], session.DEFAULT_PORTS)
         self.assertEqual(self.r["gliffAddress"], "pc.lan")
 
+    def test_a_reconnect_swaps_only_once_the_new_session_is_up(self):
+        st = self.r["step"]
+        self.assertIsNone(st["none"])
+        self.assertEqual(st["found"], "new")
+        self.assertEqual((st["connecting"], st["slow"], st["connected"]), ("wait", "swap", "swap"))
+        self.assertEqual((st["failed"], st["missing"], st["gone"]), ("failed", "wait", "failed"))
+
+    def test_unlock_on_return_rdp_only_and_bounded(self):
+        u = self.r["unlock"]
+        self.assertTrue(u["due"])
+        self.assertTrue(u["text"])
+        for key in ("soon", "off", "unset", "odd", "big", "bool", "vnc", "ssh", "gliff"):
+            self.assertFalse(u[key], key)
+
+
 
 class Card(unittest.TestCase):
     def test_the_card_applies_it(self):
