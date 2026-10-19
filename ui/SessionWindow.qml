@@ -34,7 +34,12 @@ FocusScope {
     // The live session a reconnect replaces, stopped once the new one is shown.
     property string replacedSession: ""
     property real reconnectAt: 0
+    // Why the last reconnect failed, in the status bar for a while (the old session kept running).
+    property string notice: ""
+    Timer { id: noticeTimer; interval: 6000; onTriggered: root.notice = "" }
 
+    // "show" puts the new session on screen with the old one still running behind it; "swap"
+    // stops the old one; "failed" goes back to the old one while it runs.
     function stepReplacing() {
         if (pendingConnection === "" || replacedSession === "")
             return
@@ -42,13 +47,23 @@ FocusScope {
         var step = Format.reconnectStep(s, reconnectAt, Date.now())
         if (step === "wait")
             return
+        if (step === "show") {
+            sessionId = s.id
+            return
+        }
         pendingConnection = ""
-        if (step === "failed") {
-            if (s)
-                Sessions.forget(s.id)
-        } else {
+        if (step === "swap") {
             sessionId = s.id
             Sessions.stop(replacedSession)
+        } else {
+            var old = Sessions.sessions.filter(function (x) { return x.id === root.replacedSession })[0]
+            if (old && Sessions.isActive(old)) {
+                sessionId = replacedSession
+                notice = "Reconnect failed" + (s && s.error ? ": " + s.error : "")
+                noticeTimer.restart()
+                if (s)
+                    Sessions.forget(s.id)
+            }
         }
         replacedSession = ""
     }
@@ -103,6 +118,13 @@ FocusScope {
 
     // Called as the window closes: a live session ends with it, unless it moved to a tab.
     function closing() {
+        if (replacedSession !== "" && replacedSession !== sessionId)
+            Sessions.stop(replacedSession) // a reconnect under way: the old one ran behind the new one
+        if (replacedSession !== "" && sessionId === replacedSession) {
+            var s = Format.reconnectCandidate(Sessions.sessions, pendingConnection, replacedSession, reconnectAt)
+            if (s)
+                Sessions.stop(s.id)
+        }
         if (!movingToTab && live)
             Sessions.stop(sessionId)
     }
@@ -198,6 +220,8 @@ FocusScope {
         StatusBar {
             Layout.fillWidth: true
             showCounts: false
+            notice: root.notice
+            noticeIsError: true
             info: root.live && root.session.protocol === "gliff" ? (Sessions.stats[root.session.id] || "") : ""
             hints: (root.hotkey ? [["ctrl+alt+h", "hide"]] : []).concat([["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
                     root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"]

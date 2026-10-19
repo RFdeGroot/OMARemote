@@ -44,6 +44,9 @@ Item {
     // desktop Windows locked meanwhile comes back signed in.
     readonly property bool present: current && Window.active
     property real awaySince: 0
+    // A view that starts out of sight (a tab adopted in the background, a window opened unfocused)
+    // is away from the start.
+    Component.onCompleted: if (!present) awaySince = Date.now()
     onPresentChanged: {
         if (!present) {
             awaySince = Date.now()

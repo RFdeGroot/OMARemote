@@ -37,10 +37,8 @@ FocusScope {
     property var openTabs: []
     // Connection ids launched into a tab whose session has not shown up in the list yet.
     property var pendingTabs: []
-    // Connection id -> {old: the live session a reconnect replaces, at: when asked (ms)}.
+    // Connection id -> a reconnect under way (stepReplacing).
     property var replacing: ({})
-    // Sessions a reconnect replaced: Windows ends them for the new one, which is no failure to report.
-    property var replacedIds: ({})
     // Connection ids launched for an own window, waiting for their session like pendingTabs.
     property var pendingWindows: []
     // Fullscreen with the chrome hidden, for a session tab.
@@ -248,6 +246,18 @@ FocusScope {
         for (var i = 0; i < tabSessions.length; i++)
             if (tabSessions[i].id === id)
                 s = tabSessions[i]
+        // A reconnect under way for this tab goes with it: both sessions stop (the new one in
+        // stepReplacing, as soon as it shows up).
+        for (var conn in replacing) {
+            var r = replacing[conn]
+            if (r.old !== id && r.shown !== id)
+                continue
+            var next = Object.assign({}, replacing)
+            next[conn] = Object.assign({}, r, { cancelled: true })
+            replacing = next
+            if (r.shown === id)
+                Sessions.stop(r.old) // shown: the new one is this tab's, stopped below; the old ran behind it
+        }
         // Closing a tab disconnects; the Windows session itself stays logged in.
         if (s && Sessions.isActive(s))
             Sessions.stop(s.id)
@@ -326,41 +336,62 @@ FocusScope {
         var c = Store.get(s.connection)
         if (!c || replacing[c.id])
             return
-        var swap = Object.assign({}, replacing)
-        swap[c.id] = { old: s.id, at: Date.now() }
-        replacing = swap
-        var quiet = Object.assign({}, replacedIds)
-        quiet[s.id] = true
-        replacedIds = quiet
+        var next = Object.assign({}, replacing)
+        next[c.id] = { old: s.id, at: Date.now(), shown: "", cancelled: false }
+        replacing = next
         say("Reconnecting to " + (c.name || c.host) + "…")
         var dpr = Sessions.monitorScale / 100
         Sessions.launchInTab(c.id, Math.round(sessionArea.width * dpr), Math.round(sessionArea.height * dpr), Math.round(dpr * 100))
     }
 
-    // The reconnects under way: each new session takes its old one's place in the tabs once it is up.
+    function replaceTab(from, to) {
+        openTabs = openTabs.map(function (t) { return t === from ? to : t })
+        if (currentTab === from)
+            showTab(to)
+    }
+
+    // The reconnects under way, each {old, at (ms), shown (the new session once it has the tab),
+    // cancelled (its tab was closed meanwhile)}.
     function stepReplacing() {
-        var rest = Object.assign({}, replacing)
+        var next = Object.assign({}, replacing)
         var now = Date.now()
         for (var id in replacing) {
-            var r = replacing[id]
+            var r = Object.assign({}, replacing[id])
             var s = Format.reconnectCandidate(Sessions.sessions, id, r.old, r.at)
             var step = Format.reconnectStep(s, r.at, now)
-            if (step === "wait")
-                continue
-            delete rest[id]
-            if (step === "failed") {
-                if (s)
-                    Sessions.forget(s.id)
+            if (r.cancelled) {
+                // Closed while it connected: the new one goes too, as soon as it shows up.
+                if (s && Sessions.isActive(s))
+                    Sessions.stop(s.id)
+                if (s || step === "failed")
+                    delete next[id]
                 continue
             }
-            openTabs = openTabs.map(function (t) { return t === r.old ? s.id : t })
-            if (openTabs.indexOf(s.id) < 0)
-                openTabs = openTabs.concat([s.id])
-            if (currentTab === r.old)
-                showTab(s.id)
-            Sessions.stop(r.old)
+            if (step === "wait")
+                continue
+            if (step === "show" || step === "swap") {
+                if (!r.shown) {
+                    replaceTab(r.old, s.id)
+                    r.shown = s.id
+                }
+                next[id] = r
+                if (step === "swap") {
+                    Sessions.stop(r.old)
+                    delete next[id]
+                }
+                continue
+            }
+            // Failed: back to the old session while it runs; else the new one's panel says why.
+            var old = Sessions.sessions.filter(function (x) { return x.id === r.old })[0]
+            if (old && Sessions.isActive(old)) {
+                if (r.shown)
+                    replaceTab(r.shown, r.old)
+                if (s)
+                    Sessions.forget(s.id)
+            }
+            delete next[id]
         }
-        replacing = rest
+        replacing = next
     }
     Timer {
         interval: 500
@@ -1675,7 +1706,7 @@ FocusScope {
                 var s = Sessions.sessions[i]
                 if (s.state === "failed") {
                     next[s.id] = true
-                    if (!root.seenFailures[s.id] && root.ready && !root.replacedIds[s.id])
+                    if (!root.seenFailures[s.id] && root.ready && !Format.failureReplaced(Sessions.sessions, s))
                         root.say(s.name + ": " + (s.error || "connection failed"), true)
                 }
             }

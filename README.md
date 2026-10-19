@@ -392,7 +392,9 @@ the session. A reconnect brings the saved credentials back into that session pas
 They come from the keyring and go over NLA as at every sign-in. OMARemote can do that for you:
 
 - **`ctrl+alt+r`** reconnects in place, in a tab, an own window or a hotkey window. The old
-  session stays on screen until the new one is up, then the new one takes its place.
+  session stays on screen until the new one is up, then the new one takes its place. One that
+  takes longer than 5 seconds is shown anyway (it may be asking for a password), with the old one
+  still running behind it until it connects. A reconnect that fails goes back to the old one.
 - **Unlock on return** (editor, RDP, off by default): when you come back to a session after this
   many minutes away, it reconnects. Away means another tab, another window, or a hidden hotkey
   window. RDP does not tell whether Windows locked, so pick the remote's own lock time (or a bit

@@ -297,24 +297,37 @@ function unlockDue(protocol, unlockAfter, awayMs) {
 
 // A reconnect of a live session (ctrl+alt+r, unlock on return) keeps the old one on screen until
 // the new one is up: its new session for that connection, started after requestedAt (ms), or none.
+// The list is newest first: the first match is the newest.
 function reconnectCandidate(sessions, connection, oldId, requestedAt) {
-    var found = null
     for (var i = 0; i < (sessions || []).length; i++) {
         var s = sessions[i]
         if (s.connection === connection && s.id !== oldId && (Number(s.started) || 0) * 1000 >= requestedAt - 2000)
-            found = s
+            return s
     }
-    return found
+    return null
 }
 
-// What to do with it: "swap" once connected, or after 5 s still connecting (it may be asking
-// something: a password, a certificate); "failed" (keep the old one); else "wait".
+// What to do with it: "swap" once connected (the old one stops); "show" after 5 s still
+// connecting (it may be asking for a password or a certificate: shown, the old one kept running
+// behind it); "failed" (back to the old one); else "wait".
 function reconnectStep(s, requestedAt, now) {
     if (!s)
         return now - requestedAt > 60000 ? "failed" : "wait"
     if (s.state === "connected")
         return "swap"
     if (s.state === "connecting")
-        return now - requestedAt >= 5000 ? "swap" : "wait"
+        return now - requestedAt >= 5000 ? "show" : "wait"
     return "failed"
+}
+
+// Whether a failed session is news: not when a newer session of its connection is running (a
+// reconnect replaced it, and Windows ended it for the new sign-in).
+function failureReplaced(sessions, s) {
+    for (var i = 0; i < (sessions || []).length; i++) {
+        var o = sessions[i]
+        if (o.id !== s.id && o.connection === s.connection && (Number(o.started) || 0) >= (Number(s.started) || 0)
+                && (o.state === "connecting" || o.state === "connected"))
+            return true
+    }
+    return false
 }

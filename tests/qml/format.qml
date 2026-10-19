@@ -46,12 +46,22 @@ Item {
             r.step = {
                 none: Format.reconnectCandidate(olds, "c1", "old", 200000),
                 found: Format.reconnectCandidate(olds.concat([fresh]), "c1", "old", 200000).id,
+                // Newest first, as the list is: the first match wins.
+                newest: Format.reconnectCandidate([{ id: "n2", connection: "c1", started: 201 }, fresh], "c1", "old", 200000).id,
                 connecting: Format.reconnectStep(fresh, 200000, 201000),
                 slow: Format.reconnectStep(fresh, 200000, 205000),
                 connected: Format.reconnectStep({ state: "connected" }, 200000, 200500),
                 failed: Format.reconnectStep({ state: "failed" }, 200000, 200500),
                 missing: Format.reconnectStep(null, 200000, 210000),
-                gone: Format.reconnectStep(null, 200000, 270000)
+                gone: Format.reconnectStep(null, 200000, 270000),
+                // The old one, ended by Windows for the new sign-in, is no news; a lone failure is.
+                replaced: Format.failureReplaced([fresh, { id: "old", connection: "c1", state: "failed", started: 100 }],
+                                                 { id: "old", connection: "c1", state: "failed", started: 100 }),
+                alone: Format.failureReplaced([{ id: "old", connection: "c1", state: "failed", started: 100 }],
+                                              { id: "old", connection: "c1", state: "failed", started: 100 }),
+                newFailed: Format.failureReplaced([{ id: "new", connection: "c1", state: "failed", started: 200 },
+                                                   { id: "old", connection: "c1", state: "connected", started: 100 }],
+                                                  { id: "new", connection: "c1", state: "failed", started: 200 })
             }
         } catch (e) {
             r.error = String(e)

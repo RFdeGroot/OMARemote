@@ -50,8 +50,16 @@ class QuickCredential(unittest.TestCase):
         st = self.r["step"]
         self.assertIsNone(st["none"])
         self.assertEqual(st["found"], "new")
-        self.assertEqual((st["connecting"], st["slow"], st["connected"]), ("wait", "swap", "swap"))
+        self.assertEqual(st["newest"], "n2")
+        # Slow: shown (it may be asking something), the old one kept until it is connected.
+        self.assertEqual((st["connecting"], st["slow"], st["connected"]), ("wait", "show", "swap"))
         self.assertEqual((st["failed"], st["missing"], st["gone"]), ("failed", "wait", "failed"))
+
+    def test_a_replaced_sessions_end_is_no_failure_to_report(self):
+        st = self.r["step"]
+        self.assertTrue(st["replaced"])
+        self.assertFalse(st["alone"])
+        self.assertFalse(st["newFailed"])
 
     def test_unlock_on_return_rdp_only_and_bounded(self):
         u = self.r["unlock"]
