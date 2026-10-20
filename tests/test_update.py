@@ -165,6 +165,54 @@ class FetchJson(unittest.TestCase):
         with self.assertRaises(OSError):
             self.fetch(Response([b"[", b" "], endless=True, pause=0.01), deadline=0.3)
 
+    def serve(self, reply, pause=0):
+        """A local plain-HTTP server that sends reply one byte at a time, pause seconds apart; returns
+        an opener whose open() reaches it (fetch_json itself only takes https)."""
+        import socket
+        import threading
+        import time
+        import urllib.request
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        self.addCleanup(server.close)
+
+        def answer():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                try:
+                    for byte in reply:
+                        conn.sendall(bytes([byte]))
+                        time.sleep(pause)
+                except OSError:
+                    pass
+        threading.Thread(target=answer, daemon=True).start()
+        url = "http://127.0.0.1:%d/" % server.getsockname()[1]
+        opener = mock.Mock()
+        real = urllib.request.build_opener()
+        opener.open.side_effect = lambda *args, **kw: real.open(url, timeout=5)
+        return opener
+
+    def test_trickled_headers_stop_at_the_deadline(self):
+        # Before: the deadline only covered the body; open() read the status line and headers with
+        # the 20 s per-read timeout, so one header byte every few seconds held it far longer.
+        import time
+        opener = self.serve(b"HTTP/1.1 200 OK\r\n" + b"X: " + b"y" * 200 + b"\r\n\r\n[]", pause=0.05)
+        start = time.monotonic()
+        with mock.patch("urllib.request.build_opener", return_value=opener), self.assertRaises(OSError):
+            session.fetch_json("https://api.github.com/x", "omaremote", deadline=0.5)
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_a_garbled_answer_is_an_oserror(self):
+        # Before: http.client.BadStatusLine escaped, and plugin-check/update-check ended in a traceback.
+        opener = self.serve(b"garbage\r\n\r\n")
+        with mock.patch("urllib.request.build_opener", return_value=opener), self.assertRaises(OSError):
+            session.fetch_json("https://api.github.com/x", "omaremote", deadline=5)
+
     def test_only_https(self):
         with self.assertRaises(OSError):
             session.fetch_json("http://api.github.com/x", "omaremote")

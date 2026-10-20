@@ -1094,9 +1094,12 @@ FETCH_CONNECT_TIMEOUT = 20
 
 
 def fetch_json(url, agent, cap=FETCH_MAX_BYTES, deadline=FETCH_DEADLINE):
-    """GETs JSON over HTTPS only (redirects too), at most cap bytes and within deadline seconds in all;
-    a socket timeout alone lets a server trickle forever. OSError or ValueError when it does not fit."""
-    import time
+    """GETs JSON over HTTPS only (redirects too), at most cap bytes and within deadline seconds in all,
+    headers and redirects included; a socket timeout alone lets a server trickle forever. OSError or
+    ValueError when it does not fit. The transfer runs in a daemon thread that is left behind on a
+    timeout: fine for the short-lived CLI checks that call this, not for a long-running process."""
+    import http.client
+    import threading
     import urllib.request
 
     class HttpsOnly(urllib.request.HTTPRedirectHandler):
@@ -1110,18 +1113,37 @@ def fetch_json(url, agent, cap=FETCH_MAX_BYTES, deadline=FETCH_DEADLINE):
     opener = urllib.request.build_opener(HttpsOnly)
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": agent})
     end = time.monotonic() + deadline
-    raw = bytearray()
-    with opener.open(request, timeout=FETCH_CONNECT_TIMEOUT) as response:
-        while True:
-            if time.monotonic() > end:
-                raise OSError(f"{url}: no answer within {deadline} s")
-            chunk = response.read1(65536) if hasattr(response, "read1") else response.read(65536)
-            if not chunk:
-                break
-            raw += chunk
-            if len(raw) > cap:
-                raise OSError(f"{url}: more than {cap} bytes")
-    return json.loads(bytes(raw))
+    late = f"{url}: no answer within {deadline} s"
+    outcome = {}
+
+    def transfer():
+        # The body loop stops at the cap and the deadline; a thread stuck in the headers dies with the process.
+        raw = bytearray()
+        try:
+            with opener.open(request, timeout=FETCH_CONNECT_TIMEOUT) as response:
+                while True:
+                    if time.monotonic() > end:
+                        raise OSError(late)
+                    chunk = response.read1(65536) if hasattr(response, "read1") else response.read(65536)
+                    if not chunk:
+                        break
+                    raw += chunk
+                    if len(raw) > cap:
+                        raise OSError(f"{url}: more than {cap} bytes")
+            outcome["json"] = json.loads(bytes(raw))
+        except http.client.HTTPException as e:
+            outcome["error"] = OSError(f"{url}: {e!r}")
+        except Exception as e:
+            outcome["error"] = e
+
+    worker = threading.Thread(target=transfer, daemon=True)
+    worker.start()
+    worker.join(max(0.0, end - time.monotonic()))
+    if worker.is_alive():
+        raise OSError(late)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["json"]
 
 
 def split_version(version):

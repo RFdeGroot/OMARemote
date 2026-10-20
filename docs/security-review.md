@@ -122,7 +122,9 @@ an audit after two sync findings in a row found six more), and add the class her
   (`curl --max-filesize`, which also stops a stream with no announced length; `read` up to cap + 1
   in Python) and a deadline for the whole transfer (a socket timeout is per read: a trickle never
   trips it), HTTPS only, redirects too. In CI too (the Arch Linux ARM image). (marketplace #12133;
-  0.9.10)
+  0.9.10) The deadline covers the status line, headers and every redirect, not only the body
+  (urllib's `open()` reads those with the per-read timeout alone), and a garbled answer
+  (`http.client.HTTPException`, which is no OSError) is a failure, not a traceback. (Reviewer, 0.9.11)
 - **Text into a line-based file stays one line.** Log lines (read back for "connected"/"failed"),
   `~/.ssh/omaremote.conf` (a name with a line break added a `Host *` block). (0.8.0, 0.9.0)
 
