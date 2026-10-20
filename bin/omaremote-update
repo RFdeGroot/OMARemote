@@ -37,10 +37,17 @@ package="$work/${url##*/}"
 # Not <package>.sig: pacman -U checks a signature it finds beside a package against its own
 # keyring, which does not hold OMARemote's key, and refuses. Ours is checked here, with gpgv.
 signature="$work/signature"
+# Both are downloaded before the signature is checked: a byte cap and a deadline each, so a server
+# streaming without end cannot fill the disk first (a package is about 0.5 MB). HTTPS only, redirects
+# too. The same limits as the bar plugin's (docs/plugin-interface.md).
+fetch=(curl -fL --proto '=https' --proto-redir '=https' --connect-timeout 20)
 echo "Updating OMARemote $current to $latest…"
-curl -fL --proto '=https' --progress-bar -o "$package" "$url" || exit 1
-curl -fsSL --proto '=https' -o "$signature" "$url.sig" || {
-  echo "The release has no signature ($url.sig): not installing it."
+"${fetch[@]}" --max-filesize $((64 << 20)) --max-time 600 --progress-bar -o "$package" "$url" || {
+  echo "Could not download the package (at most 64 MiB, within 10 minutes): not installing it."
+  exit 1
+}
+"${fetch[@]}" --max-filesize $((64 << 10)) --max-time 60 -sS -o "$signature" "$url.sig" || {
+  echo "Could not download the release's signature ($url.sig, at most 64 KiB): not installing it."
   exit 1
 }
 if ! gpgv --status-fd 1 --keyring "$keyring" "$signature" "$package" 2>/dev/null |

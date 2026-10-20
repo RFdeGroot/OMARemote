@@ -60,8 +60,10 @@ jobs:
           ROOTFS: https://fl.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz
           BUILD_KEY: 68B3537F39A313B3E574D06777193F152BDBE6A6
         run: |
-          curl -fsSL --proto '=https' -o rootfs.tar.gz "$ROOTFS"
-          curl -fsSL --proto '=https' -o rootfs.tar.gz.sig "$ROOTFS.sig"
+          # Downloaded before gpgv: capped (the image is about 830 MB) and with a deadline.
+          fetch=(curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 20)
+          "${fetch[@]}" --max-filesize $((4 << 30)) --max-time 1800 -o rootfs.tar.gz "$ROOTFS"
+          "${fetch[@]}" --max-filesize $((64 << 10)) --max-time 60 -o rootfs.tar.gz.sig "$ROOTFS.sig"
           gpgv --status-fd 1 --keyring "$PWD/packaging/arch/archlinuxarm-build.gpg" rootfs.tar.gz.sig rootfs.tar.gz \
             | tee gpgv.status
           grep -q "^\[GNUPG:\] VALIDSIG $BUILD_KEY " gpgv.status || {

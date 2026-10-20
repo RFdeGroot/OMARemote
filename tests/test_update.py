@@ -1,13 +1,23 @@
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
 import stat
 import subprocess
 import tempfile
+import sys
 import unittest
+from unittest import mock
+
+sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UPDATE = os.path.join(HERE, "..", "bin", "omaremote-update")
+_loader = importlib.machinery.SourceFileLoader("session", os.path.join(HERE, "..", "bin", "omaremote-session"))
+_spec = importlib.util.spec_from_loader("session", _loader)
+session = importlib.util.module_from_spec(_spec)
+_loader.exec_module(session)
 
 
 class Update(unittest.TestCase):
@@ -25,9 +35,10 @@ class Update(unittest.TestCase):
         url = "https://example.invalid/omaremote-9.9.9-1-x86_64.pkg.tar.zst"
         self.script("bin/omaremote", 'echo "omaremote 1.0.0"')
         self.script("bin/omaremote-session", "echo '%s'" % json.dumps({"latest": "9.9.9", "url": url, "newer": True}))
-        # curl -o <file> <url>: the package, or its signature.
-        self.script("stubs/curl", 'out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && { out=$2; shift; }; shift; done; '
-                                  'echo data > "$out"')
+        # curl -o <file> <url>: the package, or its signature. Each call's arguments go to curl.log.
+        self.curl_log = os.path.join(self.dir, "curl.log")
+        self.script("stubs/curl", 'echo "$*" >> "%s"; out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && '
+                                  '{ out=$2; shift; }; shift; done; echo data > "$out"' % self.curl_log)
         self.script("stubs/gpgv", 'echo "[GNUPG:] VALIDSIG D7FC432CF643656A400BDDEB3BE7753BBB50B393 x"')
         self.script("stubs/bsdtar", 'echo "installed = qt6-base-6.11.2-3-x86_64"')
         self.script("stubs/pacman", 'echo "qt6-base 6.11.2-3"')
@@ -82,6 +93,94 @@ class Update(unittest.TestCase):
         out = self.run_update()
         self.assertNotEqual(out.returncode, 0)
         self.assertFalse(os.path.exists(self.log))
+
+    def test_every_download_has_a_cap_and_a_deadline(self):
+        # Both files arrive before the signature is checked: a server streaming without end would
+        # fill the disk first (marketplace #12133, the plugin's install command and this one).
+        out = self.run_update()
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        with open(self.curl_log) as f:
+            calls = f.read().splitlines()
+        self.assertEqual(len(calls), 2)
+        package, signature = calls
+        for call in calls:
+            self.assertIn("--proto =https", call)
+            self.assertIn("--proto-redir =https", call)
+            self.assertIn("--connect-timeout", call)
+            self.assertIn("--max-time", call)
+        self.assertIn("--max-filesize %d " % (64 << 20), package)
+        self.assertIn("--max-filesize %d " % (64 << 10), signature)
+
+    def test_a_failed_download_installs_nothing(self):
+        # curl exit 63: past --max-filesize.
+        self.script("stubs/curl", "exit 63")
+        out = self.run_update()
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("at most 64 MiB", out.stdout)
+        self.assertFalse(os.path.exists(self.log))
+
+
+class Response:
+    """A response that sends `chunks` (repeating the last one forever when endless), pausing between."""
+
+    def __init__(self, chunks, endless=False, pause=0):
+        self.chunks, self.endless, self.pause = list(chunks), endless, pause
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read1(self, n):
+        if self.pause:
+            import time
+            time.sleep(self.pause)
+        if len(self.chunks) > 1 or (self.chunks and not self.endless):
+            return self.chunks.pop(0)
+        return self.chunks[0] if self.chunks else b""
+
+
+class FetchJson(unittest.TestCase):
+    """The update and plugin checks read GitHub's releases list: capped, with a deadline, https only."""
+
+    def fetch(self, response, **kw):
+        opener = mock.Mock()
+        opener.open.return_value = response
+        with mock.patch("urllib.request.build_opener", return_value=opener) as build:
+            result = session.fetch_json("https://api.github.com/x", "omaremote", **kw)
+        return result, build
+
+    def test_reads_a_list(self):
+        result, _ = self.fetch(Response([b'[{"tag_name": ', b'"v1.0.0"}]']))
+        self.assertEqual(result, [{"tag_name": "v1.0.0"}])
+
+    def test_a_stream_past_the_cap_is_refused(self):
+        # Before: json.load(response) read whatever the server sent.
+        with self.assertRaises(OSError):
+            self.fetch(Response([b"[" + b" " * 65536], endless=True), cap=1 << 20)
+
+    def test_a_trickle_stops_at_the_deadline(self):
+        # A socket timeout is per read: one byte every so often never trips it.
+        with self.assertRaises(OSError):
+            self.fetch(Response([b"[", b" "], endless=True, pause=0.01), deadline=0.3)
+
+    def test_only_https(self):
+        with self.assertRaises(OSError):
+            session.fetch_json("http://api.github.com/x", "omaremote")
+        _, build = self.fetch(Response([b"[]"]))
+        handler = build.call_args.args[0]()
+        with self.assertRaises(OSError):
+            handler.redirect_request(mock.Mock(), None, 302, "Found", {}, "http://evil.invalid/")
+
+    def test_both_checks_go_through_it(self):
+        with mock.patch.object(session, "fetch_json", return_value=[]) as fetch:
+            session.update_check("1.0.0")
+        self.assertEqual(fetch.call_args.args[0], session.RELEASES_API)
+        with tempfile.TemporaryDirectory() as plugins, \
+                mock.patch.object(session, "fetch_json", side_effect=OSError("too big")), \
+                mock.patch("shutil.which", return_value="/usr/bin/omarchy-plugin-add"):
+            self.assertEqual(session.plugin_check(plugins_dir=plugins)["latest"], "")
 
 
 if __name__ == "__main__":

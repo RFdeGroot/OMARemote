@@ -117,6 +117,12 @@ an audit after two sync findings in a row found six more), and add the class her
 - **Updates only go forward, signed by our key.** The updater installs only a release newer than
   this one, and takes a signature only from the release key's fingerprint, whatever else a keyring
   holds; CI Actions are pinned by commit while the job holds the signing key. (0.9.7)
+- **Nothing downloaded before it is checked is unbounded.** A package and its signature are
+  fetched before gpgv sees them, the releases list before it is parsed: each has a byte cap
+  (`curl --max-filesize`, which also stops a stream with no announced length; `read` up to cap + 1
+  in Python) and a deadline for the whole transfer (a socket timeout is per read: a trickle never
+  trips it), HTTPS only, redirects too. In CI too (the Arch Linux ARM image). (marketplace #12133;
+  0.9.10)
 - **Text into a line-based file stays one line.** Log lines (read back for "connected"/"failed"),
   `~/.ssh/omaremote.conf` (a name with a line break added a `Host *` block). (0.8.0, 0.9.0)
 
