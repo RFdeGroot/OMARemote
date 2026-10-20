@@ -28,6 +28,13 @@ constexpr int kMaxCursorSide = 512;
 // The widest and tallest desktop: a server may claim up to 65535x65535 (17 GB of shared memory). A
 // larger one ends the session instead (the UI holds to the same, RdpView::MaxFrameSide).
 constexpr uint32_t kMaxFrameSide = 8192;
+// A session's own memory (RLIMIT_DATA: heap and private mappings; the shared framebuffer and GPU
+// buffers are not counted). A server that gets a library to allocate past every check here
+// (FreeRDP's graphics caches, a decoder) ends that session, not the desktop.
+constexpr uint64_t kMaxSessionData = 4ull << 30;
+// Lowers the soft and hard limits to kMaxSessionData (never raises them), and makes a failed
+// operator new end the process with 147. First thing in main.
+void limit_memory();
 void log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // A shared-memory framebuffer, 32 bits per pixel, B G R X in memory (Qt's RGB32).

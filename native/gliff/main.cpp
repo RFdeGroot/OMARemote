@@ -16,6 +16,7 @@
 // omaremote-session), host, and headless (1: the server draws the cursor into the picture).
 
 #include "../common/link.hpp"
+#include "askpass.hpp"
 #include "clipboard.hpp"
 #include "msg.hpp"
 #include "seat.hpp"
@@ -32,6 +33,9 @@ extern "C" {
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -57,6 +61,11 @@ using oma::split;
 
 // ---------------------------------------------------------------- state
 
+// The largest stream this client takes, said in Hello: Gliff's server fits a mirrored screen into
+// it and clamps a private screen's Resize to it. A bigger StreamConfig, or a picture bigger than
+// its StreamConfig, ends the session before the decoder allocates anything for it.
+constexpr uint32_t kMaxStreamW = 3840, kMaxStreamH = 2160;
+
 // One H.264 stream's decoder: pic is the newest picture (on the GPU with VA-API, then sw holds
 // its download), tmp takes the next.
 struct Stream
@@ -66,6 +75,7 @@ struct Stream
 	AVFrame* tmp = nullptr;
 	AVFrame* sw = nullptr;
 	bool got = false;
+	int maxW = 0, maxH = 0; // the largest coded picture the StreamConfig allows
 };
 
 struct Session
@@ -80,6 +90,12 @@ struct Session
 	std::string inbuf;  // read from the server, not yet a whole frame
 	std::string outbuf; // to the server, not yet written
 	std::string errTail; // ssh's and gliff-server's last words, for a failure
+	// ssh's host-key question comes here from its askpass (askpass.hpp).
+	int askpassFd = -1;
+	std::string askpassPath, selfExe;
+	bool hostKeyDeclined = false; // the user did not trust the key: said so, not ssh's words
+	std::vector<std::string> selfKeys; // this computer's host keys (selfkey=SHA256:...): never trusted
+	bool isSelf = false;               // the host offered one of them: it is this computer
 
 	bool welcomed = false; // HelloAck arrived
 	bool connected = false; // the first picture is drawn
@@ -179,7 +195,9 @@ static bool spawn()
 		dup2(in[0], 0);
 		dup2(out[1], 1);
 		dup2(err[1], 2);
-		setsid(); // no controlling terminal: ssh never prompts, it fails with a message
+		setsid(); // no controlling terminal: ssh asks through its askpass, which is OMARemote
+		if (g.askpassFd >= 0)
+			gliff::askpass_env(g.selfExe, g.askpassPath);
 		std::vector<char*> argv;
 		for (auto& a : g.args)
 			argv.push_back(a.data());
@@ -234,6 +252,11 @@ static std::string last_words()
 		tail.pop_back();
 	const size_t nl = tail.rfind('\n');
 	std::string line = nl == std::string::npos ? tail : tail.substr(nl + 1);
+	if (g.isSelf)
+		return "This is this computer (or one with the same ssh host keys): Gliff cannot show a computer to itself";
+	const std::string hostKey = gliff::hostkey_failure(g.errTail, g.get("host"), g.hostKeyDeclined);
+	if (!hostKey.empty())
+		return hostKey;
 	if (line.find("command not found") != std::string::npos || line.find("gliff-server: not found") != std::string::npos)
 		return "No gliff-server on " + g.get("host") + ": install it there with omarchy pkg add gliff";
 	return line.substr(0, 300);
@@ -264,8 +287,17 @@ static void open_hw()
 	log("decoding with VA-API");
 }
 
+// FFmpeg asks for a format once it knows a picture's size and before it allocates anything for it
+// (tables, the reference pictures, VA-API's surface pool): a size the server's StreamConfig did not
+// announce is refused there, not after the memory is gone.
 static AVPixelFormat pick_format(AVCodecContext* ctx, const AVPixelFormat* fmts)
 {
+	const auto* s = static_cast<const Stream*>(ctx->opaque);
+	if (ctx->coded_width > s->maxW || ctx->coded_height > s->maxH)
+	{
+		g.failure = "The server sent pictures larger than its stream";
+		return AV_PIX_FMT_NONE;
+	}
 	for (const AVPixelFormat* f = fmts; *f != AV_PIX_FMT_NONE; f++)
 		if (*f == AV_PIX_FMT_VAAPI && ctx->hw_device_ctx)
 			return *f;
@@ -289,7 +321,7 @@ static void free_decoder()
 	free_stream(g.aux);
 }
 
-static bool open_stream(Stream& s, const std::string& extradata)
+static bool open_stream(Stream& s, const std::string& extradata, uint32_t width, uint32_t height)
 {
 	free_stream(s);
 	const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
@@ -301,10 +333,16 @@ static bool open_stream(Stream& s, const std::string& extradata)
 	s.ctx = avcodec_alloc_context3(codec);
 	s.ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
 	s.ctx->thread_count = 1; // frame threads would hold frames back
+	// Coded sizes are whole macroblocks (32 rows for field pictures); FFmpeg's own buffer check
+	// pads the width to its stride alignment (64 at most).
+	s.maxW = int(FFALIGN(width, 16u));
+	s.maxH = int(FFALIGN(height, 32u));
+	s.ctx->opaque = &s;
+	s.ctx->get_format = pick_format;
+	s.ctx->max_pixels = int64_t(FFALIGN(width, 64u)) * s.maxH;
 	if (g.hw && !g.hwBroken)
 	{
 		s.ctx->hw_device_ctx = av_buffer_ref(g.hw);
-		s.ctx->get_format = pick_format;
 		s.ctx->extra_hw_frames = 4; // the pictures the UI holds, beyond the decoder's own references
 	}
 	if (!extradata.empty())
@@ -330,9 +368,9 @@ static bool open_decoder(const gliff::StreamConfig& c)
 {
 	if (!g.pkt)
 		g.pkt = av_packet_alloc();
-	if (!open_stream(g.main, c.extradata))
+	if (!open_stream(g.main, c.extradata, c.width, c.height))
 		return false;
-	if (c.chroma == gliff::CHROMA_DUAL420 && !open_stream(g.aux, c.auxExtradata))
+	if (c.chroma == gliff::CHROMA_DUAL420 && !open_stream(g.aux, c.auxExtradata, c.width, c.height))
 		return false;
 	if (c.chroma != gliff::CHROMA_DUAL420)
 		free_stream(g.aux);
@@ -861,6 +899,12 @@ static bool handle_message(const uint8_t* body, uint32_t bodyLen, const uint8_t*
 				g.failure = "The server chose a video format this client does not decode yet";
 				return false;
 			}
+			if (m.width == 0 || m.height == 0 || m.width > kMaxStreamW || m.height > kMaxStreamH)
+			{
+				g.failure = "The server sent a stream larger than this client asked for";
+				log("refused a %ux%u stream (%ux%u at most)", m.width, m.height, kMaxStreamW, kMaxStreamH);
+				return false;
+			}
 			log("stream %ux%u %s, scale %.2f, %s encoding, at most %u fps", m.width, m.height,
 			    m.chroma == gliff::CHROMA_DUAL420 ? "4:4:4" : "4:2:0", m.scaleMilli / 1000.0,
 			    m.pipeline == 0 ? "GPU" : m.pipeline == 1 ? "CPU" : "unknown", m.fpsCap);
@@ -884,6 +928,8 @@ static bool handle_message(const uint8_t* body, uint32_t bodyLen, const uint8_t*
 			if (!gliff::decode(r, n, m) || uint64_t(m.dataLen) + m.auxLen > payloadLen)
 				break;
 			decode(m, payload);
+			if (!g.failure.empty()) // a picture larger than the stream: refused, the session ends
+				return false;
 			break;
 		}
 		case gliff::S_CURSOR_SHAPE:
@@ -1014,6 +1060,91 @@ static void release_keys()
 	g.keysDown.clear();
 }
 
+static void handle_line(const std::string& line);
+
+// Opens the socket ssh's askpass (this program again) brings its host-key question to.
+static void open_askpass(const char* sessionSocket)
+{
+	char self[4096];
+	const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+	if (!sessionSocket || n <= 0)
+		return;
+	g.selfExe.assign(self, size_t(n));
+	g.askpassPath = std::string(sessionSocket) + ".askpass";
+	sockaddr_un addr = {};
+	addr.sun_family = AF_UNIX;
+	if (g.askpassPath.size() >= sizeof(addr.sun_path))
+	{
+		log("no askpass socket (path too long): a host never connected to before cannot be confirmed here");
+		return;
+	}
+	strcpy(addr.sun_path, g.askpassPath.c_str());
+	unlink(g.askpassPath.c_str());
+	const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	const mode_t old = umask(077);
+	const bool ok = fd >= 0 && bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0 && listen(fd, 2) == 0;
+	umask(old);
+	if (!ok)
+	{
+		if (fd >= 0)
+			close(fd);
+		log("no askpass socket: a host never connected to before cannot be confirmed here");
+		return;
+	}
+	g.askpassFd = fd;
+}
+
+static void close_askpass()
+{
+	if (g.askpassFd < 0)
+		return;
+	close(g.askpassFd);
+	g.askpassFd = -1;
+	unlink(g.askpassPath.c_str());
+}
+
+// ssh's "trust this host?" in the session view (as an RDP certificate is); ssh waits meanwhile.
+static void answer_askpass()
+{
+	const int fd = accept4(g.askpassFd, nullptr, nullptr, SOCK_CLOEXEC);
+	if (fd < 0)
+		return;
+	timeval tv = { 2, 0 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	std::string line;
+	char c;
+	while (line.size() < 16384 && read(fd, &c, 1) == 1 && c != '\n')
+		line += c;
+	const auto q = gliff::parse_hostkey_question(oma::unb64(line));
+	bool yes = false;
+	// This computer's own key: Gliff to itself, refused without asking.
+	if (q)
+		for (const auto& k : g.selfKeys)
+			if (!k.empty() && (q->key.size() >= k.size() && q->key.compare(q->key.size() - k.size(), k.size(), k) == 0))
+			{
+				log("%s offers this computer's own host key: not connecting to itself", q->host.c_str());
+				g.isSelf = true;
+				const std::string no = "no\n";
+				(void)!write(fd, no.data(), no.size());
+				close(fd);
+				return;
+			}
+	if (q)
+	{
+		log("ssh asks whether to trust %s (%s)", q->host.c_str(), q->key.c_str());
+		const auto answer = split(g.link.ask("hostkey " + b64(q->host) + " " + b64(q->key) + " " + b64(q->details) +
+		                                         (q->otherKeys ? " 1" : " 0"),
+		                                     "cert-answer", handle_line, [] { return g.quit != 0; }));
+		yes = answer.size() >= 2 && answer[1] == "1";
+		log(yes ? "host key trusted: ssh records it in known_hosts" : "host key not trusted");
+		g.hostKeyDeclined = !yes;
+		g.attemptAt = oma::now_ms(); // the 30 seconds to an answer start again
+	}
+	const std::string reply = yes ? "yes\n" : "no\n";
+	(void)!write(fd, reply.data(), reply.size());
+	close(fd);
+}
+
 static void handle_line(const std::string& line)
 {
 	const auto w = split(line);
@@ -1138,6 +1269,7 @@ static int finish(int rc)
 		log("connection failed: %s", g.failure.empty() ? "unknown error" : g.failure.c_str());
 	g.link.send(g.connected || rc == 11 ? "state ended " + std::to_string(rc) : "state failed " + std::to_string(rc));
 	g.link.close();
+	close_askpass();
 	free_decoder();
 	av_packet_free(&g.pkt);
 	av_buffer_unref(&g.hw);
@@ -1152,6 +1284,8 @@ static bool start_server()
 	g.outbuf.clear();
 	g.errTail.clear();
 	g.failure.clear();
+	g.hostKeyDeclined = false;
+	g.isSelf = false;
 	g.welcomed = false;
 	g.stream = {};
 	g.haveStream = false;
@@ -1178,15 +1312,14 @@ static bool start_server()
 	g.clip->setEnabled(g.get("clipboard", "1") == "1");
 	if (g.get("clipboard", "1") == "1" && !g.clip->enabled())
 		log("no clipboard access here (ext-data-control): the clipboard is not shared");
-	// The largest stream this client takes. A private screen starts at its own size (at most
-	// 1920x1080) and follows the tab once the first Resize arrives, right after HelloAck.
-	const uint32_t maxW = 3840, maxH = 2160;
+	// A private screen starts at its own size (at most 1920x1080) and follows the tab once the
+	// first Resize arrives, right after HelloAck.
 	// 4:4:4 (Dual420) only when decoding on the GPU, as Gliff's own client asks: on the CPU, two
 	// streams and the recombination cost more than the sharper text is worth.
 	const std::vector<uint8_t> chroma = g.hw && !g.hwBroken
 	                                        ? std::vector<uint8_t>{ gliff::CHROMA_DUAL420, gliff::CHROMA_SINGLE420 }
 	                                        : std::vector<uint8_t>{ gliff::CHROMA_SINGLE420 };
-	send_msg(gliff::hello(g.seat.keymap(), maxW, maxH, chroma));
+	send_msg(gliff::hello(g.seat.keymap(), kMaxStreamW, kMaxStreamH, chroma));
 	g.clip->setFocused(g.focused);
 	return true;
 }
@@ -1213,8 +1346,12 @@ static void stop_server()
 	g.child = -1;
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	// Started by ssh as its askpass (askpass.hpp): answer its question, nothing else.
+	if (gliff::is_askpass())
+		return gliff::askpass_main(argc, argv);
+	oma::limit_memory();
 	std::string line;
 	while (std::getline(std::cin, line))
 	{
@@ -1223,6 +1360,8 @@ int main()
 			continue;
 		if (line.compare(0, eq, "arg") == 0)
 			g.args.push_back(line.substr(eq + 1));
+		else if (line.compare(0, eq, "selfkey") == 0)
+			g.selfKeys.push_back(line.substr(eq + 1));
 		else
 			g.cfg[line.substr(0, eq)] = line.substr(eq + 1);
 	}
@@ -1236,6 +1375,7 @@ int main()
 	}
 	if (!g.link.listen(getenv("OMAREMOTE_SOCKET")))
 		return 136;
+	open_askpass(getenv("OMAREMOTE_SOCKET"));
 	g.link.onAttach = replay;
 	g.headless = g.get("headless") == "1";
 	if (g.headless)
@@ -1286,7 +1426,8 @@ int main()
 			                        { g.toServer, short(g.outbuf.empty() ? 0 : POLLOUT), 0 },
 			                        { g.seat.fd(), POLLIN, 0 },
 			                        { g.link.listenFd(), POLLIN, 0 },
-			                        { g.link.clientFd(), POLLIN, 0 } };
+			                        { g.link.clientFd(), POLLIN, 0 },
+			                        { g.askpassFd, POLLIN, 0 } };
 		const size_t fixed = fds.size();
 		g.clip->addFds(fds);
 		const int n = poll(fds.data(), fds.size(), 250);
@@ -1294,6 +1435,8 @@ int main()
 			break;
 		if (fds[3].revents & (POLLIN | POLLHUP | POLLERR))
 			g.seat.dispatch();
+		if (fds[6].revents & POLLIN)
+			answer_askpass();
 		g.clip->handleFds(std::vector<pollfd>(fds.begin() + long(fixed), fds.end()));
 		g.clip->tick();
 		send_stats();

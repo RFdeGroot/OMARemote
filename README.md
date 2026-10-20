@@ -12,7 +12,7 @@ https://github.com/user-attachments/assets/fe9e0a48-631e-47a8-b5b3-4f7ddcde6d3f
 
 - **RDP** through FreeRDP, **VNC** through libvncclient, **SSH** in a terminal drawn in the tab, and
   **Gliff**: another Omarchy machine's Hyprland desktop, streamed over ssh.
-- **Sessions in tabs** inside the app, or (RDP) in their own window for multi-monitor; pin the
+- **Sessions in tabs** inside the app, or in a window of their own; pin the
   connections list beside them and the remote desktop resizes to fit.
 - **HiDPI scaling** that follows Hyprland: the remote desktop matches the tab's size and your scale.
 - **Credential sets** shared between hosts, and **group settings** that connections inherit.
@@ -210,7 +210,7 @@ chose. The status bar and the keymap sheet show the keys as they are.
 | `ctrl+alt+pgup` / `pgdn` | previous / next tab |
 | `ctrl+alt+end` | send ctrl+alt+del |
 | `ctrl+alt+r` | RDP: reconnect, so a locked desktop comes back signed in |
-| `ctrl+alt+⏎` | fullscreen, chrome hidden |
+| `ctrl+alt+⏎` | fullscreen, as SUPER+F (the Omarchy bar hidden, tabs and pinned list kept) |
 | `ctrl+alt+o` | move the session to its own window (`ctrl+alt+t` there: back into a tab) |
 | `ctrl+alt+w` | disconnect: close the tab (or its own window) |
 | `ctrl+alt+h` | hide a hotkey window (its shortcut brings it back) |
@@ -347,13 +347,20 @@ already, listed twice or not usable say so. The keymap sheet (`?`) runs them too
   to Windows as the desktop scale plus the nearest device scale (100/140/180). Pinning a value
   (100–200) overrides it.
 - **Fixed** asks for a set resolution and scales the picture to fit.
+- **Fullscreen** opens the session in a window of its own that fills the screen, so a tab or a
+  hotkey window is not offered with it. *Whole screen* (the default) hides the Omarchy bar and the
+  window's own title and keys: only the remote desktop shows. Rest the pointer on the top edge and
+  a bar slides in with *Exit fullscreen*, *To a tab* and *Disconnect*; `ctrl+alt+⏎` leaves too, and
+  the window goes back to floating at 90%. *In a window* maximises it instead, the bar staying.
+  Any own or hotkey window can still be made fullscreen with `ctrl+alt+⏎` while it is open.
 - **Open in: Own window** shows the session in a window of its own, with its name on top and its
-  keys at the bottom. It opens floating at 90% of the screen, centred, on the current workspace;
+  keys at the bottom. It opens floating at 90% of the screen, centred, on the current workspace
+  (unless a Hyprland window rule of your own for the `omaremote-session` class places it, such as
+  float, tile, size or workspace: then yours decides);
   from there it is an ordinary window (Omarchy's keys resize it, tile it, move it). `ctrl+alt+t`
   there moves it into a tab of the manager without leaving your workspace; `ctrl+alt+home` does too,
   and takes you to the manager on its connections; `ctrl+alt+o` in a tab sends it out to its own window. The connection stays up
-  either way. `omaremote open --window <name>` does the same from a script or keybinding. With *All monitors* on, the
-  session opens in FreeRDP's own window (`sdl-freerdp3`) instead, spanning every screen.
+  either way. `omaremote open --window <name>` does the same from a script or keybinding.
 - **Hotkey window** (Open in): a connection kept at hand. Its shortcut slides it in, floating at
   90% of the screen you are on and focused, from any workspace; the same shortcut, or `ctrl+alt+h`
   in it, hides it again, and it stays connected in between. It lives on a Hyprland special
@@ -365,7 +372,7 @@ already, listed twice or not usable say so. The keymap sheet (`?`) runs them too
     `~/.config/hypr/bindings.lua`: `o.bind("SUPER + ALT + W", "Work PC", "omaremote toggle c-…")`, with
     the connection's id from Settings › Hotkeys (a name works too, but then shows up in the list of
     running programs, which other accounts on the machine can read).
-  - Shortcuts belong to this system: they never sync. RDP and SSH, not RDP on all monitors.
+  - Shortcuts belong to this system: they never sync. RDP, SSH and Gliff.
 
 ### Kerberos
 
@@ -485,6 +492,9 @@ accept ssh from yours, as for an SSH connection.
 
 - **Sign in** is ssh, as for SSH connections: your keys, ssh-agent and `~/.ssh/config`, a key per
   connection, *Extra ssh options*. OMARemote runs `ssh … gliff-server --stdio` and nothing else.
+  The first time, ssh's question whether to trust the computer's host key shows in the tab with its
+  fingerprint (*Trust* adds it to `~/.ssh/known_hosts`, as answering yes in a terminal does). A host
+  key that has changed is refused, as ssh refuses it, with how to clear the old one if expected.
 - **Screen**: *Mirror* shows a remote screen as it is (*Screen name*, or empty for the focused
   one); *Private screen* gives the tab a screen of its own on the remote that follows the tab's size
   and scale, and goes away when you disconnect.
@@ -558,7 +568,8 @@ one: sessions read their settings from stdin, keyring entries are labelled by id
 notification says only that a connection failed (which one, and why, is in OMARemote), the
 Kerberos DNS lookup runs in-process, and the Omarchy bar plugin and hotkey bindings name
 connections by id. One exception: an SSH or Gliff session runs `ssh` itself, whose command line
-holds the host (and the user name, port and key when set), the same as typing `ssh` in a terminal; *Browse
+holds the host (and the user name, port and key when set), the same as typing `ssh` in a terminal
+(a Gliff session also runs `ssh -G` with the host first, to see whether it is this computer); *Browse
 files* likewise runs `gio mount sftp://user@host`. To keep
 other accounts out of `/proc` altogether, mount it with `hidepid=invisible`.
 

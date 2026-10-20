@@ -351,6 +351,16 @@ void RdpView::handleLine(const QByteArray& line)
 			         { "fingerprint", unb64(w[7]) } };
 		emit promptChanged();
 	}
+	else if (cmd == "hostkey" && w.size() >= 3)
+	{
+		// Gliff's ssh meets a host for the first time (gliff/askpass.hpp); answered with answerCertificate.
+		m_prompt = { { "kind", "hostkey" },
+			         { "host", unb64(w[1]) },
+			         { "key", unb64(w[2]) },
+			         { "details", w.size() >= 4 ? unb64(w[3]) : unb64(w[2]) },
+			         { "changed", w.size() >= 5 && num(4) != 0 } }; // other key types known: a warning
+		emit promptChanged();
+	}
 	else if (cmd == "auth" && w.size() >= 4)
 	{
 		m_prompt = { { "kind", "auth" },

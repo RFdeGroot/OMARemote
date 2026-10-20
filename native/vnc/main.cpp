@@ -450,6 +450,7 @@ static void replay()
 
 int main()
 {
+	oma::limit_memory();
 	std::string line;
 	while (std::getline(std::cin, line))
 	{

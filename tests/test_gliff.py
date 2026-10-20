@@ -1,11 +1,16 @@
+import base64
 import importlib.machinery
 import json
 import re
 import shutil
+import socket
 import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import unittest
 
 sys.dont_write_bytecode = True
@@ -152,6 +157,217 @@ class Exit(unittest.TestCase):
 
     def test_otherwise_the_code(self):
         self.assertEqual(session.describe_exit(147, "", "gliff"), "The connection was lost")
+
+
+# A fake gliff-server on the helper's stdin/stdout: HelloAck, one StreamConfig of the given size,
+# then one keyframe (an Annex B H.264 picture made by ffmpeg) of its own size.
+FAKE_SERVER = r'''
+import struct, sys, time
+
+def head(major, n):
+    if n < 24:
+        return bytes([major << 5 | n])
+    for extra, fmt in ((24, ">B"), (25, ">H"), (26, ">I"), (27, ">Q")):
+        if n < 1 << (8 * struct.calcsize(fmt)):
+            return bytes([major << 5 | extra]) + struct.pack(fmt, n)
+
+def cbor(v):
+    if v is None:
+        return b"\xf6"
+    if isinstance(v, bool):
+        return b"\xf5" if v else b"\xf4"
+    if isinstance(v, int):
+        return head(0, v)
+    if isinstance(v, bytes):
+        return head(2, len(v)) + v
+    if isinstance(v, str):
+        return head(3, len(v.encode())) + v.encode()
+    return head(4, len(v)) + b"".join(cbor(x) for x in v)
+
+def send(variant, fields, payload=b""):
+    body = cbor([variant, fields])
+    sys.stdout.buffer.write(struct.pack("<II", len(body), len(payload)) + body + payload)
+    sys.stdout.buffer.flush()
+
+width, height, picture = int(sys.argv[1]), int(sys.argv[2]), open(sys.argv[3], "rb").read()
+send(0, [1, [False, "DP-1"], [["DP-1", width, height, 1000]], []])
+send(1, [1, 2, None, width, height, 1000, b"", None, width, height, 60])
+send(2, [1, 0, True, [[0, 0, width, height]], len(picture), 0], picture)
+while sys.stdin.buffer.read(4096):
+    pass
+'''
+
+GLIFF = os.path.join(HERE, "..", "native", "build", "omaremote-gliff")
+
+
+@unittest.skipUnless(os.path.exists(GLIFF), "needs the native build (ninja -C native/build)")
+@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg with libx264 to make a test picture")
+class Decoder(unittest.TestCase):
+    """A server sizes the decoder: its stream may not pass what Hello asked for (3840x2160), and its
+    pictures not their StreamConfig, or FFmpeg allocates for them before anything is shown
+    (omarchy-plugin-marketplace#12352)."""
+
+    def picture(self, d, size):
+        path = os.path.join(d, size + ".h264")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=black:s={size}:r=25",
+                        "-frames:v", "1", "-c:v", "libx264", "-preset", "ultrafast", "-f", "h264", path], check=True)
+        return path
+
+    def run_session(self, stream, picture):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        server = os.path.join(d, "server.py")
+        with open(server, "w") as f:
+            f.write(FAKE_SERVER)
+        w, h = stream
+        args = [sys.executable, "-I", server, str(w), str(h), self.picture(d, picture)]
+        p = subprocess.Popen([GLIFF], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env=dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s")), text=True)
+        self.addCleanup(p.stdout.close)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        p.stdin.write("host=pc.lan\nvideo=cpu\nclipboard=0\n" + "".join(f"arg={a}\n" for a in args))
+        p.stdin.close()
+        return p
+
+    def test_a_picture_of_its_stream_size_is_shown(self):
+        p = self.run_session((64, 40), "64x40")
+        lines = []
+        reader = threading.Thread(target=lambda: lines.extend(p.stdout), daemon=True)
+        reader.start()
+        deadline = time.monotonic() + 10
+        while not any("desktop is 64x40" in l for l in lines) and time.monotonic() < deadline and p.poll() is None:
+            time.sleep(0.02)
+        p.terminate()
+        rc = p.wait(5)
+        reader.join(5)
+        self.assertIn("desktop is 64x40", "".join(lines))
+        self.assertEqual(rc, 11, "".join(lines))
+
+    def test_a_stream_larger_than_asked_for_ends_the_session(self):
+        p = self.run_session((12000, 12000), "64x40")
+        rc = p.wait(15)
+        log = p.stdout.read()
+        self.assertIn("larger than this client asked for", log)
+        self.assertNotIn("desktop is", log)
+        self.assertEqual(rc, 147, log)
+
+    def test_a_picture_larger_than_its_stream_is_refused_before_decoding(self):
+        p = self.run_session((64, 40), "1280x720")
+        rc = p.wait(15)
+        log = p.stdout.read()
+        self.assertIn("pictures larger than its stream", log)
+        self.assertNotIn("desktop is", log)
+        self.assertEqual(rc, 147, log)
+
+
+
+# A fake ssh for a host never seen before: it asks its askpass (OMARemote) as ssh does, then runs
+# the fake gliff-server on a yes, or fails as ssh fails.
+FAKE_SSH = r'''
+import os, subprocess, sys
+assert os.environ.get("SSH_ASKPASS_REQUIRE") == "force"
+question = ("The authenticity of host 'pc.lan (127.0.0.1)' can't be established.\n"
+            "ED25519 key fingerprint is: SHA256:testkey\n"
+            "Are you sure you want to continue connecting (yes/no/[fingerprint])? ")
+answer = subprocess.run([os.environ["SSH_ASKPASS"], question], capture_output=True, text=True)
+if answer.returncode != 0 or answer.stdout.strip() != "yes":
+    sys.stderr.write("Host key verification failed.\n")
+    sys.exit(255)
+os.execv(sys.executable, [sys.executable, "-I"] + sys.argv[1:])
+'''
+
+
+@unittest.skipUnless(os.path.exists(GLIFF), "needs the native build (ninja -C native/build)")
+@unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg with libx264 to make a test picture")
+class HostKey(unittest.TestCase):
+    """A host this computer never connected to: ssh asks through OMARemote, shown in the session."""
+
+    def run_session(self, answer):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        server, ssh = os.path.join(d, "server.py"), os.path.join(d, "ssh.py")
+        with open(server, "w") as f:
+            f.write(FAKE_SERVER)
+        with open(ssh, "w") as f:
+            f.write(FAKE_SSH)
+        picture = Decoder.picture(self, d, "64x40")
+        args = [sys.executable, "-I", ssh, server, "64", "40", picture]
+        sock = os.path.join(d, "s")
+        p = subprocess.Popen([GLIFF], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env=dict(os.environ, OMAREMOTE_SOCKET=sock), text=True)
+        self.addCleanup(p.stdout.close)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        p.stdin.write("host=pc.lan\nvideo=cpu\nclipboard=0\n" + "".join(f"arg={a}\n" for a in args))
+        p.stdin.close()
+        lines = []
+        threading.Thread(target=lambda: lines.extend(p.stdout), daemon=True).start()
+        ui = socket.socket(socket.AF_UNIX)
+        self.addCleanup(ui.close)
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                ui.connect(sock)
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                self.assertLess(time.monotonic(), deadline, "no session socket")
+                time.sleep(0.02)
+        ui.settimeout(10)
+        received = b""
+        while b"\nhostkey " not in b"\n" + received:
+            data = ui.recv(65536)
+            self.assertTrue(data, "the session ended without asking")
+            received += data
+        line = (b"\n" + received).split(b"\nhostkey ", 1)[1].split(b"\n", 1)[0].decode()
+        host, key, details, warn = line.split()
+        self.assertEqual(base64.b64decode(host).decode(), "pc.lan (127.0.0.1)")
+        self.assertEqual(base64.b64decode(key).decode(), "ED25519 key fingerprint is: SHA256:testkey")
+        self.assertTrue(base64.b64decode(details).decode().startswith("The authenticity of host"))
+        self.assertEqual(warn, "0")
+        ui.sendall(answer.encode() + b"\n")
+        return p, lines
+
+    def test_this_computers_own_key_is_refused_without_asking(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        ssh = os.path.join(d, "ssh.py")
+        with open(ssh, "w") as f:
+            f.write(FAKE_SSH)
+        p = subprocess.Popen([GLIFF], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env=dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s")), text=True)
+        self.addCleanup(p.stdout.close)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        p.stdin.write("host=pc.lan\nvideo=cpu\nclipboard=0\nselfkey=SHA256:other\nselfkey=SHA256:testkey\n"
+                      + "".join(f"arg={a}\n" for a in [sys.executable, "-I", ssh, "-c", "pass"]))
+        p.stdin.close()
+        rc = p.wait(15)
+        log = p.stdout.read()
+        self.assertIn("offers this computer's own host key", log)
+        self.assertIn("This is this computer", log)
+        self.assertNotIn("ssh asks whether to trust", log)
+        self.assertNotEqual(rc, 0)
+
+    def wait_for(self, p, lines, text):
+        deadline = time.monotonic() + 10
+        while not any(text in l for l in lines) and time.monotonic() < deadline and p.poll() is None:
+            time.sleep(0.02)
+        return "".join(lines)
+
+    def test_trusted_it_connects(self):
+        p, lines = self.run_session("cert-answer 1")
+        log = self.wait_for(p, lines, "desktop is 64x40")
+        self.assertIn("host key trusted", log)
+        self.assertIn("desktop is 64x40", log)
+        p.terminate()
+        self.assertEqual(p.wait(5), 11)
+
+    def test_not_trusted_says_so(self):
+        p, lines = self.run_session("cancel")
+        rc = p.wait(15)
+        time.sleep(0.2)
+        log = "".join(lines)
+        self.assertIn("the host key of pc.lan was not trusted", log)
+        self.assertNotIn("desktop is", log)
+        self.assertNotEqual(rc, 0)
 
 
 if __name__ == "__main__":

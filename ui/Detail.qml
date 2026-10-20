@@ -209,6 +209,31 @@ Rectangle {
                 onClicked: root.inTrash ? root.restoreRequested() : root.connectRequested()
             }
 
+            // A Gliff connection to this very computer (Sessions.selfIds), or one the user said is
+            // another computer anyway (Store.setNotThisComputer, this system's only).
+            RowLayout {
+                Layout.fillWidth: true
+                readonly property bool self_: !!root.connection && !root.inTrash && Sessions.isSelf(root.connection.id)
+                readonly property bool overridden: !!root.connection && !root.inTrash && root.connection.protocol === "gliff"
+                                                   && Store.notThisComputer(root.connection)
+                visible: self_ || overridden
+                spacing: Theme.gap
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: parent.self_ ? "This is this computer (or one with the same ssh host keys): Gliff cannot connect to itself."
+                                       : "Taken as another computer, even if it shows this one's ssh host keys."
+                    color: Theme.muted
+                    font.family: Theme.font
+                    font.pixelSize: Theme.small
+                }
+                ActionButton {
+                    text: parent.self_ ? "It's another computer" : "Check again"
+                    onClicked: Store.setNotThisComputer(root.connection.id, parent.self_)
+                }
+            }
+
             Flow {
                 Layout.fillWidth: true
                 visible: root.inTrash

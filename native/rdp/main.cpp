@@ -11,6 +11,7 @@
 // Protocol: newline-terminated text lines, binary fields base64. See native/PROTOCOL.md.
 
 #include "../common/link.hpp"
+#include "gfxguard.hpp"
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
@@ -20,6 +21,7 @@
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/channels/disp.h>
 #include <freerdp/channels/cliprdr.h>
+#include <freerdp/channels/rdpgfx.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/graphics.h>
 #include <freerdp/codec/color.h>
@@ -41,6 +43,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -86,6 +89,7 @@ struct State
 	std::string cursorState = "cursor-default";
 
 	bool quit = false;
+	std::atomic<bool> refused = false; // the server asked for more memory than a session gets (gfxguard.hpp); set on the channel thread
 };
 
 struct OmaContext
@@ -344,7 +348,14 @@ static void on_channel_connected(void* context, const ChannelConnectedEventArgs*
 		st->clip->ServerFormatDataResponse = clip_server_data_response;
 	}
 	else
+	{
 		freerdp_client_OnChannelConnectedEventHandler(context, e);
+		if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
+			oma::guard_gfx(static_cast<RdpgfxClientContext*>(e->pInterface), [ctx, st](const std::string&) {
+				st->refused = true;
+				freerdp_abort_connect_context(ctx);
+			});
+	}
 }
 
 static void on_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e)
@@ -800,6 +811,7 @@ static int exit_code_for(rdpContext* ctx)
 
 int main(int argc, char** argv)
 {
+	oma::limit_memory();
 	// Without arguments, FreeRDP reads them from stdin itself (one per line), so credentials
 	// never appear in the process list.
 	char stdinArg[] = "/args-from:stdin";
@@ -857,7 +869,7 @@ int main(int argc, char** argv)
 				handle_line(ctx, line);
 			flush_layout(st);
 		}
-		rc = st->quit ? 11 : exit_code_for(ctx);
+		rc = st->quit ? 11 : st->refused ? 147 : exit_code_for(ctx);
 		send_line(st, "state ended " + std::to_string(rc));
 		freerdp_disconnect(instance);
 	}

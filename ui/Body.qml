@@ -41,11 +41,9 @@ FocusScope {
     property var replacing: ({})
     // Connection ids launched for an own window, waiting for their session like pendingTabs.
     property var pendingWindows: []
-    // Fullscreen with the chrome hidden, for a session tab.
-    property bool immersive: false
     // The connections list docked beside session tabs; the desktop resizes to the room left.
     readonly property bool pinned: !!Store.ui.pinned
-    readonly property int dockWidth: pinned && !immersive ? 211 : 0
+    readonly property int dockWidth: pinned ? 211 : 0
 
     readonly property var tabSessions: {
         var byId = {}
@@ -197,6 +195,10 @@ FocusScope {
         var c = Store.get(id || selectedId)
         if (!c)
             return
+        if (Sessions.isSelf(c.id)) {
+            say((c.name || c.host) + " is this computer (or one with the same ssh host keys): Gliff cannot show a computer to itself")
+            return
+        }
         // RDP allows one session per user: a second connect would end the first, so go to it instead.
         var running = Sessions.activeFor(c.id)
         var hotkey = c.openIn === "hotkey" && c.protocol !== "vnc"
@@ -213,15 +215,14 @@ FocusScope {
             say("Switched to " + (c.name || c.host))
             return
         }
-        if ((c.openIn === "window" || hotkey) && c.protocol !== "vnc") {
+        // Fullscreen (RDP) always opens in its own window, at the screen's size.
+        var full = Format.fullscreenMode(c) !== ""
+        if ((c.openIn === "window" || hotkey || full) && c.protocol !== "vnc") {
             say("Connecting to " + (c.name || c.host) + "…")
-            // All monitors needs FreeRDP's own window; otherwise OMARemote draws the window itself.
-            if (c.multimon && (c.protocol || "rdp") === "rdp") {
-                Sessions.launch(c.id)
-                return
-            }
             var windowDpr = Sessions.monitorScale / 100
-            Sessions.launchInTab(c.id, Math.round(1280 * windowDpr), Math.round(800 * windowDpr), Math.round(windowDpr * 100))
+            var screen = root.host && root.host.screen
+            var w = full && screen ? screen.width : 1280, h = full && screen ? screen.height : 800
+            Sessions.launchInTab(c.id, Math.round(w * windowDpr), Math.round(h * windowDpr), Math.round(windowDpr * 100))
             pendingWindows = pendingWindows.concat([c.id])
             return
         }
@@ -231,14 +232,22 @@ FocusScope {
         pendingTabs = pendingTabs.concat([c.id])
     }
 
+    // A connection edited, imported or synced may now reach this computer, or no longer; coming
+    // back to the window, this computer may have another address (another network, a VPN). The
+    // backend checks again at every Gliff connect, so this only keeps the greyed rows right.
+    Connections {
+        target: Store
+        function onStoredChanged() { Sessions.refreshSelf() }
+    }
+    readonly property bool windowActive: Window.active
+    onWindowActiveChanged: if (windowActive) Sessions.refreshSelf()
+
     function showTab(id) {
         if (id !== "home" && openTabs.indexOf(id) < 0)
             openTabs = openTabs.concat([id])
         currentTab = id
-        if (id === "home") {
-            immersive = false
+        if (id === "home")
             root.takeKeys()
-        }
     }
 
     function closeTab(id) {
@@ -420,8 +429,9 @@ FocusScope {
         say(pinned ? "Connections pinned beside sessions" : "Connections unpinned")
     }
 
-    function toggleImmersive() {
-        immersive = !immersive
+    // ctrl+alt+⏎ in a tab: the manager goes fullscreen as Omarchy's SUPER+F does (the Omarchy bar
+    // hidden), keeping its own tabs, pinned list and status bar.
+    function toggleFullscreen() {
         Quickshell.execDetached([Sessions.bin, "fullscreen"])
     }
 
@@ -993,8 +1003,7 @@ FocusScope {
         Rectangle {
             id: header
             Layout.fillWidth: true
-            implicitHeight: root.immersive ? 0 : tabBar.implicitHeight
-            visible: !root.immersive
+            implicitHeight: tabBar.implicitHeight
             color: Theme.surface
 
             RowLayout {
@@ -1288,7 +1297,7 @@ FocusScope {
                                 else if (where === "home") root.showTab("home")
                                 else root.cycleTab(where === "next" ? 1 : -1)
                             })
-                            item.toggleFullscreen.connect(root.toggleImmersive)
+                            item.toggleFullscreen.connect(root.toggleFullscreen)
                             item.togglePinned.connect(root.togglePinned)
                         }
                         Column {
@@ -1319,7 +1328,6 @@ FocusScope {
             info: root.debugStats || (root.currentIsGliff && !root.currentEnded ? (Sessions.stats[root.currentTab] || "") : "")
             id: statusBar
             Layout.fillWidth: true
-            visible: !root.immersive
             // A broken connections.json stays on screen: nothing is saved until it is fixed.
             notice: root.notice || (Store.broken ? "connections.json could not be read: nothing is saved until it is fixed (a copy is in connections.json.broken)" : "")
             noticeIsError: root.notice ? root.noticeIsError : Store.broken

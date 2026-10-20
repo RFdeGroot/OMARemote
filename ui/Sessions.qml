@@ -83,10 +83,6 @@ Singleton {
             lister.running = true
     }
 
-    function launch(id) {
-        Quickshell.execDetached([bin, "launch", id])
-    }
-
     // Starts a session drawn in a tab; width and height are the tab's size in device pixels.
     function launchInTab(id, width, height, scale) {
         Quickshell.execDetached([bin, "launch", id, "--tab", width + "x" + height + "@" + scale])
@@ -155,6 +151,29 @@ Singleton {
         stdout: StdioCollector {
             waitForEnd: true
             onStreamFinished: root.monitorScale = parseInt(text) || 100
+        }
+    }
+
+    // Gliff connections that reach this very computer (omaremote-session self, from local facts
+    // only): greyed in the list and never connected, as Gliff to itself only echoes itself. A
+    // synced connection to this laptop is one; on the other computers it is an ordinary one.
+    property var selfIds: []
+    function isSelf(id) { return selfIds.indexOf(id) >= 0 }
+    function refreshSelf() { if (!selfCheck.running) selfCheck.running = true }
+    Process {
+        id: selfCheck
+        command: [root.bin, "self"]
+        running: true
+        stdout: StdioCollector {
+            waitForEnd: true
+            onStreamFinished: {
+                try {
+                    var ids = JSON.parse(text)
+                    root.selfIds = Array.isArray(ids) ? ids : []
+                } catch (e) {
+                    root.selfIds = []
+                }
+            }
         }
     }
 

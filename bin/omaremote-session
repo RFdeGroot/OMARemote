@@ -22,6 +22,8 @@ so closing the window never closes a remote desktop.
   omaremote-session view <id> tab|window [pid]   where a session is shown (window: its process)
   omaremote-session fullscreen           toggle fullscreen for the focused window
   omaremote-session float pid <pid> [%]  float a window at % (90) of its monitor, centred
+  omaremote-session center <pid>          centre a floating window (after it leaves fullscreen)
+  omaremote-session self                  JSON: ids of the Gliff connections that reach this computer
   omaremote-session summon pid <pid>     move a window to the current workspace and focus it
   omaremote-session terminal-tag <pid> on|off   tag a window as a terminal for Hyprland (an SSH session shows)
   omaremote-session open-window <name>   a connection in a floating window of its own, here
@@ -48,21 +50,26 @@ so closing the window never closes a remote desktop.
                                          the desktop's file chooser (portal); prints {"path"}, "" if cancelled
 """
 
+import base64
 import configparser
 import contextlib
 import errno
 import fcntl
 import glob
+import hashlib
+import hmac
 import json
 import os
 import re
 import shlex
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -118,11 +125,12 @@ DEFAULTS = {
     "username": "",
     "domain": "",
     "savePassword": False,
-    "display": "fit",        # fit | fixed | fullscreen
+    "display": "fit",        # fit | fixed | fullscreen (RDP: its own window, filling the screen; see fullscreen_mode)
+    "fullscreen": "screen",  # with display fullscreen: screen (Hyprland fullscreen, the bar hidden) | window (maximised)
     "width": 1920,
     "height": 1080,
     "scale": "auto",         # auto | 100..500
-    "multimon": False,
+    "multimon": False,       # not used since 0.9.12 (FreeRDP's /multimon fails on Hyprland); kept so files round-trip
     "clipboard": True,
     "audio": "local",        # local | remote | off
     "microphone": False,
@@ -137,12 +145,14 @@ DEFAULTS = {
     "gatewaySavePassword": False,   # the gateway's own password, in the keyring under the connection's id
     "kdc": "",               # Kerberos KDCs, comma separated; empty discovers them
     "extraArgs": "",
-    "openIn": "tab",         # tab | window (OMARemote's own window; RDP with all monitors: FreeRDP's)
+    "openIn": "tab",         # tab | window (OMARemote's own window)
                              # | hotkey (an own window on a special workspace of its own, see toggle)
     "hotkey": "",            # the Hyprland shortcut of a hotkey window ("SUPER + ALT + W"), this system's
     "vncScaling": "fit",     # fit | native | resize
     "vncQuality": "auto",    # auto | high | low
     "viewOnly": False,
+    "notThisComputer": "",   # Gliff: "host:port" said to be another computer (a clone with this one's ssh host
+                             # keys); counts only while the connection still goes there; this system's only
     "unlockAfter": 0,        # RDP: minutes away (not in front of you) after which coming back reconnects; 0 off
     "sshArgs": "",           # SSH: extra ssh options, the connection's own (never a group's)
     "sshKey": "",            # SSH: the key to sign in with (~/.ssh/…); also written to ~/.ssh/omaremote.conf
@@ -217,7 +227,7 @@ def migrate_legacy():
 
 # Settings a group can set for its connections. A connection stores only what differs from what
 # it inherits, so changing the group changes every connection that did not override it.
-SETTING_KEYS = ("display", "width", "height", "scale", "multimon", "clipboard", "audio", "microphone",
+SETTING_KEYS = ("display", "fullscreen", "width", "height", "scale", "multimon", "clipboard", "audio", "microphone",
                 "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
                 "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn",
                 "vncScaling", "vncQuality", "viewOnly", "unlockAfter")
@@ -349,7 +359,7 @@ def mark_connected(conn_id, path=LAST_CONNECTED):
 # itself (unlockAfter).
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
               "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert",
-              "security", "gliffServer", "unlockAfter")
+              "security", "gliffServer", "unlockAfter", "notThisComputer")
 GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security", "unlockAfter")
 # Where a connection signs in. A synced change to these, on a connection or group that signs in here
 # with a saved password or a credential set, waits for the user: it would send those credentials to
@@ -1322,6 +1332,19 @@ def float_window(pid, percent=90):
     return True
 
 
+def center_window(pid):
+    """Centres a floating window on its monitor, keeping its size; True if found. Leaving
+    fullscreen, Hyprland puts a floating window back at its size but not where it was (it lands
+    part off the screen), so SessionWindow calls this as it leaves."""
+    window = find_window("pid", pid)
+    if not window:
+        return False
+    if window.get("floating") and not window.get("fullscreen") and not user_window_rules():
+        target = "address:" + window["address"]
+        hypr_dispatch('hl.dsp.window.center({ window = "%s" })' % target, "centerwindow")
+    return True
+
+
 def summon_window(pid):
     """Moves a window to the current workspace and focuses it; True if found."""
     window = find_window("pid", pid)
@@ -1348,6 +1371,59 @@ def terminal_tag(pid, on):
     tag = ("+" if on else "-") + "terminal"
     hypr_dispatch('hl.dsp.window.tag({ tag = "%s", window = "%s" })' % (tag, target), "tagwindow", f"{tag} {target}")
     return True
+
+
+# What a window rule does to where and how big a window opens (Lua keys and classic rule names).
+PLACEMENT_RE = re.compile(r"\b(float|tile|size|move|center|centre|workspace|monitor|fullscreen|maximi[sz]e|pseudo)")
+
+
+def user_window_rules(dirs=None):
+    """True when the user's Hyprland config (or Omarchy's) has a rule of its own for OMARemote's
+    windows: then that rule decides where and how big one opens, and OMARemote does not float, size
+    or centre them. Explicit OMARemote choices still apply (a hotkey window's
+    special workspace, a connection set to Fullscreen). A rule counts when a line names the window
+    class (or a window rule) beside omaremote-session, not commented out, and the statement that line
+    is part of (a .conf line; a Lua call, by its brackets) places the window (float, tile, size,
+    ...): a keybinding that runs omaremote-session, or a cosmetic rule (opacity, border), leaves
+    placement to OMARemote."""
+    if dirs is None:
+        config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        dirs = (os.path.join(config, "hypr"),
+                os.path.join(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy", "default", "hypr"))
+    for top in dirs:
+        for folder, _, names in os.walk(top):
+            for name in names:
+                if not name.endswith((".lua", ".conf")) or name == "omaremote.lua" or ".bak" in name or "backup" in name:
+                    continue
+                if not os.path.isfile(os.path.join(folder, name)):
+                    continue  # a FIFO or device by that name would hang the read
+                try:
+                    with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as f:
+                        text = f.read(1 << 20)
+                except OSError:
+                    continue
+                # Comments out; each line's bracket depth before it, so a line's statement is the
+                # lines around it back to where that depth opened and on to where it closes.
+                code = [l.split("--")[0].split("#")[0] for l in text.splitlines()]
+                depth, before = 0, []
+                for l in code:
+                    before.append(depth)
+                    depth = max(0, depth + sum(l.count(c) for c in "({[") - sum(l.count(c) for c in ")}]"))
+                lua = name.endswith(".lua")  # a .conf rule is always one line
+                for i, line in enumerate(code):
+                    lowered = line.lower()
+                    if SESSION_APP_ID not in line or not any(
+                            w in lowered for w in ("class", "windowrule", "window_rule", "o.window(")):
+                        continue
+                    start = i
+                    while lua and start > 0 and before[start] > 0 and i - start < 15:
+                        start -= 1
+                    end = i
+                    while lua and end + 1 < len(code) and before[end + 1] > 0 and end - i < 15:
+                        end += 1
+                    if PLACEMENT_RE.search(" ".join(code[start:end + 1]).lower()):
+                        return True
+    return False
 
 
 def spawn_window(sid):
@@ -1386,7 +1462,8 @@ def open_window(name):
         return 2
     scale = monitor_scale()
     monitor = next((m for m in _hyprctl_json("monitors") or [] if m.get("focused")), {})
-    width, height = float_size(monitor, 90)
+    # A fullscreen connection starts at the screen's size, so the remote desktop needs no resize.
+    width, height = float_size(monitor, 100 if fullscreen_mode(conn) else 90)
     size = f"{round(width * scale / 100)}x{round(height * scale / 100)}@{scale}"
     before = {s["id"] for s in list_sessions()}
     subprocess.Popen([os.path.abspath(__file__), "launch", conn["id"], "--tab", size],
@@ -1418,9 +1495,17 @@ def special_name(conn_id):
 
 
 def is_hotkey(conn):
-    """Shown as a hotkey window: RDP and SSH (VNC opens in tabs, RDP on all monitors in FreeRDP's)."""
-    return bool(conn) and conn.get("openIn") == "hotkey" and conn.get("protocol") != "vnc" \
-        and not (conn.get("multimon") and (conn.get("protocol") or "rdp") == "rdp")
+    """Shown as a hotkey window: RDP, SSH and Gliff (VNC opens in tabs)."""
+    return bool(conn) and conn.get("openIn") == "hotkey" and conn.get("protocol") != "vnc"
+
+
+def fullscreen_mode(conn):
+    """How an RDP connection set to Fullscreen opens: "screen" (Hyprland fullscreen, the bar
+    hidden) or "window" (maximised, the bar stays), always in its own window, whatever its Open in
+    says; None otherwise. A hotkey window stays a hotkey window (ctrl+alt+enter still works in it)."""
+    if not conn or (conn.get("protocol") or "rdp") != "rdp" or conn.get("display") != "fullscreen" or is_hotkey(conn):
+        return None
+    return "window" if conn.get("fullscreen") == "window" else "screen"
 
 
 def special_shown(name, monitors=None):
@@ -1494,17 +1579,33 @@ def toggle(name, show_only=False):
 
 
 def place_window(sid, pid):
-    """A new own window (SessionWindow calls this): floats at 90%, centred; a hotkey window goes to
-    its special workspace and shows there."""
-    if not float_window(pid):
-        return False
+    """A new own window (SessionWindow calls this): floats at 90%, centred, unless the user's own
+    Hyprland rule places it (user_window_rules); a hotkey window goes to its special workspace and
+    shows there; a fullscreen one fills the screen (and leaving fullscreen goes back to the float)."""
     try:
         with open(_session_path(sid), encoding="utf-8") as f:
             conn_id = json.load(f).get("connection")
     except (OSError, ValueError):
+        conn_id = None
+    conn = find_connection(conn_id or "", load_connections()) if conn_id else None
+    if user_window_rules() and not is_hotkey(conn):
+        if not find_window("pid", pid, wait=5):
+            return False
+    elif not float_window(pid):
+        return False
+    if not conn:
         return True
-    conn = find_connection(conn_id or "", load_connections())
-    if is_hotkey(conn):
+    mode = fullscreen_mode(conn)
+    if mode:
+        window = find_window("pid", pid)
+        if window:
+            # Focused first: the classic dispatcher (older Hyprland) acts on the focused window.
+            target = "address:" + window["address"]
+            hypr_dispatch('hl.dsp.focus({ window = "%s" })' % target, "focuswindow", target)
+            hyprland = "maximized" if mode == "window" else "fullscreen"
+            hypr_dispatch('hl.dsp.window.fullscreen({ mode = "%s", action = "set", window = "%s" })'
+                          % (hyprland, target), "fullscreen", "1" if mode == "window" else "0")
+    elif is_hotkey(conn):
         window = find_window("pid", pid)
         if window:
             move_to_special(window, special_name(conn["id"]))
@@ -2069,8 +2170,6 @@ def build_args(conn, password=None, auto_scale=100, tab=None, gateway_password=N
         args.append("+dynamic-resolution")
         if display == "fullscreen":
             args.append("/f")
-    if c["multimon"] and not tab:
-        args.append("/multimon")
 
     scale = resolve_scale(c["scale"], auto_scale)
     if scale != 100:
@@ -2409,6 +2508,160 @@ def build_gliff_command(conn):
     if not GLIFF_SERVER_RE.fullmatch(server):
         raise ValueError(f"not a gliff-server path: {server!r}")
     return [args[0], *GLIFF_SSH_OPTIONS, *args[1:], "--", host, server, "--stdio", *gliff_server_args(conn)]
+
+
+# ---- this computer: Gliff to itself streams its own screen into itself (a picture in a picture,
+# and its keymap echoing back and forth), so it is refused, and its connection greyed in the list.
+# Decided from local facts, in this process: no host goes on a command line (other accounts can
+# read those), except ssh -G at connect time, beside the session's own ssh. A host is this computer
+# when it is, or resolves to, one of its addresses (a bare name of its own resolves here through
+# nss-myhostname; "omarchy.lan" resolves to whichever machine has that name), or when its key in
+# known_hosts is one of this computer's ssh host keys; offered the first time, that key is refused
+# by omaremote-gliff (selfkey lines) without asking.
+
+OWN_HOST_KEYS = "/etc/ssh/ssh_host_*_key.pub"
+RESOLVE_BUDGET = 1.0  # seconds for all names together
+
+
+def local_addresses():
+    """This computer's addresses (every interface, loopback included), lower case."""
+    found = {"127.0.0.1", "::1", "localhost"}
+    try:
+        out = subprocess.run(["ip", "-j", "addr"], capture_output=True, text=True, timeout=5).stdout
+        for link in json.loads(out or "[]"):
+            for a in link.get("addr_info") or []:
+                if a.get("local"):
+                    found.add(str(a["local"]).lower())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return found
+
+
+def own_host_keys(pattern=OWN_HOST_KEYS):
+    """This computer's ssh host keys: (base64 blobs, "SHA256:..." fingerprints as ssh prints them)."""
+    blobs, prints = set(), set()
+    for path in glob.glob(pattern):
+        try:
+            with open(path, encoding="utf-8") as f:
+                parts = f.read(16384).split()
+            raw = base64.b64decode(parts[1], validate=True)
+        except (OSError, IndexError, ValueError):
+            continue
+        blobs.add(parts[1])
+        prints.add("SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode().rstrip("="))
+    return blobs, prints
+
+
+def known_host_keys(names, path):
+    """The key blobs path (a known_hosts file) holds for any of names ("host" or "[host]:port"),
+    plain or hashed (|1|salt|hash); patterns, negations and @markers are left out."""
+    found = set()
+    if not os.path.isfile(path):
+        return found  # a FIFO or device would hang the read
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read(4 << 20).splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3 or parts[0].startswith(("#", "@")):
+            continue
+        for pattern in parts[0].split(","):
+            if pattern.startswith("|1|"):
+                try:
+                    salt, digest = (base64.b64decode(x) for x in pattern[3:].split("|", 1))
+                except ValueError:
+                    continue
+                hit = any(hmac.compare_digest(hmac.new(salt, n.encode(), hashlib.sha1).digest(), digest) for n in names)
+            else:
+                hit = pattern.lower() in names
+            if hit:
+                found.add(parts[2])
+                break
+    return found
+
+
+def resolved_addresses(names, budget=RESOLVE_BUDGET):
+    """The addresses names resolve to, within budget seconds (a name that takes longer counts as
+    unknown; the session's ssh has the last word)."""
+    found, threads = set(), []
+
+    def look(name):
+        try:
+            for info in socket.getaddrinfo(name, None):
+                found.add(info[4][0].split("%")[0].lower())
+        except (OSError, UnicodeError):
+            pass
+    for name in names:
+        t = threading.Thread(target=look, args=(name,), daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = time.monotonic() + budget
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return set(found)
+
+
+def host_port(conn):
+    """"host:port" as notThisComputer keeps it (Store.hostPort says the same)."""
+    try:
+        port = int(conn.get("port") or 22)
+    except (TypeError, ValueError):
+        port = 22
+    return "%s:%d" % ((conn.get("host") or "").strip().strip("[]").lower(), port)
+
+
+def not_this_computer(conn):
+    """The user said this connection's host is another computer, and it still goes there: a host
+    changed since (an edit, a sync) is checked again."""
+    said = conn.get("notThisComputer")
+    return isinstance(said, str) and said != "" and said == host_port(conn)
+
+
+def is_this_computer(conn, addresses=None, keys=None, view=None, resolve=resolved_addresses):
+    """A Gliff connection that reaches this very computer (see above). view: ssh -G's settings,
+    given only at connect time; without it ~/.ssh/config is not consulted."""
+    host = (conn.get("host") or "").strip().strip("[]").lower()
+    if not host or host.startswith("-") or not_this_computer(conn):
+        return False  # the user said it is another computer (one with the same host keys)
+    port = int(conn.get("port") or 22)
+    view = view or {}
+    names = {host, (view.get("hostname") or host).lower()}
+    addresses = local_addresses() if addresses is None else addresses
+    if names & addresses:
+        return True
+    blobs = own_host_keys()[0] if keys is None else keys
+    if blobs:
+        alias = view.get("hostkeyalias") or ""
+        lookups = {alias.lower()} if alias and alias != "none" else \
+            {n if port == 22 else f"[{n}]:{port}" for n in names}
+        files = (view.get("userknownhostsfile") or "~/.ssh/known_hosts ~/.ssh/known_hosts2").split()
+        if any(known_host_keys(lookups, os.path.expanduser(f)) & blobs for f in files):
+            return True
+    return bool(resolve(names) & addresses)
+
+
+def connect_view(conn):
+    """ssh -G for a connection about to start: ~/.ssh/config applied, nothing contacted. Only at
+    connect time, beside the session's own ssh (the host is on that command line anyway)."""
+    try:
+        out = subprocess.run(["ssh", "-G", "-p", str(int(conn.get("port") or 22)), "--", check_host(conn["host"])],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {}
+    view = {}
+    for line in out.splitlines():
+        key, _, value = line.partition(" ")
+        view.setdefault(key.lower(), value.strip())
+    return view
+
+
+def self_connections():
+    """The ids of the Gliff connections that reach this computer: greyed in the list."""
+    addresses, keys = local_addresses(), own_host_keys()[0]
+    return [c["id"] for c in load_connections()
+            if c.get("protocol") == "gliff" and c.get("id") and is_this_computer(c, addresses, keys)]
 
 
 def build_gliff_config(conn):
@@ -3201,8 +3454,8 @@ def list_sessions():
         # An own window that is gone (closed or crashed) leaves its session for the manager's tabs.
         if s["view"] == "window" and s.get("tab") and not _alive(s.get("viewer")):
             s["view"], s["viewer"] = "tab", None
-        # Its connection opens as a hotkey window (is_hotkey: openIn hotkey, not VNC, not RDP on
-        # all monitors), so `omaremote toggle` shows or hides it.
+        # Its connection opens as a hotkey window (is_hotkey: openIn hotkey, not VNC), so
+        # `omaremote toggle` shows or hides it.
         s["hotkey"] = s.get("connection") in hotkeys
         sessions.append(s)
     sessions.sort(key=lambda s: s.get("started", 0), reverse=True)
@@ -3280,7 +3533,12 @@ def supervise(conn, sid, tab=None):
         elif protocol == "ssh":
             args = build_ssh_config(conn)
         elif protocol == "gliff":
+            if is_this_computer(conn, view=connect_view(conn)):
+                raise ValueError("this is this computer (or one with the same ssh host keys): Gliff cannot "
+                                 "show a computer to itself")
             args = build_gliff_config(conn)
+            if not not_this_computer(conn):
+                args += [f"selfkey={fp}" for fp in sorted(own_host_keys()[1])]
         else:
             gateway_password = None
             if conn.get("gatewaySavePassword") and conn.get("gateway", "").strip() and conn.get("id"):
@@ -3601,6 +3859,11 @@ def main(argv):
         return 0 if set_view(rest[0], rest[1], rest[2] if len(rest) == 3 else None) else 1
     if cmd == "float" and len(rest) in (2, 3) and rest[0] == "pid":
         return 0 if float_window(rest[1], int(rest[2]) if len(rest) == 3 else 90) else 1
+    if cmd == "self" and not rest:
+        print(json.dumps(self_connections()))
+        return 0
+    if cmd == "center" and len(rest) == 1:
+        return 0 if center_window(rest[0]) else 1
     if cmd == "terminal-tag" and len(rest) == 2 and rest[1] in ("on", "off"):
         return 0 if terminal_tag(rest[0], rest[1] == "on") else 1
     if cmd == "summon" and len(rest) == 2 and rest[0] == "pid":

@@ -46,7 +46,7 @@ can write the sync folder), and **another account** on the same machine.
 
 - **What do other accounts see?** `/proc/<pid>/cmdline` is world-readable: no connection name,
   host, user, domain, realm, group name, system name or error text on any command line we start,
-  except the documented ones (`ssh`, `gio mount sftp://…`). tests/test_session.py's
+  except the documented ones (`ssh`, a Gliff session's `ssh -G` just before it, `gio mount sftp://…`). tests/test_session.py's
   NothingPrivateInArgv checks the known paths; extend it for new ones.
 - **Files we write:** the user's only (config 700/600, runtime 700); through symlinks, never over
   them (`write_user_file`); never a read-only file (`user_file_writable`); atomically.
@@ -88,6 +88,17 @@ an audit after two sync findings in a row found six more), and add the class her
   (clipboard 1 MiB, titles 4 KiB), files a size (sync 16 MiB), lists a length. Width × height and
   offsets are computed in 64 bits before any check, and a shared buffer is checked to be as long as
   its numbers say before it is mapped. (0.9.0, 0.9.4, 0.9.5, 0.9.7)
+- **A library allocating for a server is bounded before it allocates, not by what we show after.**
+  The 8192 desktop check came after FFmpeg had already sized its decoder from the server's SPS, and
+  FreeRDP's /gfx surfaces never met it at all. Bound what a server announces against what we asked
+  for (Gliff: StreamConfig within Hello's 3840x2160), hook the library where it learns a size
+  (FFmpeg's get_format, FreeRDP's CreateSurface and SurfaceToCache), and keep a process ceiling for
+  what slips past (RLIMIT_DATA 4 GiB per session; a failed `new` exits 147, not a core dump). Ask of every library a server feeds: where does it allocate, and
+  from which number? (0.9.12, marketplace #12352)
+- **Trust questions are the user's, with the facts in front of them.** Gliff's ssh had no way to
+  ask about a new host key and failed with words that read like a wrong key. It now asks through
+  OMARemote (its askpass) with the fingerprint shown; ssh still decides and writes known_hosts, a
+  changed key is never offered, and only "yes" after Trust is ever answered. (0.9.12)
 - **Nothing waits without a deadline.** No unbounded read in the window's main thread (the clipboard
   only through `oma::readClipboard`); every read in a session process has a timeout so a server
   stopping mid-message ends the session; only ordinary files are opened (a FIFO hangs: sync files
@@ -100,7 +111,9 @@ an audit after two sync findings in a row found six more), and add the class her
   opening the file by name again. A file opened later is opened from a descriptor kept since the
   check, through the *whole* path without symlinks (`openat2` with `RESOLVE_BENEATH |
   RESOLVE_NO_SYMLINKS`; `O_NOFOLLOW` covers the last part only), then `fstat`: an ordinary file
-  with the device and inode that were checked. (0.8.3, 0.9.0, 0.9.6)
+  with the device and inode that were checked. Any file read by path is a regular file first: a
+  FIFO by a config's name hangs the reader (0.8.0's import; 0.9.12's Hyprland rule scan and
+  known_hosts). (0.8.3, 0.9.0, 0.9.6, 0.9.12)
 - **Never a fixed name in a folder others write.** A temporary file in the sync folder (or any
   shared folder) gets a random name with `O_EXCL` (`mkstemp`), then `os.replace`: a fixed name can
   be planted as a symlink to any file of the user's. The same for files two of our own processes

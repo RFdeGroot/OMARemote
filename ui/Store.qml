@@ -54,15 +54,15 @@ Singleton {
     readonly property var defaults: ({
         protocol: "rdp", name: "", group: "", host: "", port: 3389,
         username: "", domain: "", savePassword: false, credential: "custom",
-        display: "fit", width: 1920, height: 1080, scale: "auto", multimon: false,
+        display: "fit", fullscreen: "screen", width: 1920, height: 1080, scale: "auto", multimon: false, // multimon: unused since 0.9.12, kept for older files
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", gatewaySavePassword: false, kdc: "",
-        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, unlockAfter: 0, sshArgs: "", sshKey: "", gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
+        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, unlockAfter: 0, notThisComputer: "", sshArgs: "", sshKey: "", gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
         favourite: false, lastConnected: 0
     })
     // Settings a group can set (SETTING_KEYS in bin/omaremote-session).
-    readonly property var settingKeys: ["display", "width", "height", "scale", "multimon", "clipboard", "audio",
+    readonly property var settingKeys: ["display", "fullscreen", "width", "height", "scale", "multimon", "clipboard", "audio",
         "microphone", "homeDrive", "grabKeyboard", "security", "ignoreCert", "network", "gateway",
         "gatewayUser", "gatewayDomain", "kdc", "extraArgs", "openIn", "vncScaling", "vncQuality", "viewOnly",
         "unlockAfter"]
@@ -70,7 +70,7 @@ Singleton {
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
         "gatewayDomain", "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey",
-        "ignoreCert", "security", "gliffServer", "unlockAfter"]
+        "ignoreCert", "security", "gliffServer", "unlockAfter", "notThisComputer"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
     readonly property var connections: stored.map(function (c) { return root.resolve(c) })
@@ -466,6 +466,30 @@ Singleton {
         root.stored = stored.concat([copy])
         edited()
         return copy.id
+    }
+
+    // "It is another computer": a Gliff connection taken for this one (Sessions.selfIds) is not,
+    // e.g. a clone with the same ssh host keys. This system's only, like a hotkey: never synced,
+    // so it changes nothing elsewhere (modified stays).
+    function hostPort(c) {
+        return String(c.host || "").trim().replace(/^\[|\]$/g, "").toLowerCase() + ":" + (parseInt(c.port) || 22)
+    }
+    // Counts while the connection still goes to the host it was said for (host_port in the backend).
+    function notThisComputer(c) {
+        return !!c && typeof c.notThisComputer === "string" && c.notThisComputer !== "" && c.notThisComputer === hostPort(c)
+    }
+    function setNotThisComputer(id, on) {
+        root.stored = stored.map(function (c) {
+            if (c.id !== id)
+                return c
+            var copy = JSON.parse(JSON.stringify(c))
+            if (on)
+                copy.notThisComputer = root.hostPort(root.resolve(c))
+            else
+                delete copy.notThisComputer
+            return copy
+        })
+        edited()
     }
 
     function toggleFavourite(id) {

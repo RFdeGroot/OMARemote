@@ -26,6 +26,10 @@ Rectangle {
                                       : state_ === "failed" ? Theme.urgent
                                       : (current ? Theme.accent : Theme.muted)
 
+    // A Gliff connection to this very computer (Sessions.selfIds): greyed, it does not connect.
+    readonly property bool thisComputer: Sessions.selfIds.indexOf(modelData.id) >= 0
+    opacity: thisComputer ? 0.45 : 1
+
     width: ListView.view ? ListView.view.width : 0
     height: Math.round(Theme.body * 3.4)
     color: current ? Theme.selection : (mouse.containsMouse ? Theme.hover : "transparent")
@@ -133,6 +137,7 @@ Rectangle {
                 : root.state_ === "failed" ? "failed"
                 : root.modelData.quickRow ? "⏎ connect"
                 : root.modelData.quick ? "quick · s saves"
+                : root.thisComputer ? "this computer"
                 : Format.ago(root.modelData.lastConnected, root.now)
             color: root.state_ ? root.stateColor : Theme.muted
             font.family: Theme.font

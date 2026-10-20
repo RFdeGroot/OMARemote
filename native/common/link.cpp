@@ -1,16 +1,19 @@
 #include "link.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <map>
+#include <new>
 #include <sstream>
 
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -82,6 +85,22 @@ std::vector<std::string> split(const std::string& line)
 	while (in >> word)
 		out.push_back(word);
 	return out;
+}
+
+void limit_memory()
+{
+	rlimit lim = {};
+	if (getrlimit(RLIMIT_DATA, &lim) != 0)
+		return;
+	lim.rlim_cur = std::min<rlim_t>(lim.rlim_cur, kMaxSessionData);
+	lim.rlim_max = std::min<rlim_t>(lim.rlim_max, kMaxSessionData);
+	if (setrlimit(RLIMIT_DATA, &lim) != 0)
+		log("could not limit the session's memory: %s", strerror(errno));
+	// C++ code at the ceiling ends the session with "connection lost", not a crash and core dump.
+	std::set_new_handler([] {
+		log("the session reached its memory ceiling (%llu MiB); ending it", (unsigned long long)(kMaxSessionData >> 20));
+		_exit(147);
+	});
 }
 
 uint64_t now_ms()

@@ -1,6 +1,9 @@
 import importlib.machinery
 import json
 import re
+import shutil
+import tempfile
+import threading
 import importlib.util
 import os
 import sys
@@ -288,6 +291,12 @@ class TabMode(unittest.TestCase):
         self.assertIn("+dynamic-resolution", args)
         self.assertIn("/scale-desktop:160", args)
         self.assertFalse(any(a.startswith("/t:") for a in args))
+
+    def test_all_monitors_is_never_asked_for(self):
+        # sdl-freerdp3 measures every monitor as 102x102 on Hyprland and refuses to connect.
+        args = session.build_args(conn(display="fullscreen", multimon=True))
+        self.assertNotIn("/multimon", args)
+        self.assertIn("/f", args)
 
     def test_tab_drops_window_only_options(self):
         args = session.build_args(conn(display="fullscreen", multimon=True), tab={"width": 800, "height": 600, "scale": 100})
@@ -1091,11 +1100,124 @@ class Hotkeys(unittest.TestCase):
         return [{"name": "eDP-1", "focused": focused, "specialWorkspace": {"name": special}},
                 {"name": "DP-1", "focused": not focused, "specialWorkspace": {"name": ""}}]
 
+    def test_this_computer_is_recognised_from_local_facts(self):
+        addresses = {"127.0.0.1", "::1", "localhost", "192.168.1.20", "100.64.0.20"}
+        names = {"mybox": {"127.0.1.1", "192.168.1.20"}, "omarchy.lan": {"192.168.1.30"}}
+        resolve = lambda ns: set().union(*(names.get(n, set()) for n in ns))
+        same = lambda host, **kw: session.is_this_computer(
+            {"host": host, "port": kw.pop("port", 22)}, addresses=addresses, keys=kw.pop("keys", set()),
+            resolve=resolve, **kw)
+        for host in ("192.168.1.20", "100.64.0.20", "localhost", "127.0.0.1", "MYBOX"):
+            self.assertTrue(same(host), host)
+        # Another machine, even one whose name looks like this one's: what it resolves to decides.
+        for host in ("192.168.1.30", "omarchy.lan", "mybox.example.com", ""):
+            self.assertFalse(same(host), host)
+        # An ssh alias (connect time only: ssh -G's view) to this computer's address.
+        self.assertTrue(same("laptop", view={"hostname": "192.168.1.20"}))
+        self.assertFalse(same("laptop"))
+        # A name whose known host key, plain or hashed, is this computer's own.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        known = os.path.join(d, "known_hosts")
+        import base64, hashlib, hmac
+        salt = b"0123456789abcdefghij"
+        hashed = "|1|%s|%s" % (base64.b64encode(salt).decode(),
+                               base64.b64encode(hmac.new(salt, b"[laptop.tail]:2222", hashlib.sha1).digest()).decode())
+        with open(known, "w") as f:
+            f.write("laptop.tail ssh-ed25519 AAAAOWNKEY\nother.lan ssh-ed25519 AAAAOTHER\n"
+                    f"{hashed} ssh-ed25519 AAAAOWNKEY\n# laptop.lan ssh-ed25519 AAAAOWNKEY\n")
+        view = {"userknownhostsfile": known}
+        self.assertTrue(same("laptop.tail", view=view, keys={"AAAAOWNKEY"}))
+        self.assertTrue(same("laptop.tail", port=2222, view=view, keys={"AAAAOWNKEY"}))  # hashed, [host]:port
+        self.assertFalse(same("other.lan", view=view, keys={"AAAAOWNKEY"}))
+        self.assertFalse(same("laptop.lan", view=view, keys={"AAAAOWNKEY"}))  # a comment
+
+    def test_another_computer_by_the_users_word(self):
+        # A clone with this computer's ssh host keys, at this computer's address even: the user decides.
+        here = dict(addresses={"127.0.0.1"}, keys={"K"}, resolve=lambda ns: set())
+        conn = {"host": "127.0.0.1", "port": 22, "notThisComputer": "127.0.0.1:22"}
+        self.assertFalse(session.is_this_computer(conn, **here))
+        # Said for another host or port (an edit, a sync since): checked again.
+        for said in ("127.0.0.1:2222", "pc.lan:22", True, "", None):
+            self.assertTrue(session.is_this_computer(dict(conn, notThisComputer=said), **here), said)
+        self.assertTrue(session.is_this_computer(dict(conn, port=2222), **here))
+        self.assertIn("notThisComputer", session.LOCAL_KEYS)  # this system's only: never exported or synced
+        self.assertNotIn("notThisComputer", session.portable_connection(dict(conn, id="c-1", name="x")))
+
+    def test_own_fingerprints_are_worked_out_as_ssh_prints_them(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "ssh_host_ed25519_key.pub")
+        with open(path, "w") as f:  # a throwaway ed25519 key, ssh-keygen -lf: the print below
+            f.write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHvwp35/+K+l6E8sl2MaQ3BLOqCnVl83LGxjJEZ7uPI3 root@laptop\n")
+        blobs, prints = session.own_host_keys(os.path.join(d, "ssh_host_*_key.pub"))
+        self.assertEqual(prints, {"SHA256:Ox+ZWlSkncBXHYcr6uMhp0Cv/G2kHFjzF+0gVsB9waA"})
+
+    def test_a_users_own_window_rule_is_found(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        def write(name, text):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        write("bindings.lua", 'o.bind("SUPER + R", "Remote", "omaremote-session fullscreen")\n')
+        write("omaremote.lua", 'hl.window_rule({ match = { class = "omaremote-session" }, float = true })\n')
+        write("hyprland.lua.bak.1", 'o.window("omaremote-session", { float = true })\n')
+        write("off.conf", "# windowrule = float, class:omaremote-session\n")
+        write("off.lua", '-- o.window("omaremote-session", { float = true })\n')
+        write("looks.conf", "windowrule = opacity 0.95, class:omaremote-session\n"
+                            "windowrule = float, class:org.pulseaudio.pavucontrol\n")
+        write("looks.lua", 'o.window("omaremote-session", { opacity = 0.9 })\n'
+                           'o.window("pavucontrol", { float = true })\n')
+        # A binding, our own file, a backup, commented-out rules, a cosmetic rule: not placement.
+        self.assertFalse(session.user_window_rules([d]))
+        write("multi.lua", 'hl.window_rule({\n  match = { class = "^(omaremote-session)$" },\n  float = true,\n})\n')
+        self.assertTrue(session.user_window_rules([d]))
+        os.remove(os.path.join(d, "multi.lua"))
+        write("first.lua", 'hl.window_rule({\n  float = true, size = { 800, 600 },\n  match = { class = "omaremote-session" },\n})\n')
+        self.assertTrue(session.user_window_rules([d]))  # the placement before the match line
+        os.remove(os.path.join(d, "first.lua"))
+        write("tag.lua", 'o.window("omaremote-session", { tag = "+floating-window" })\n')
+        self.assertTrue(session.user_window_rules([d]))  # Omarchy's float-and-centre tag
+        os.remove(os.path.join(d, "tag.lua"))
+        write("broken.conf", "windowrule = float, class:^(broken\n"
+                             "windowrule = opacity 0.95, class:omaremote-session\n"
+                             "windowrule = float, class:pavucontrol\n")
+        self.assertFalse(session.user_window_rules([d]))  # an unbalanced bracket does not spread
+        # Only regular files are read: a FIFO by a config's name never hangs the placement.
+        os.mkfifo(os.path.join(d, "fifo.lua"))
+        os.mkfifo(os.path.join(d, "known_hosts"))
+        done = []
+        t = threading.Thread(target=lambda: done.append((session.user_window_rules([d]),
+                                                          session.known_host_keys({"x"}, os.path.join(d, "known_hosts")))),
+                             daemon=True)
+        t.start()
+        t.join(5)
+        self.assertEqual(done, [(False, set())], "a FIFO hung the read")
+        write("apps.lua", 'o.window("^(omaremote-session)$", { tile = true })\n')
+        self.assertTrue(session.user_window_rules([d]))
+        os.remove(os.path.join(d, "apps.lua"))
+        write("old.conf", "windowrule = tile, class:^(omaremote-session)$\n")
+        self.assertTrue(session.user_window_rules([d]))
+
+    def test_fullscreen_opens_rdp_in_its_own_window(self):
+        mode = session.fullscreen_mode
+        self.assertEqual(mode({"protocol": "rdp", "display": "fullscreen", "openIn": "tab"}), "screen")
+        self.assertEqual(mode({"protocol": "rdp", "display": "fullscreen", "openIn": "window", "fullscreen": "window"}), "window")
+        self.assertEqual(mode({"display": "fullscreen", "fullscreen": "odd"}), "screen")  # rdp by default
+        # A hotkey window stays one; other protocols and other displays are not fullscreen.
+        self.assertIsNone(mode({"protocol": "rdp", "display": "fullscreen", "openIn": "hotkey"}))
+        self.assertIsNone(mode({"protocol": "ssh", "display": "fullscreen"}))
+        self.assertIsNone(mode({"protocol": "rdp", "display": "fit"}))
+        self.assertIsNone(mode(None))
+        self.assertEqual(session.DEFAULTS["fullscreen"], "screen")
+        self.assertIn("fullscreen", session.SETTING_KEYS)
+
     def test_a_hotkey_window_is_rdp_or_ssh_on_one_monitor(self):
         self.assertTrue(session.is_hotkey({"openIn": "hotkey", "protocol": "ssh"}))
         self.assertTrue(session.is_hotkey({"openIn": "hotkey", "protocol": "rdp"}))
         self.assertFalse(session.is_hotkey({"openIn": "hotkey", "protocol": "vnc"}))
-        self.assertFalse(session.is_hotkey({"openIn": "hotkey", "protocol": "rdp", "multimon": True}))
+        # All monitors is gone (0.9.12): a connection that still has it set is an ordinary one.
+        self.assertTrue(session.is_hotkey({"openIn": "hotkey", "protocol": "rdp", "multimon": True}))
         self.assertFalse(session.is_hotkey({"openIn": "window", "protocol": "rdp"}))
 
     def test_special_names_are_safe(self):
@@ -1363,6 +1485,14 @@ class NothingPrivateInArgv(unittest.TestCase):
         text = json.dumps(self.argvs)
         for word in self.PRIVATE:
             self.assertNotIn(word, text)
+
+    def test_finding_this_computer_names_no_host_on_a_command_line(self):
+        from unittest import mock
+        conns = [{"id": "c-1", "name": "Secret Office PC", "host": "pc.secret.lan", "protocol": "gliff", "port": 22}]
+        with mock.patch.object(session, "load_connections", lambda: conns), \
+                mock.patch.object(session, "resolved_addresses", lambda names, budget=1.0: set()):
+            self.assertEqual(session.self_connections(), [])
+        self.assertClean()
 
     def test_a_failure_notification_names_nothing_on_a_command_line(self):
         # No session bus here: the fallback path. (With a bus the same text goes over D-Bus; a test

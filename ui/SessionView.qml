@@ -366,6 +366,8 @@ Item {
                     text: !root.hasPrompt ? ""
                         : root.prompt.kind === "cert" ? (root.prompt.changed ? "The certificate of " + root.prompt.host + " has changed"
                                                                             : "Trust " + root.prompt.host + "?")
+                        : root.prompt.kind === "hostkey" ? (root.prompt.changed ? root.prompt.host + " shows a key of a new type"
+                                                                               : "Trust " + root.prompt.host + "?")
                         : root.prompt.reason === "gateway" ? "Sign in to the gateway"
                         : root.prompt.reason === "vnc-password" ? "Password for " + (root.session ? root.session.name : "")
                         : "Sign in to " + (root.session ? root.session.name : "")
@@ -385,6 +387,24 @@ Item {
                         ? "This can mean the server was reinstalled, or that someone is intercepting the connection. Only continue if you expected this.\n\n"
                         : "The server's certificate could not be verified, which is normal for servers with a self-signed certificate.\n\n")
                         + "Subject:  " + root.prompt.subject + "\nIssuer:   " + root.prompt.issuer + "\n" + root.prompt.fingerprint
+                    color: Theme.muted
+                    font.family: Theme.font
+                    font.pixelSize: Theme.small
+                }
+
+                // ssh's host key (Gliff), the first time this computer meets the host.
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    visible: root.hasPrompt && root.prompt.kind === "hostkey"
+                    wrapMode: Text.Wrap
+                    text: !visible ? "" : (root.prompt.changed
+                            ? "This computer already knows other keys of this host. That is expected after its ssh was upgraded, but can also mean someone is intercepting the connection. Only continue if you expected this.\n\n"
+                            : "This computer has not connected to it before. ")
+                        + "Trusting adds its key to ~/.ssh/known_hosts, as ssh does when you answer yes. "
+                        + "To check it, run ssh-keygen -lf /etc/ssh/ssh_host_" + (String(root.prompt.key).split(" ")[0].toLowerCase() || "ed25519")
+                        + "_key.pub on that machine.\n\n"
+                        + root.prompt.details
                     color: Theme.muted
                     font.family: Theme.font
                     font.pixelSize: Theme.small
@@ -434,9 +454,10 @@ Item {
                     }
                     ActionButton {
                         primary: true
-                        text: root.hasPrompt && root.prompt.kind === "cert" ? "Trust" : "Sign in"
+                        readonly property bool trust: root.hasPrompt && (root.prompt.kind === "cert" || root.prompt.kind === "hostkey")
+                        text: trust ? "Trust" : "Sign in"
                         hint: "⏎"
-                        onClicked: root.hasPrompt && root.prompt.kind === "cert" ? view.answerCertificate(1) : root.submitAuth()
+                        onClicked: trust ? view.answerCertificate(1) : root.submitAuth()
                     }
                 }
             }
@@ -446,7 +467,7 @@ Item {
             if (event.key === Qt.Key_Escape) {
                 view.cancelPrompt()
                 event.accepted = true
-            } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && root.prompt.kind === "cert") {
+            } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (root.prompt.kind === "cert" || root.prompt.kind === "hostkey")) {
                 view.answerCertificate(1)
                 event.accepted = true
             }

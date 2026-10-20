@@ -1003,6 +1003,7 @@ static std::string last_words()
 
 int main(int argc, char** argv)
 {
+	oma::limit_memory();
 	std::vector<std::string> args;
 	std::string line;
 	while (std::getline(std::cin, line))

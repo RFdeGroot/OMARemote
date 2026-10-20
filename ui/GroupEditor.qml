@@ -251,6 +251,16 @@ Rectangle {
                     }
                 }
                 FormRow {
+                    label: "Fullscreen"
+                    visible: root.value("display") === "fullscreen"
+                    help: "Its connections open in a window of their own (hotkey windows stay as they are)"
+                    Segment {
+                        value: root.value("fullscreen")
+                        options: root.notSet.concat([{ value: "screen", label: "Whole screen" }, { value: "window", label: "In a window" }])
+                        onPicked: function (v) { root.set("fullscreen", v) }
+                    }
+                }
+                FormRow {
                     label: "Size"
                     visible: root.value("display") === "fixed"
                     RowLayout {

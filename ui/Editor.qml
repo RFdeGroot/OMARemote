@@ -138,6 +138,13 @@ Rectangle {
             Hotkeys.refresh()
         set("openIn", v)
     }
+    // Fullscreen (RDP) opens in its own window (Format.fullscreenMode), so Open in is that.
+    readonly property bool fullscreen: isRdp && d.display === "fullscreen" && d.openIn !== "hotkey"
+    function pickDisplay(v) {
+        set("display", v)
+        if (v === "fullscreen" && d.openIn !== "window")
+            set("openIn", "window")
+    }
     readonly property string shortcutProblem: d.openIn === "hotkey" ? Hotkeys.conflict(d.hotkey, d.id) : ""
 
     function save() {
@@ -491,12 +498,14 @@ Rectangle {
                     inherited: root.fromGroup("openIn")
                     label: "Open in"
                     visible: !root.isVnc
-                    help: root.d.openIn === "hotkey" ? "Slides in and out on its shortcut, kept connected"
-                                                     : "A window of its own"
+                    help: root.fullscreen ? "Fullscreen opens in a window of its own"
+                        : root.d.openIn === "hotkey" ? "Slides in and out on its shortcut, kept connected"
+                        : "A window of its own"
                     Segment {
-                        value: root.d.openIn || "tab"
-                        options: [{ value: "tab", label: "Tab" }, { value: "window", label: "Own window" }]
-                                 .concat(root.isRdp && root.d.multimon ? [] : [{ value: "hotkey", label: "Hotkey window" }])
+                        value: root.fullscreen ? "window" : (root.d.openIn || "tab")
+                        // Fullscreen is a window of its own: neither a tab nor a hotkey window.
+                        options: root.fullscreen ? [{ value: "window", label: "Own window" }]
+                               : [{ value: "tab", label: "Tab" }, { value: "window", label: "Own window" }, { value: "hotkey", label: "Hotkey window" }]
                         onPicked: function (v) { root.pickOpenIn(v) }
                     }
                 }
@@ -517,10 +526,26 @@ Rectangle {
                     inherited: root.fromGroup("display")
                     label: "Resolution"
                     visible: root.isRdp
+                    help: root.d.openIn === "hotkey" ? "A hotkey window: " + Keymap.session("ctrl+alt+⏎") + " makes it fullscreen while it is open" : ""
                     Segment {
-                        value: root.d.display || "fit"
-                        options: [{ value: "fit", label: "Fit window" }, { value: "fullscreen", label: "Fullscreen" }, { value: "fixed", label: "Fixed" }]
-                        onPicked: function (v) { root.set("display", v) }
+                        value: root.d.openIn === "hotkey" && root.d.display === "fullscreen" ? "fit" : (root.d.display || "fit")
+                        // A hotkey window slides in at 90%: Fullscreen is not one of its choices.
+                        options: [{ value: "fit", label: "Fit window" }]
+                                 .concat(root.d.openIn === "hotkey" ? [] : [{ value: "fullscreen", label: "Fullscreen" }])
+                                 .concat([{ value: "fixed", label: "Fixed" }])
+                        onPicked: function (v) { root.pickDisplay(v) }
+                    }
+                }
+                FormRow {
+                    inherited: root.fromGroup("fullscreen")
+                    label: "Fullscreen"
+                    visible: root.fullscreen
+                    help: root.d.fullscreen === "window" ? "Maximised: the bar stays"
+                        : "The bar hidden; the top edge slides in a bar to leave fullscreen"
+                    Segment {
+                        value: root.d.fullscreen === "window" ? "window" : "screen"
+                        options: [{ value: "screen", label: "Whole screen" }, { value: "window", label: "In a window" }]
+                        onPicked: function (v) { root.set("fullscreen", v) }
                     }
                 }
                 FormRow {
@@ -563,16 +588,6 @@ Rectangle {
                         options: [{ value: "auto", label: "Auto" }, { value: "100", label: "100" }, { value: "125", label: "125" },
                                   { value: "150", label: "150" }, { value: "175", label: "175" }, { value: "200", label: "200" }]
                         onPicked: function (v) { root.set("scale", v) }
-                    }
-                }
-                FormRow {
-                    inherited: root.fromGroup("multimon")
-                    label: "All monitors"
-                    visible: root.isRdp
-                    help: "With own window: FreeRDP's window, across every screen"
-                    Check {
-                        checked: !!root.d.multimon
-                        onToggled: root.set("multimon", !checked)
                     }
                 }
 

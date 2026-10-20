@@ -23,6 +23,28 @@ FocusScope {
     readonly property string launcher: Sessions.bin.replace(/omaremote-session$/, "omaremote")
 
     property bool movingToTab: false
+    // Hyprland fullscreen (the bar hidden): the window covers its whole screen. Only the remote
+    // desktop shows; the top edge slides in a bar to leave (connectionBar). Maximised keeps the
+    // Omarchy bar, so it is not this.
+    readonly property bool wholeScreen: !!host && !!host.screen && host.screen.width > 0 && host.screen.height > 0
+                                        && host.width >= host.screen.width && host.height >= host.screen.height
+    property bool barShown: false
+    // Set once the window was really whole screen: a new window can look like one for a moment
+    // before Hyprland places it, and must not be centred again for that.
+    property bool wasWholeScreen: false
+    Timer { id: settled; interval: 500; onTriggered: root.wasWholeScreen = root.wholeScreen }
+    onWholeScreenChanged: {
+        barShown = false
+        if (wholeScreen) {
+            settled.restart()
+            return
+        }
+        settled.stop()
+        // Hyprland brings a floating window back at its size but not centred (part off screen).
+        if (wasWholeScreen)
+            Quickshell.execDetached([Sessions.bin, "center", String(Quickshell.processId)])
+        wasWholeScreen = false
+    }
     // Kept on a special workspace of its own, shown and hidden by its shortcut (omaremote toggle).
     readonly property bool hotkey: {
         Store.stored
@@ -162,6 +184,7 @@ FocusScope {
 
         // Title bar: what this window shows, in the manager's tab style.
         Rectangle {
+            visible: !root.wholeScreen
             Layout.fillWidth: true
             implicitHeight: Theme.chrome
             color: Theme.surface
@@ -221,6 +244,7 @@ FocusScope {
         }
 
         StatusBar {
+            visible: !root.wholeScreen
             Layout.fillWidth: true
             showCounts: false
             notice: root.notice
@@ -231,6 +255,85 @@ FocusScope {
                     : root.session && root.session.protocol === "gliff" ? Format.gliffKeyHint(Sessions.capturedSession === root.session.id)
                     : ["ctrl+alt+end", "ctrl+alt+del"],
                     ["ctrl+alt+home", "to connections"], [Sessions.closeKey, "disconnect"]])
+        }
+    }
+
+    // Whole screen: resting the pointer on the top edge slides in a bar to leave fullscreen (as
+    // Windows' own Remote Desktop bar does); ctrl+alt+⏎ does the same. Only the edge's top two
+    // pixels are taken from the remote desktop, and only for hovering: clicks still go through.
+    Item {
+        visible: root.wholeScreen
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 2
+        z: 10
+        HoverHandler {
+            onHoveredChanged: hovered ? showDelay.restart() : showDelay.stop()
+        }
+    }
+    Timer { id: showDelay; interval: 250; onTriggered: { root.barShown = true; hideDelay.restart() } }
+    Timer { id: hideDelay; interval: 1500; onTriggered: if (!barHover.hovered) root.barShown = false }
+
+    Rectangle {
+        id: connectionBar
+        visible: root.wholeScreen
+        z: 11
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: root.barShown ? 0 : -height - 1
+        Behavior on y { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        width: barRow.implicitWidth + 2 * Theme.padX
+        height: Theme.control + 2 * Theme.gap
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.hairline
+        HoverHandler {
+            id: barHover
+            onHoveredChanged: if (!hovered) hideDelay.restart()
+        }
+        Row {
+            id: barRow
+            anchors.centerIn: parent
+            spacing: Theme.gap
+            Glyph {
+                anchors.verticalCenter: parent.verticalCenter
+                text: ""
+                size: Theme.caption - 3
+                color: !root.session ? Theme.muted
+                     : root.session.state === "connected" ? Theme.success
+                     : root.session.state === "connecting" ? Theme.warning : Theme.urgent
+            }
+            Text {
+                textFormat: Text.PlainText
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.title
+                color: Theme.foreground
+                font.family: Theme.font
+                font.pixelSize: Theme.caption
+                font.bold: true
+            }
+            Item { width: Theme.gap; height: 1 }
+            ActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                primary: true
+                text: "Exit fullscreen"
+                hint: Keymap.session("ctrl+alt+⏎")
+                onClicked: { root.barShown = false; Quickshell.execDetached([Sessions.bin, "fullscreen"]) }
+            }
+            ActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: root.live
+                text: "To a tab"
+                hint: Keymap.session("ctrl+alt+t")
+                onClicked: root.toTab(false)
+            }
+            ActionButton {
+                anchors.verticalCenter: parent.verticalCenter
+                danger: true
+                text: "Disconnect"
+                hint: Keymap.session(Sessions.closeKey)
+                onClicked: { root.closing(); if (root.host) root.host.quit() }
+            }
         }
     }
 }

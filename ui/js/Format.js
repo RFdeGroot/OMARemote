@@ -53,13 +53,24 @@ function displayLabel(c, monitorScale) {
         return "Tab · " + how + " · " + quality + (c.viewOnly ? " · view only" : "")
     }
     var mode = c.display === "fixed" ? c.width + "×" + c.height + " scaled to fit"
-             : c.display === "fullscreen" ? "Fullscreen" : "Follows size"
+             : "Follows size" // Fullscreen is said by openInLabel
     var scale = c.scale === "auto" ? "auto (" + (monitorScale || 100) + "%)" : c.scale + "%"
     return openInLabel(c) + " · " + mode + " · scale " + scale
 }
 
+// Mirrors fullscreen_mode in bin/omaremote-session: an RDP connection set to Fullscreen opens in
+// its own window, "screen" (the bar hidden) or "window" (maximised); a hotkey window stays one.
+function fullscreenMode(c) {
+    if (!c || (c.protocol || "rdp") !== "rdp" || c.display !== "fullscreen" || c.openIn === "hotkey")
+        return ""
+    return c.fullscreen === "window" ? "window" : "screen"
+}
+
 // Where a connection opens: "Tab", "Own window", or "Hotkey window (SUPER + ALT + W)".
 function openInLabel(c) {
+    var full = fullscreenMode(c)
+    if (full)
+        return full === "window" ? "Own window, maximised" : "Own window, whole screen"
     if (c.openIn === "hotkey")
         return "Hotkey window" + (c.hotkey ? " (" + c.hotkey + ")" : "")
     return c.openIn === "window" ? "Own window" : "Tab"

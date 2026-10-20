@@ -26,7 +26,7 @@ Sections, in order (`# ------- <name>` lines):
 | export, import and sync | `portable`, `merge` (guards: `LOCAL_KEYS`, `ADDRESS_KEYS`, `_signs_in_here`, tombstones), `HOST_RE`, `ID_RE` |
 | keyring | secret-tool calls, labels by id |
 | scaling | monitor scale, desktop scale |
-| hotkey windows | `toggle`, `place_window`, `hide_window`, `terminal_tag`, `find_window`, `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
+| hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `terminal_tag`, `find_window`, `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
 | arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `build_gliff_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
@@ -37,7 +37,7 @@ Sections, in order (`# ------- <name>` lines):
 
 Commands (`omaremote-session <cmd>`): list stop forget args export import sync pick ssh-keys
 import-sources import-scan import-foreign ssh-config watch-folder system-name paths view float terminal-tag summon open-window toggle place
-hide close-key browse unmount mounts restart-gvfs hotkeys hypr-hotkeys fullscreen plugin-check
+hide close-key browse unmount mounts restart-gvfs hotkeys hypr-hotkeys fullscreen center plugin-check
 update-check focus monitor-scale secret, plus launch.
 
 ## ui/ (QML)
@@ -64,7 +64,7 @@ The manager window:
 | Detail.qml | the right-hand pane of the selected connection |
 | Editor.qml, GroupEditor.qml, CredentialEditor.qml | the editors |
 | SessionView.qml | one session: RdpView, the sign-in/certificate prompt, the ended panel, `chord()` (ctrl+alt keys) |
-| SessionWindow.qml | a session's own or hotkey window |
+| SessionWindow.qml | a session's own or hotkey window; `wholeScreen` (Hyprland fullscreen: chrome hidden, the top edge slides in `connectionBar`) |
 | TabBar.qml, PinnedList.qml, StatusBar.qml | chrome (StatusBar: a Gliff tab's stats, a health dot and the facts that fit, a click opens the card; words in Format.js `parseStats`/`statsParts`/`statsRows`) |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
@@ -82,14 +82,16 @@ The manager window:
 | plugin/clipread.cpp | `oma::readClipboard`: the only way the UI reads the clipboard (wl-paste in its own process, size and time limits); never `QClipboard::text()` (tests/test_clipboard.py checks) |
 | plugin/pasteguard.cpp | `PasteGuard.guard` (cuts a field loose from clipboard changes), `paste` (wl-paste, 16 KiB, 2 s, one line; refused whole when it does not fit `maximumLength`) |
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode` |
+| rdp/gfxguard.cpp | `oma::guard_gfx`: wraps FreeRDP's RDPGFX CreateSurface (8192 a side, 2 GiB for all surfaces with their progressive tiles) and SurfaceToCache (128 MiB of cache, read back from gdi's entries); gfxguard-test.cpp = rdp-gfx-test |
 | vnc/main.cpp | libvncclient client |
 | ssh/main.cpp | libssh + libvterm terminal: keys, selection/copy, scrollback |
-| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency) |
+| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU; `kMaxStreamW/H` = what Hello asks for, `pick_format` refuses a picture larger than its StreamConfig before FFmpeg allocates), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency) |
 | gliff/msg.hpp, cbor.hpp | Gliff's protocol v1 by hand (gliff-proto's msg.rs/frame.rs, clipboard messages); test.cpp = gliff-proto-test, its fixtures |
 | gliff/video.hpp | `convert420` / `convert444` (Dual420 recombined on the fly), BT.709 into BGRX, per damaged rectangle, OpenMP |
 | gliff/seat.cpp | the session process's own Wayland connection: keymap (wl_keyboard) and clipboard (ext-data-control, `OWN_MARK`) |
+| gliff/askpass.cpp | ssh's host-key question in the session view: omaremote-gliff is ssh's SSH_ASKPASS (`askpass_main`), the question goes to the session over `<socket>.askpass` (`answer_askpass` in main.cpp, `hostkey` prompt line), other questions to the system askpass; `hostkey_failure` words the failures |
 | gliff/clipboard.cpp | Gliff's clipboard: lazy offers, 256 KiB chunks with acks, files into ~/.cache/omaremote/clipboard; shared only while focused |
-| common/link.cpp | the socket and shared-memory frame shared by all three |
+| common/link.cpp | the socket and shared-memory frame shared by all session processes; `limit_memory` (RLIMIT_DATA `kMaxSessionData`, 4 GiB; a failed `new` exits 147) first in each main |
 
 Build: `ninja -C native/build`.
 
@@ -101,7 +103,8 @@ Build: `ninja -C native/build`.
   limits: UI and backend equal, every Input names one, import and sync refuse longer),
   test_quick.py (Format.quickCredential through tests/qml/format.qml), test_import.py (.rdp, Remmina,
   1Remote, ~/.ssh/config: parsers, refused values, idempotent re-import), test_gliff.py (the protocol
-  against gliff-proto's fixtures via gliff-proto-test, the ssh command, exit messages), test_session_keys.py (the session
+  against gliff-proto's fixtures via gliff-proto-test, the ssh command, exit messages; Decoder: omaremote-gliff against a fake
+  gliff-server with ffmpeg-made pictures), test_memory.py (rdp-gfx-test, every session process's memory ceiling), test_session_keys.py (the session
   keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting), test_clipboard.py
   (a session tab's clipboard through tests/qml/clipboard.qml against a fake session socket: wl-paste only,
   nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc

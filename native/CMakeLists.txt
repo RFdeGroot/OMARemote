@@ -15,9 +15,12 @@ pkg_check_modules(FREERDP REQUIRED IMPORTED_TARGET freerdp3 freerdp-client3 winp
 add_library(omaremote-link STATIC common/link.cpp)
 target_compile_options(omaremote-link PRIVATE -Wall -Wextra)
 
-add_executable(omaremote-rdp rdp/main.cpp)
+add_executable(omaremote-rdp rdp/main.cpp rdp/gfxguard.cpp)
 target_link_libraries(omaremote-rdp PRIVATE omaremote-link PkgConfig::FREERDP)
 target_compile_options(omaremote-rdp PRIVATE -Wall -Wextra -Wno-unused-parameter)
+add_executable(rdp-gfx-test rdp/gfxguard-test.cpp rdp/gfxguard.cpp)
+target_link_libraries(rdp-gfx-test PRIVATE omaremote-link PkgConfig::FREERDP)
+target_compile_options(rdp-gfx-test PRIVATE -Wall -Wextra)
 
 # VNC sessions, on libvncclient.
 pkg_check_modules(VNC REQUIRED IMPORTED_TARGET libvncclient)
@@ -50,14 +53,14 @@ add_custom_command(
   COMMAND ${WAYLAND_SCANNER} client-header ${DATA_CONTROL_XML} ${PROTOCOL_GEN}/ext-data-control-v1-client-protocol.h
   COMMAND ${WAYLAND_SCANNER} private-code ${DATA_CONTROL_XML} ${PROTOCOL_GEN}/ext-data-control-v1-protocol.c
   DEPENDS ${DATA_CONTROL_XML})
-add_executable(omaremote-gliff gliff/main.cpp gliff/seat.cpp gliff/clipboard.cpp
+add_executable(omaremote-gliff gliff/main.cpp gliff/askpass.cpp gliff/seat.cpp gliff/clipboard.cpp
                ${PROTOCOL_GEN}/ext-data-control-v1-client-protocol.h ${PROTOCOL_GEN}/ext-data-control-v1-protocol.c)
 target_include_directories(omaremote-gliff PRIVATE ${PROTOCOL_GEN})
 find_package(OpenMP REQUIRED COMPONENTS CXX)
 target_link_libraries(omaremote-gliff PRIVATE omaremote-link PkgConfig::AV PkgConfig::VA PkgConfig::WAYLAND
                       OpenMP::OpenMP_CXX)
 target_compile_options(omaremote-gliff PRIVATE -Wall -Wextra -Wno-unused-parameter)
-add_executable(gliff-proto-test gliff/test.cpp gliff/clipboard.cpp gliff/seat.cpp common/link.cpp
+add_executable(gliff-proto-test gliff/test.cpp gliff/askpass.cpp gliff/clipboard.cpp gliff/seat.cpp common/link.cpp
                ${PROTOCOL_GEN}/ext-data-control-v1-protocol.c)
 target_include_directories(gliff-proto-test PRIVATE ${PROTOCOL_GEN})
 target_link_libraries(gliff-proto-test PRIVATE PkgConfig::WAYLAND OpenMP::OpenMP_CXX)

@@ -3,6 +3,7 @@
 // per failure and exits 1; tests/test_gliff.py runs it.
 
 #include "../common/link.hpp"
+#include "askpass.hpp"
 #include "clipboard.hpp"
 #include "msg.hpp"
 #include "video.hpp"
@@ -414,6 +415,52 @@ int main()
 	}
 	video_tests();
 	clipboard_tests();
+	// ssh's host-key question (askpass.hpp), as OpenSSH 9/10 words it.
+	{
+		const std::string q = "The authenticity of host 'pc.lan (192.168.1.5)' can't be established.\n"
+		                      "ED25519 key fingerprint is SHA256:abcDEF123.\n"
+		                      "This key is not known by any other names.\n"
+		                      "Are you sure you want to continue connecting (yes/no/[fingerprint])? ";
+		const auto h = gliff::parse_hostkey_question(q);
+		expect(h && h->host == "pc.lan (192.168.1.5)", "host-key question: the host");
+		expect(h && h->key == "ED25519 key fingerprint is SHA256:abcDEF123", "host-key question: the key");
+		// OpenSSH 10.6, word for word.
+		const auto h10 = gliff::parse_hostkey_question(
+		    "The authenticity of host 'localhost (::1)' can't be established.\n"
+		    "ED25519 key fingerprint is: SHA256:Ox+ZWlSkncBXHYcr6uMhp0Cv/G2kHFjzF+0gVsB9waA\n"
+		    "This key is not known by any other names.\n"
+		    "Are you sure you want to continue connecting (yes/no/[fingerprint])? ");
+		expect(h10 && h10->host == "localhost (::1)" &&
+		           h10->key == "ED25519 key fingerprint is: SHA256:Ox+ZWlSkncBXHYcr6uMhp0Cv/G2kHFjzF+0gVsB9waA",
+		       "host-key question: OpenSSH 10");
+		// A server's keyboard-interactive prompt reaches the askpass too: never the Trust dialog.
+		expect(!gliff::parse_hostkey_question("(user@pc) The authenticity of host 'bank.example' can't be established.\n"
+		                                      "ED25519 key fingerprint is SHA256:evil.\n"
+		                                      "Are you sure you want to continue connecting (yes/no/[fingerprint])? "),
+		       "a server's prompt cannot pose as the host-key question");
+		const auto other = gliff::parse_hostkey_question(
+		    "The authenticity of host 'pc.lan (192.168.1.5)' can't be established\n"
+		    "but keys of different type are already known for this host.\n"
+		    "ECDSA key fingerprint is SHA256:newtype.\n"
+		    "Are you sure you want to continue connecting (yes/no/[fingerprint])? ");
+		expect(other && other->otherKeys && other->details.find("already known") != std::string::npos &&
+		           other->details.find("Are you sure") == std::string::npos,
+		       "other key types known: a warning, with ssh's text");
+		expect(h10 && !h10->otherKeys, "a first key is no warning");
+		expect(!gliff::parse_hostkey_question("Enter passphrase for key '/home/u/.ssh/id_ed25519': "),
+		       "a passphrase is not a host-key question");
+		expect(!gliff::parse_hostkey_question("The authenticity of host 'x' can't be established.\nAre you sure you want to continue connecting? "),
+		       "no fingerprint, no question");
+		const std::string changed = "@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.\n";
+		expect(gliff::hostkey_failure(changed, "pc.lan", false).find("CHANGED") != std::string::npos &&
+		           gliff::hostkey_failure(changed, "pc.lan", false).find("ssh-keygen -R pc.lan") != std::string::npos,
+		       "a changed key says so, and how to clear it");
+		expect(gliff::hostkey_failure("Host key verification failed.\n", "pc.lan", true).find("not trusted") != std::string::npos,
+		       "declined: said so");
+		expect(gliff::hostkey_failure("Permission denied (publickey).\n", "pc.lan", false).empty(),
+		       "other failures are not about host keys");
+	}
+
 	if (failures == 0)
 		printf("ok\n");
 	return failures ? 1 : 0;
