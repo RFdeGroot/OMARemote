@@ -49,6 +49,19 @@ class PlainText(unittest.TestCase):
     # Connection names, group names and error texts come from other systems through sync, and from
     # remote servers: a Text left to guess its format (AutoText) shows HTML in them, images fetched
     # from the internet included. Every Text says it is plain.
+    def test_animations_name_what_they_follow(self):
+        # In an animation, a bare `parent` is the file's root item's parent, not the animated
+        # item's: `running: parent.visible` ran the connecting pulse in every session tab, unseen,
+        # and the window redrew at the screen's refresh rate (0.9.13).
+        bare = []
+        for path in sources():
+            if path.endswith(".qml"):
+                with open(path, encoding="utf-8") as f:
+                    for n, line in enumerate(f, 1):
+                        if re.search(r"\brunning:.*\bparent\.", line):
+                            bare.append(f"{os.path.basename(path)}:{n}")
+        self.assertEqual(bare, [])
+
     def test_every_text_is_plain(self):
         missing = []
         for path in sources():

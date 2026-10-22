@@ -213,6 +213,7 @@ Item {
     // ---------------------------------------------------------------- connecting
 
     Column {
+        id: connecting
         anchors.centerIn: parent
         visible: root.live && !root.showDesktop && !root.hasPrompt
         spacing: Theme.gap * 1.5
@@ -221,8 +222,10 @@ Item {
             text: root.session && root.session.protocol === "ssh" ? "" : root.session && root.session.protocol === "gliff" ? "" : ""
             size: Theme.display * 2
             color: Theme.accent
+            // By id: a bare `parent` here is the SessionView's own parent, always visible, which ran
+            // this in every session tab and had the window redraw at the screen's refresh rate.
             SequentialAnimation on opacity {
-                running: parent.visible
+                running: connecting.visible
                 loops: Animation.Infinite
                 NumberAnimation { to: 0.3; duration: 700; easing.type: Easing.InOutQuad }
                 NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutQuad }
