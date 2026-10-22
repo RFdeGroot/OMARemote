@@ -356,6 +356,15 @@ Rectangle {
                     }
                 }
                 FormRow {
+                    label: "Reconnect"
+                    visible: root.isSsh
+                    help: "After a drop (a restart, another network), for 10 minutes"
+                    Check {
+                        checked: root.d.sshReconnect !== false
+                        onToggled: root.set("sshReconnect", !checked)
+                    }
+                }
+                FormRow {
                     label: "Domain"
                     visible: root.isRdp && (root.ownCredentials)
                     Input {

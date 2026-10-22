@@ -84,7 +84,7 @@ The manager window:
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode` |
 | rdp/gfxguard.cpp | `oma::guard_gfx`: wraps FreeRDP's RDPGFX CreateSurface (8192 a side, 2 GiB for all surfaces with their progressive tiles) and SurfaceToCache (128 MiB of cache, read back from gdi's entries); gfxguard-test.cpp = rdp-gfx-test |
 | vnc/main.cpp | libvncclient client |
-| ssh/main.cpp | libssh + libvterm terminal: keys, selection/copy, scrollback |
+| ssh/main.cpp | ssh in a pty + libvterm terminal: keys, selection/copy, scrollback; `start_ssh`/`run_ssh`, a lost connection tried again (`lost_words`, `transient_words`, `wait_serving`) |
 | gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU; `kMaxStreamW/H` = what Hello asks for, `pick_format` refuses a picture larger than its StreamConfig before FFmpeg allocates), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency) |
 | gliff/msg.hpp, cbor.hpp | Gliff's protocol v1 by hand (gliff-proto's msg.rs/frame.rs, clipboard messages); test.cpp = gliff-proto-test, its fixtures |
 | gliff/video.hpp | `convert420` / `convert444` (Dual420 recombined on the fly), BT.709 into BGRX, per damaged rectangle, OpenMP |
@@ -108,7 +108,8 @@ Build: `ninja -C native/build`.
   keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting), test_clipboard.py
   (a session tab's clipboard through tests/qml/clipboard.qml against a fake session socket: wl-paste only,
   nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc
-  against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept).
+  against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept), test_ssh.py
+  (omaremote-ssh with a stand-in ssh: a dropped connection tried again, what is never retried).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

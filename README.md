@@ -468,7 +468,13 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   Programs that use the mouse (htop, vim with `mouse=a`) get it; hold `shift` to select anyway.
   Remote programs can set your clipboard (OSC 52, as tmux and Neovim do). The `ctrl+alt` keys stay
   OMARemote's, as in every session.
-- A session that ends normally just closes; one where ssh could not connect shows ssh's reason.
+- **Reconnects by itself** (*Reconnect*, on by default): when a working connection drops (the host
+  restarts, you move from cable to wifi), ssh is started again in the same terminal, the screen and
+  scrollback kept, with growing pauses for up to 10 minutes; `Enter` tries at once. It is a new
+  shell: programs that ran on the server are gone, unless they ran in tmux or screen there. A failed
+  sign-in or a host key that is not accepted is never tried again.
+- A session that ends normally just closes; one where ssh could not connect says why, in plain
+  words (ssh's own are in the log).
 
 ## Gliff
 

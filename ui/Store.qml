@@ -58,7 +58,7 @@ Singleton {
         clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", gatewaySavePassword: false, kdc: "",
-        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, unlockAfter: 0, notThisComputer: "", sshArgs: "", sshKey: "", gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
+        extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, unlockAfter: 0, notThisComputer: "", sshArgs: "", sshKey: "", sshReconnect: true, gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
         favourite: false, lastConnected: 0
     })
     // Settings a group can set (SETTING_KEYS in bin/omaremote-session).

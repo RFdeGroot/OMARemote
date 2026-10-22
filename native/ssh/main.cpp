@@ -131,6 +131,8 @@ struct Session
 
 	std::set<uint32_t> held; // evdev codes held: the modifiers come from these
 	std::string localClip;   // the UI's clipboard, offered on focus and when it changes
+	bool retryNow = false;   // Enter while a lost connection waits to be tried again
+	bool typed = false;      // a key went to the remote since the last drop
 	std::string osc52;       // a clipboard write from the remote program, gathered in fragments
 	bool osc52TooLong = false; // that write passed kMaxClipBytes: the rest of it is dropped
 
@@ -773,8 +775,11 @@ static bool is_modifier(uint32_t sym)
 static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 {
 	g.held.insert(evdev);
+	if (g.pty < 0 && (sym == 0xff0d || sym == 0xff8d)) // Return, KP_Enter: try again now
+		g.retryNow = true;
 	if (is_modifier(sym) || g.pty < 0)
 		return;
+	g.typed = true;
 	const bool shift = shift_held(), ctrl = ctrl_held();
 
 	// The terminal's own keys.
@@ -1001,6 +1006,165 @@ static std::string last_words()
 	return lines.empty() ? std::string() : lines.back();
 }
 
+// How long a session that lost its connection keeps trying, and how long an ssh must have run
+// to count as a session that was up (not a sign-in that went wrong at once).
+// A `reconnectMs=` config line scales every pause, kUpMs and kReconnectMs by it/1000 (tests/test_ssh.py).
+static constexpr uint64_t kReconnectMs = 10 * 60 * 1000;
+static constexpr uint64_t kUpMs = 5000;
+// Drops in a row with nothing typed in between: then it is no one at work there, and a server
+// that makes "Broken pipe" its last words (and exits 255, as ssh does) cannot keep us dialling.
+static constexpr int kMaxQuietDrops = 20;
+static uint64_t g_pace = 1000; // milliseconds in a second of pause
+
+// ssh in a new terminal the size of the view: at the start, and again after a lost connection.
+static bool start_ssh(std::vector<std::string>& args)
+{
+	winsize ws = {};
+	ws.ws_row = uint16_t(g.rows);
+	ws.ws_col = uint16_t(g.cols);
+	g.child = forkpty(&g.pty, nullptr, nullptr, &ws);
+	if (g.child < 0)
+	{
+		g.pty = -1;
+		log("cannot start a terminal: %s", strerror(errno));
+		return false;
+	}
+	if (g.child == 0)
+	{
+		setenv("TERM", "xterm-256color", 1);
+		setenv("COLORTERM", "truecolor", 1);
+		unsetenv("OMAREMOTE_SOCKET");
+		std::vector<char*> cargs;
+		for (auto& a : args)
+			cargs.push_back(a.data());
+		cargs.push_back(nullptr);
+		execvp(cargs[0], cargs.data());
+		fprintf(stderr, "cannot run %s: %s\r\n", cargs[0], strerror(errno));
+		_exit(127);
+	}
+	fcntl(g.pty, F_SETFL, fcntl(g.pty, F_GETFL) | O_NONBLOCK);
+	return true;
+}
+
+// The terminal, until ssh exits: its exit status, or 11 when the session was stopped.
+static int run_ssh()
+{
+	uint64_t lastThemeCheck = 0;
+	char buf[65536];
+	bool ended = false;
+	while (!g.quit && !ended)
+	{
+		pollfd fds[3] = { { g.pty, POLLIN, 0 }, { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
+		const int n = poll(fds, g.link.attached() ? 3 : 2, 500);
+		if (n < 0 && errno != EINTR)
+			break;
+		if (fds[0].revents & (POLLIN | POLLHUP | POLLERR))
+		{
+			// Read what is there, a bounded amount at a time, so a flood of output still draws.
+			for (int i = 0; i < 16; i++)
+			{
+				const ssize_t got = read(g.pty, buf, sizeof(buf));
+				if (got > 0)
+				{
+					vterm_input_write(g.vt, buf, size_t(got));
+					continue;
+				}
+				if (got < 0 && (errno == EAGAIN || errno == EINTR))
+					break;
+				ended = true; // EIO: the program exited and the terminal closed
+				break;
+			}
+		}
+		for (const auto& l : g.link.poll())
+			handle_line(l);
+		if (oma::now_ms() - lastThemeCheck > 1000)
+		{
+			lastThemeCheck = oma::now_ms();
+			check_theme();
+		}
+		flush();
+	}
+	flush();
+
+	int rc = 0;
+	if (g.quit && !ended)
+	{
+		kill(g.child, SIGHUP);
+		rc = 11;
+	}
+	int status = 0;
+	for (int i = 0; i < 50 && waitpid(g.child, &status, WNOHANG) == 0; i++)
+		usleep(20000);
+	if (waitpid(g.child, &status, WNOHANG) == 0)
+	{
+		kill(g.child, SIGKILL);
+		waitpid(g.child, &status, 0);
+	}
+	if (rc == 0)
+		rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+	close(g.pty);
+	g.pty = -1;
+	return rc;
+}
+
+static bool says(const std::string& text, std::initializer_list<const char*> words)
+{
+	for (const char* w : words)
+		if (text.find(w) != std::string::npos)
+			return true;
+	return false;
+}
+
+// ssh's last words when a connection that was up went away (a restart, a network change). Not
+// a refusal before signing in (kex_exchange_identification: too many tries, fail2ban): that
+// one is never retried.
+static bool lost_words(const std::string& said)
+{
+	return !says(said, { "kex_exchange_identification" }) &&
+	       says(said, { "Broken pipe", "closed by remote host", "Connection reset", "not responding",
+	                    "packet_write_wait", "Software caused connection abort" });
+}
+
+// ...and of a try that may work in a while: the computer still starting, the network still coming.
+static bool transient_words(const std::string& said)
+{
+	return lost_words(said) ||
+	       says(said, { "Connection refused", "timed out", "No route to host", "Network is unreachable",
+	                    "Could not resolve hostname", "Name or service not known",
+	                    "Temporary failure in name resolution", "Connection closed by" });
+}
+
+// A dim line in the terminal between what was and what comes; the modes a program on the server
+// left on (its own screen, mouse reporting, bracketed paste, a hidden cursor) end with it.
+static void note(std::string text)
+{
+	// Never a control character from a setting (the host): nothing here can be an escape.
+	text.erase(std::remove_if(text.begin(), text.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }),
+	           text.end());
+	static const char reset[] = "\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m";
+	vterm_input_write(g.vt, reset, sizeof(reset) - 1);
+	const std::string line = "\r\n\x1b[2m\xe2\x94\x80\xe2\x94\x80 " + text + " \xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n";
+	vterm_input_write(g.vt, line.data(), line.size());
+	flush();
+}
+
+// A pause between tries, the view still served (drawn, resized, scrolled); Enter ends it early.
+// False when the session was stopped meanwhile.
+static bool wait_serving(uint64_t ms)
+{
+	const uint64_t until = oma::now_ms() + ms;
+	g.retryNow = false;
+	while (!g.quit && !g.retryNow && oma::now_ms() < until)
+	{
+		pollfd fds[2] = { { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
+		poll(fds, g.link.attached() ? 2 : 1, int(std::min<uint64_t>(200, until - oma::now_ms())));
+		for (const auto& l : g.link.poll())
+			handle_line(l);
+		flush();
+	}
+	return !g.quit;
+}
+
 int main(int argc, char** argv)
 {
 	oma::limit_memory();
@@ -1064,96 +1228,67 @@ int main(int argc, char** argv)
 	// A size to start with; the UI sends the tab's as soon as it attaches.
 	resize(1280, 800, 100);
 
-	winsize ws = {};
-	ws.ws_row = uint16_t(g.rows);
-	ws.ws_col = uint16_t(g.cols);
-	g.child = forkpty(&g.pty, nullptr, nullptr, &ws);
-	if (g.child < 0)
+	if (!start_ssh(args))
 	{
-		log("cannot start a terminal: %s", strerror(errno));
 		g.link.send("state failed 1");
 		g.link.close();
 		return 1;
 	}
-	if (g.child == 0)
-	{
-		setenv("TERM", "xterm-256color", 1);
-		setenv("COLORTERM", "truecolor", 1);
-		unsetenv("OMAREMOTE_SOCKET");
-		std::vector<char*> cargs;
-		for (auto& a : args)
-			cargs.push_back(a.data());
-		cargs.push_back(nullptr);
-		execvp(cargs[0], cargs.data());
-		fprintf(stderr, "cannot run %s: %s\r\n", cargs[0], strerror(errno));
-		_exit(127);
-	}
-	fcntl(g.pty, F_SETFL, fcntl(g.pty, F_GETFL) | O_NONBLOCK);
 	// The terminal is up: the user answers ssh's questions (host key, password) in it.
 	// The supervisor reads this line as "connected".
-	log("connected to %s", g.get("host", args.back().c_str()).c_str());
+	const std::string host = g.get("host", args.back().c_str());
+	log("connected to %s", host.c_str());
 	g.link.send("state connected");
 	send_cursor_shape();
 
-	uint64_t lastThemeCheck = 0;
-	char buf[65536];
-	bool ended = false;
-	while (!g.quit && !ended)
+	// A connection that goes away under a working session (the computer restarts, the network
+	// changes) is tried again in the same terminal, the screen and history kept, for up to
+	// kReconnectMs with growing pauses. A shell that ends, a sign-in that fails, a host key that
+	// is not accepted: those end the session as before.
+	const bool reconnect = g.get("reconnect", "1") == "1";
+	g_pace = std::clamp<uint64_t>(strtoull(g.get("reconnectMs", "1000").c_str(), nullptr, 10), 1, 1000);
+	// giveUp: trying again until then. A connection that came back and stayed up (kUpMs) before
+	// dropping again starts a new 10 minutes; kMaxQuietDrops ends that when no one types.
+	uint64_t giveUp = 0, delay = 0;
+	int quietDrops = 0;
+	int rc;
+	for (;;)
 	{
-		pollfd fds[3] = { { g.pty, POLLIN, 0 }, { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
-		const int n = poll(fds, g.link.attached() ? 3 : 2, 500);
-		if (n < 0 && errno != EINTR)
+		const uint64_t began = oma::now_ms();
+		rc = run_ssh();
+		if (rc != 255 || !reconnect)
 			break;
-		if (fds[0].revents & (POLLIN | POLLHUP | POLLERR))
+		const std::string said = last_words();
+		const uint64_t now = oma::now_ms();
+		if (now - began >= kUpMs * g_pace / 1000 && lost_words(said))
 		{
-			// Read what is there, a bounded amount at a time, so a flood of output still draws.
-			for (int i = 0; i < 16; i++)
-			{
-				const ssize_t got = read(g.pty, buf, sizeof(buf));
-				if (got > 0)
-				{
-					vterm_input_write(g.vt, buf, size_t(got));
-					continue;
-				}
-				if (got < 0 && (errno == EAGAIN || errno == EINTR))
-					break;
-				ended = true; // EIO: the program exited and the terminal closed
+			quietDrops = g.typed ? 1 : quietDrops + 1;
+			g.typed = false;
+			if (quietDrops > kMaxQuietDrops)
 				break;
-			}
+			log("connection lost: %s; trying again", said.c_str());
+			giveUp = now + kReconnectMs * g_pace / 1000;
+			delay = 2000;
 		}
-		for (const auto& l : g.link.poll())
-			handle_line(l);
-		if (oma::now_ms() - lastThemeCheck > 1000)
+		else if (!giveUp || now >= giveUp || !transient_words(said))
+			break;
+		else
+			delay = std::min<uint64_t>(delay * 2, 15000);
+		note("connection lost: trying again in " + std::to_string(delay / 1000) + " s (Enter: now)");
+		if (!wait_serving(delay * g_pace / 1000))
 		{
-			lastThemeCheck = oma::now_ms();
-			check_theme();
+			rc = 11;
+			break;
 		}
-		flush();
+		note("connecting to " + host);
+		if (!start_ssh(args))
+			break;
 	}
-	flush();
-
-	int rc = 0;
-	if (g.quit && !ended)
-	{
-		kill(g.child, SIGHUP);
-		rc = 11;
-	}
-	int status = 0;
-	for (int i = 0; i < 50 && waitpid(g.child, &status, WNOHANG) == 0; i++)
-		usleep(20000);
-	if (waitpid(g.child, &status, WNOHANG) == 0)
-	{
-		kill(g.child, SIGKILL);
-		waitpid(g.child, &status, 0);
-	}
-	if (rc == 0)
-		rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
 	// ssh exits 255 when the connection failed; what it said is on the screen.
 	if (rc == 255)
 		log("connection failed: %s", last_words().c_str());
 	log("session ended (%d)", rc);
 	g.link.send(std::string(rc == 255 ? "state failed " : "state ended ") + std::to_string(rc));
 	g.link.close();
-	close(g.pty);
 	return rc;
 }
