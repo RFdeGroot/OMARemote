@@ -253,10 +253,29 @@ Item {
 
     // ---------------------------------------------------------------- ended or failed
 
+    // The session's last picture stays behind the panel, dimmed like behind a question, with the
+    // panel on a card so the remote's text never runs through it.
+    Rectangle {
+        anchors.fill: parent
+        visible: ended.visible
+        color: Util.alpha(Theme.background, 0.85)
+    }
+
+    Rectangle {
+        anchors.centerIn: ended
+        visible: ended.visible
+        width: ended.width + 2 * Theme.panelPad
+        height: ended.implicitHeight + 2 * Theme.panelPad
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: root.session && root.session.state === "failed" ? Theme.urgent : Theme.hairline
+    }
+
     Column {
         id: ended
         anchors.centerIn: parent
-        width: Math.min(parent.width - 2 * Theme.panelPad, 520)
+        width: Math.min(parent.width - 4 * Theme.panelPad, 520)
         visible: !root.live && !!root.session
         spacing: Theme.gap * 1.5
         Glyph {
