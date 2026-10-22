@@ -23,16 +23,16 @@ Sections, in order (`# ------- <name>` lines):
 | Section | What |
 | --- | --- |
 | store | `load_data`, `load_connections` (saved + quick), `resolve` (group inheritance), `mark_connected` |
-| export, import and sync | `portable`, `merge` (guards: `LOCAL_KEYS`, `ADDRESS_KEYS`, `_signs_in_here`, tombstones), `HOST_RE`, `ID_RE` |
+| export, import and sync | `portable`, `merge` (guards: `LOCAL_KEYS`, `ADDRESS_KEYS`, `_signs_in_here`, tombstones), `HOST_RE`, `ID_RE`; budgets of a round: `SYNC_PEER*`, `SYNC_MAX_*`, `answer_json` + `limit_memory` (also import) |
 | keyring | secret-tool calls, labels by id |
 | scaling | monitor scale, desktop scale |
-| hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `terminal_tag`, `find_window`, `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
+| hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `terminal_tag`, `find_window` (`_hyprctl_json` via `capped_output`), `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
 | arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `build_gliff_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
-| import from other clients | `parse_rdp`, `parse_remmina`, `parse_1remote`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only) |
+| import from other clients | `parse_rdp`, `parse_remmina`, `parse_1remote`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only); bounds `IMPORT_MAX_*`, `_Problems` |
 | kerberos | private krb5.conf, SRV lookup (Gio.Resolver) |
-| session state | the runtime state files, `list_sessions` |
+| session state | the runtime state files, `list_sessions` (newest `SESSIONS_MAX`, own ordinary log only) |
 | supervisor | `main()`: the command switch (`if cmd == "…"`), launching and watching a session |
 
 Commands (`omaremote-session <cmd>`): list stop forget args export import sync pick ssh-keys

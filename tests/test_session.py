@@ -135,6 +135,22 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class CappedOutput(unittest.TestCase):
+    # hyprctl's JSON was taken whole (capture_output): now at most so many bytes, in so much time.
+    def test_an_answer_within_the_limit(self):
+        self.assertEqual(session.capped_output(["sh", "-c", "printf hello"], 10, 5), "hello")
+
+    def test_more_than_the_limit_is_refused(self):
+        with self.assertRaises(ValueError):
+            session.capped_output(["sh", "-c", "head -c 100000 /dev/zero"], 1000, 5)
+
+    def test_a_program_that_never_ends_is_stopped(self):
+        start = time.monotonic()
+        with self.assertRaises(session.subprocess.TimeoutExpired):
+            session.capped_output(["sleep", "30"], 1000, 0.3)
+        self.assertLess(time.monotonic() - start, 5)
+
+
 class OddFiles(unittest.TestCase):
     # A hand edit of another shape: the bar's list and a launch read it as empty, sync, export and
     # import refuse it whole (they write back what they read).
@@ -160,6 +176,82 @@ class OddFiles(unittest.TestCase):
                 with open(os.path.join(d, "s1.json"), "w") as f:
                     f.write("[1]")
                 self.assertEqual(session.list_sessions(), [])
+            finally:
+                session.SESSIONS_DIR = saved
+
+    def test_the_log_view_only_gets_the_sessions_own_ordinary_log(self):
+        import tempfile
+        saved = session.SESSIONS_DIR
+        with tempfile.TemporaryDirectory() as d:
+            session.SESSIONS_DIR = d
+            try:
+                def record(sid, log):
+                    with open(os.path.join(d, sid + ".json"), "w") as f:
+                        json.dump({"id": sid, "connection": sid, "state": "failed", "log": log}, f)
+                record("s1", os.path.join(d, "s1.log"))
+                open(os.path.join(d, "s1.log"), "w").close()
+                record("s2", "/etc/passwd")
+                record("s3", os.path.join(d, "s3.log"))
+                os.mkfifo(os.path.join(d, "s3.log"))
+                record("s4", os.path.join(d, "s4.log"))
+                os.symlink("/dev/zero", os.path.join(d, "s4.log"))
+                logs = {s["id"]: s["log"] for s in session.list_sessions()}
+                self.assertEqual(logs, {"s1": os.path.join(d, "s1.log"), "s2": "", "s3": "", "s4": ""})
+            finally:
+                session.SESSIONS_DIR = saved
+
+    def test_a_record_is_taken_only_under_its_own_name(self):
+        # prune removed files by the id inside a record: "../victim" deleted victim.log outside
+        # the folder, an id of 7 crashed `list`.
+        import tempfile
+        saved = session.SESSIONS_DIR
+        with tempfile.TemporaryDirectory() as top:
+            d = os.path.join(top, "sessions")
+            os.mkdir(d)
+            session.SESSIONS_DIR = d
+            try:
+                with open(os.path.join(top, "victim.log"), "w") as f:
+                    f.write("mine\n")
+                for i in range(4):
+                    sid = "../victim" if i == 0 else f"s{i}"
+                    with open(os.path.join(d, f"s{i}.json"), "w") as f:
+                        json.dump({"id": sid, "connection": "c1", "state": "failed", "started": 10 - i,
+                                   "log": os.path.join(d, sid + ".log")}, f)
+                with open(os.path.join(d, "s9.json"), "w") as f:
+                    json.dump({"id": 7, "connection": "c2", "state": "failed"}, f)
+                ids = [s["id"] for s in session.list_sessions()]
+                self.assertEqual(ids, ["s1", "s2", "s3"])
+                self.assertTrue(os.path.exists(os.path.join(top, "victim.log")))
+                for bad in ("../x", ".", "..", "", "a/b", 7):
+                    with self.assertRaises(ValueError):
+                        session._session_path(bad)
+                self.assertFalse(session.set_view("../victim", "tab"))
+                self.assertEqual(session.forget("../victim"), 1)
+                self.assertTrue(os.path.exists(os.path.join(top, "victim.log")))
+            finally:
+                session.SESSIONS_DIR = saved
+
+    def test_the_session_list_is_bounded(self):
+        # `list` is read whole by the window and the bar plugin: the newest SESSIONS_MAX records,
+        # each at most SESSION_MAX_BYTES.
+        import tempfile
+        saved = session.SESSIONS_DIR
+        with tempfile.TemporaryDirectory() as d:
+            session.SESSIONS_DIR = d
+            try:
+                total = session.SESSIONS_MAX + 10
+                for i in range(total):
+                    path = os.path.join(d, f"s{i:03}.json")
+                    with open(path, "w") as f:
+                        json.dump({"id": f"s{i:03}", "connection": f"c{i}", "state": "failed", "started": i}, f)
+                    os.utime(path, (1000 + i, 1000 + i))
+                with open(os.path.join(d, "big.json"), "w") as f:
+                    json.dump({"id": "big", "connection": "big", "state": "failed", "started": 10**9,
+                               "error": "x" * session.SESSION_MAX_BYTES}, f)
+                ids = [s["id"] for s in session.list_sessions()]
+                self.assertEqual(len(ids), session.SESSIONS_MAX - 1)  # big.json took a place, then was refused
+                self.assertEqual(ids[0], f"s{total - 1:03}")
+                self.assertNotIn("s000", ids)
             finally:
                 session.SESSIONS_DIR = saved
 
@@ -656,6 +748,32 @@ class SshKeys(unittest.TestCase):
         self.assertEqual(self.read("config"), "Host mine\n")
         self.assertIn("web.lan", self.read("omaremote.conf"))
 
+    def test_an_ssh_config_that_is_a_fifo_or_not_utf8_is_left_alone(self):
+        # Read whole before it is changed: a FIFO by that name hung the command, and text that is
+        # not UTF-8 must never be written back altered.
+        self.connections(conn(id="c1", name="web", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"))
+        os.mkfifo(os.path.join(self.ssh, "config"))
+        with self.assertRaises(ValueError):
+            session.ssh_config_sync(self.conf, self.ssh)
+        os.remove(os.path.join(self.ssh, "config"))
+        with open(os.path.join(self.ssh, "config"), "wb") as f:
+            f.write(b"Host caf\xe9\n")
+        with self.assertRaises(ValueError):
+            session.ssh_config_sync(self.conf, self.ssh)
+        with open(os.path.join(self.ssh, "config"), "rb") as f:
+            self.assertEqual(f.read(), b"Host caf\xe9\n")
+
+    def test_a_rewritten_config_keeps_its_permissions(self):
+        path = os.path.join(self.ssh, "kept")
+        with open(path, "w") as f:
+            f.write("old\n")
+        os.chmod(path, 0o600)
+        session.write_user_file(path, "new\n")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        session.write_user_file(os.path.join(self.ssh, "fresh"), "x\n", mode=0o640)
+        self.assertEqual(os.stat(os.path.join(self.ssh, "fresh")).st_mode & 0o777, 0o640)
+        self.assertEqual(sorted(os.listdir(self.ssh)), ["fresh", "kept"])
+
     def test_ssh_config_is_not_edited_without_a_real_backup(self):
         self.write("config", "Host mine\n")
         os.mkfifo(os.path.join(self.ssh, "config.omaremote-backup"))
@@ -1034,6 +1152,122 @@ class Sync(unittest.TestCase):
             errors = " ".join(out["report"]["errors"])
             for name in ("fifo", "zero", "big"):
                 self.assertIn(name + ".omaremote.json", errors)
+
+    def test_a_round_takes_in_at_most_so_many_files(self):
+        # marketplace #12587: whoever writes the sync folder could put any number of files there.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            for i in range(session.SYNC_MAX_PEERS + 1):
+                path = os.path.join(folder, f"pc{i:03}.omaremote.json")
+                with open(path, "w") as f:
+                    json.dump(self.remote(self.c(f"c{i:03}", host=f"pc{i}.lan")), f)
+                os.utime(path, (1000 + i, 1000 + i))
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(len(out["report"]["added"]), session.SYNC_MAX_PEERS)
+            self.assertNotIn("c000", out["report"]["added"])  # the oldest file is the one left out
+            self.assertIn("1 files skipped", " ".join(out["report"]["errors"]))
+
+    def test_a_folder_of_too_many_files_is_not_read_at_all(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            for i in range(session.SYNC_MAX_SCAN + 1):
+                open(os.path.join(folder, f"x{i}.omaremote.json"), "w").close()
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(out["report"]["added"], [])
+            self.assertEqual(len(out["report"]["errors"]), 1)
+            self.assertIn("more than", out["report"]["errors"][0])
+
+    def test_deep_nesting_is_a_broken_file_not_a_crash(self):
+        # json.loads raises RecursionError (not a ValueError): sync stopped with a traceback.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            with open(os.path.join(folder, "deep.omaremote.json"), "w") as f:
+                f.write("[" * 200000)
+            with open(os.path.join(folder, "laptop.omaremote.json"), "w") as f:
+                json.dump(self.remote(self.c("c2", host="other.lan")), f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(out["report"]["added"], ["c2"])
+            self.assertIn("deep.omaremote.json: nested too deeply", out["report"]["errors"])
+
+    def test_a_deep_value_in_a_connection_is_never_merged(self):
+        # 2000 levels: Python parses it, the window's JSON.parse (at most 1024) did not, every round.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            remote = self.remote(self.c("x1", host="h.example", zz="DEEP"))
+            with open(os.path.join(folder, "deep.omaremote.json"), "w") as f:
+                f.write(json.dumps(remote).replace('"DEEP"', "[" * 2000 + "]" * 2000))
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(out["report"]["added"], [])
+            self.assertIn("deep.omaremote.json: nested too deeply", out["report"]["errors"])
+
+    def test_our_own_file_too_large_for_others_is_said(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            with open(conf) as f:
+                raw = json.load(f)
+            raw["connections"] = [self.c("c1", notes="x" * session.SYNC_PEER_MAX_BYTES)]
+            with open(conf, "w") as f:
+                json.dump(raw, f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertIn("other systems do not read it", " ".join(out["report"]["errors"]))
+
+    def test_the_sync_command_caps_its_memory_and_answers_when_it_runs_out(self):
+        import contextlib
+        import io
+        import resource
+        from unittest import mock
+        def oom(**kw):
+            raise MemoryError
+        out, limits = io.StringIO(), []
+        with mock.patch.object(session, "migrate_legacy", lambda: None), \
+                mock.patch.object(session, "sync_folder", oom), \
+                mock.patch.object(resource, "setrlimit", lambda kind, lim: limits.append((kind, lim))), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(session.main(["omaremote-session", "sync"]), 1)
+        self.assertEqual(limits[0][0], resource.RLIMIT_DATA)
+        self.assertLessEqual(limits[0][1][0], session.FOREIGN_MAX_MEMORY)
+        self.assertIn("out of memory", json.loads(out.getvalue())["error"])
+
+    def test_a_round_takes_in_at_most_so_many_bytes_in_all(self):
+        # Each file under its own limit, together over the round's: the rest is not even parsed.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            pad = "x" * (session.SYNC_PEER_MAX_BYTES - 4096)
+            count = session.SYNC_PEERS_MAX_BYTES // session.SYNC_PEER_MAX_BYTES + 1
+            for i in range(count):
+                remote = self.remote(self.c(f"c{i}", host=f"pc{i}.lan"))
+                remote["pad"] = pad
+                path = os.path.join(folder, f"pc{i}.omaremote.json")
+                with open(path, "w") as f:
+                    json.dump(remote, f)
+                os.utime(path, (1000 + i, 1000 + i))
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(sorted(out["report"]["added"]), [f"c{i}" for i in range(1, count)])
+            self.assertIn("1 files skipped: other systems' files take more than", " ".join(out["report"]["errors"]))
+
+    def test_an_import_file_is_held_to_what_sync_takes(self):
+        # import_file is the same data path as sync, from a file someone may have sent.
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            path = os.path.join(d, "export.json")
+            remote = self.remote(self.c("c2", host="other.lan"))
+            remote["pad"] = "x" * session.SYNC_PEER_MAX_BYTES
+            with open(path, "w") as f:
+                json.dump(remote, f)
+            with self.assertRaises(ValueError):
+                session.import_file(path, conf, self.NOW)
+
+    def test_the_answer_to_the_window_is_bounded(self):
+        self.assertEqual(json.loads(session.answer_json({"data": {}})), {"data": {}})
+        with self.assertRaises(ValueError):
+            session.answer_json({"pad": "x" * session.ANSWER_MAX_BYTES})
 
     def test_our_file_is_as_readable_as_any_the_user_writes(self):
         # mkstemp makes 0600: a sync folder shared by two accounts on one machine needs the umask's.

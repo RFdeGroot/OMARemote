@@ -57,7 +57,9 @@ import errno
 import fcntl
 import glob
 import hashlib
+import heapq
 import hmac
+import itertools
 import json
 import os
 import re
@@ -859,11 +861,35 @@ def write_json_atomic(path, data):
 
 # The largest sync or export file read: far above any real library, below running out of memory.
 SYNC_MAX_BYTES = 16 << 20
+# One sync round takes in at most this much of other systems' files (a real one is a few KiB, and
+# parsed JSON takes many times its size): a file each, all of them together, how many. Whoever can
+# write the sync folder must not be able to fill this process's memory, nor the window's with the
+# answer, which is refused above ANSWER_MAX_BYTES (marketplace #12587).
+SYNC_PEER_MAX_BYTES = 4 << 20
+SYNC_PEERS_MAX_BYTES = 16 << 20
+SYNC_MAX_PEERS = 64
+# More OMARemote files than this in the folder is not a sync folder: none is read (bounds the scan).
+SYNC_MAX_SCAN = 1024
+# Deeper JSON than this is refused: a real file is about 5 levels deep, the window's JSON.parse
+# refuses more than 1024 (so a deep value merged in would stop every round), Python's own more.
+JSON_MAX_DEPTH = 64
+# What a command the window reads whole may answer (sync, import): more is refused.
+ANSWER_MAX_BYTES = 16 << 20
+# The ceiling of a command that reads others' files (sync, import), for what slips past the
+# budgets (RLIMIT_DATA).
+FOREIGN_MAX_MEMORY = 1 << 30
 
 
-def read_json_file(path, follow=True):
+class OverBudget(ValueError):
+    """A file that no longer fits in what one sync round takes in."""
+
+
+def read_json_file(path, follow=True, limit=SYNC_MAX_BYTES, budget=None):
     """A JSON file others may have put there: only an ordinary file (a FIFO would never end, a
-    device never stop), at most SYNC_MAX_BYTES; follow=False refuses a symlink too."""
+    device never stop), at most limit bytes; follow=False refuses a symlink too. budget, a
+    one-item list of bytes left, is shared by several reads: a file that does not fit is refused
+    (OverBudget) before it is parsed, one that does is taken off it. Nesting deeper than
+    JSON_MAX_DEPTH is refused like any other broken file."""
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
     try:
         fd = os.open(path, flags)
@@ -874,20 +900,43 @@ def read_json_file(path, follow=True):
     with os.fdopen(fd, "rb") as f:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("not an ordinary file")
-        raw = f.read(SYNC_MAX_BYTES + 1)
-    if len(raw) > SYNC_MAX_BYTES:
-        raise ValueError("larger than 16 MiB")
+        raw = f.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError(f"larger than {limit >> 20} MiB")
+    if budget is not None:
+        if len(raw) > budget[0]:
+            raise OverBudget(f"other systems' files take more than {SYNC_PEERS_MAX_BYTES >> 20} MiB in all")
+        budget[0] -= len(raw)
     try:
-        return json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
     except UnicodeDecodeError as e:
         raise ValueError(str(e)) from None
+    except RecursionError:  # "[[[[…": a RuntimeError, which no caller expects
+        raise ValueError("nested too deeply") from None
+    # Without recursion: one iterator per level still open, so never more than JSON_MAX_DEPTH.
+    if isinstance(data, (dict, list)):
+        todo = [iter(data.values() if isinstance(data, dict) else data)]
+        while todo:
+            value = next(todo[-1], todo)  # todo itself marks the end of a level
+            if value is todo:
+                todo.pop()
+            elif isinstance(value, (dict, list)):
+                if len(todo) >= JSON_MAX_DEPTH:
+                    raise ValueError("nested too deeply")
+                todo.append(iter(value.values() if isinstance(value, dict) else value))
+    return data
 
 
-def read_text(path, limit, follow=True, prefix=False):
+# A user's config read whole before it is changed (hyprland.lua, ~/.ssh/config): far above any.
+USER_CONFIG_MAX_BYTES = 4 << 20
+
+
+def read_text(path, limit, follow=True, prefix=False, strict=False):
     """A file that is not ours alone (a user's config, a key, a cache): opened once, without
     blocking, and read only when that descriptor is an ordinary file (a FIFO by its name would hang
     the read, a device never end), at most limit bytes: more is refused, or with prefix the first
-    limit bytes are all that is read. OSError as open() raises it; ValueError for what is refused."""
+    limit bytes are all that is read. OSError as open() raises it; ValueError for what is refused.
+    strict: text that is not UTF-8 is refused too (a file written back must come back unchanged)."""
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
     with os.fdopen(os.open(path, flags), "rb") as f:
         if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
@@ -895,7 +944,7 @@ def read_text(path, limit, follow=True, prefix=False):
         raw = f.read(limit if prefix else limit + 1)
     if len(raw) > limit:
         raise ValueError(f"larger than {limit} bytes")
-    return raw.decode("utf-8", "replace")
+    return raw.decode("utf-8", "strict" if strict else "replace")
 
 
 def _same_content(a, b):
@@ -920,27 +969,80 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=(), allow_address=()
     mine = portable(data, system, "sync", now)
     own = os.path.join(folder, system + SYNC_SUFFIX)
     try:
-        theirs = read_json_file(own, follow=False)
+        # Under the limit others read it with: anything larger is rewritten, never held whole.
+        theirs = read_json_file(own, follow=False, limit=SYNC_PEER_MAX_BYTES)
         unchanged = isinstance(theirs, dict) and _same_content(theirs, mine)
+        del theirs
     except (OSError, ValueError):
         unchanged = False
     if not unchanged:
         write_json_atomic(own, mine)
-    incoming, errors = [], []
-    for name in sorted(os.listdir(folder)):
-        if not name.endswith(SYNC_SUFFIX) or name == system + SYNC_SUFFIX or name.startswith("."):
-            continue
+    incoming, errors, budget = [], [], [SYNC_PEERS_MAX_BYTES]
+    # Files that are not ours cost a moment each, no memory; the round's deadline bounds the walk.
+    # Newest first, so a system not seen for long is the one left out. No order keeps out whoever
+    # writes the folder (they can replace any system's file anyway); this keeps the round bounded.
+    found = []
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            name = entry.name
+            if not name.endswith(SYNC_SUFFIX) or name == system + SYNC_SUFFIX or name.startswith("."):
+                continue
+            if len(found) == SYNC_MAX_SCAN:
+                found = None
+                break
+            try:
+                found.append((-entry.stat(follow_symlinks=False).st_mtime_ns, name))
+            except OSError as e:
+                errors.append(f"{name}: {e}")
+    if found is None:
+        errors.append(f"nothing read: the sync folder holds more than {SYNC_MAX_SCAN} OMARemote files")
+        found = []
+    names = [name for _, name in sorted(found)]
+    if len(names) > SYNC_MAX_PEERS:
+        errors.append(f"{len(names) - SYNC_MAX_PEERS} files skipped: at most {SYNC_MAX_PEERS} other systems")
+    for at, name in enumerate(names[:SYNC_MAX_PEERS]):
         try:
-            other = read_json_file(os.path.join(folder, name), follow=False)
+            other = read_json_file(os.path.join(folder, name), follow=False,
+                                   limit=SYNC_PEER_MAX_BYTES, budget=budget)
             if not isinstance(other, dict):
                 raise ValueError("not an OMARemote file")
             other["_path"] = name
             incoming.append(other)
+        except OverBudget as e:
+            left = min(len(names), SYNC_MAX_PEERS) - at
+            errors.append(f"{left} files skipped: {e}")
+            break
         except (OSError, ValueError) as e:
             errors.append(f"{name}: {e}")
+    if len(json.dumps(mine, indent=2, ensure_ascii=False).encode()) + 1 > SYNC_PEER_MAX_BYTES:  # + "\n"
+        errors.append(f"this system's sync file is larger than {SYNC_PEER_MAX_BYTES >> 20} MiB: "
+                      "other systems do not read it")
     merged, report = merge(data, incoming, now, allow_deletions, allow_address)
     report["errors"] = errors + report["errors"]
     return {"data": merged, "report": report, "purged": purged, "system": system, "folder": folder}
+
+
+def answer_json(result):
+    """A command's result as the line the window reads whole: never more than ANSWER_MAX_BYTES."""
+    text = json.dumps(result)
+    if len(text) > ANSWER_MAX_BYTES:  # ASCII (ensure_ascii): characters are bytes
+        raise ValueError(f"the answer takes more than {ANSWER_MAX_BYTES >> 20} MiB")
+    return text
+
+
+def limit_memory():
+    """RLIMIT_DATA for a command that reads others' files: only lowered, never raised, and only in
+    that short-lived command (never in watch-folder or anything that stays)."""
+    try:
+        import resource
+        hard = resource.getrlimit(resource.RLIMIT_DATA)[1]
+        soft = FOREIGN_MAX_MEMORY if hard == resource.RLIM_INFINITY else min(FOREIGN_MAX_MEMORY, hard)
+        resource.setrlimit(resource.RLIMIT_DATA, (soft, hard))
+    except (ImportError, OSError, ValueError):
+        pass  # the budgets still hold
+
+
+OUT_OF_MEMORY = "ran out of memory: the files read hold more than OMARemote takes in"
 
 
 def watch_folder(folder, out=sys.stdout, wait=30.0, stop=None):
@@ -988,7 +1090,7 @@ def watch_folder(folder, out=sys.stdout, wait=30.0, stop=None):
 
 def import_file(file_path, path=CONNECTIONS, now=None):
     """A manual import: adds and updates, never removes. Returns {"data", "report"}."""
-    incoming = read_json_file(os.path.expanduser(file_path))
+    incoming = read_json_file(os.path.expanduser(file_path), limit=SYNC_PEER_MAX_BYTES)
     if isinstance(incoming, dict):
         incoming["deleted"] = {}
         incoming["deletedGroups"] = {}
@@ -1279,10 +1381,39 @@ def toggle_fullscreen():
     subprocess.run(["hyprctl", "dispatch", "fullscreen", "0"], capture_output=True)
 
 
+# hyprctl's JSON (clients, monitors) is a few KiB to a few hundred; more is not taken in.
+HYPRCTL_MAX_BYTES = 8 << 20
+
+
+def capped_output(cmd, limit, timeout):
+    """cmd's stdout as text, read as it comes: more than limit bytes raises ValueError, more than
+    timeout seconds subprocess.TimeoutExpired; either way the program is killed."""
+    import select
+    deadline = time.monotonic() + timeout
+    with subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as p:
+        chunks, size = [], 0
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([p.stdout], [], [], left)[0]:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                chunk = os.read(p.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    raise ValueError(f"{cmd[0]} answered more than {limit} bytes")
+                chunks.append(chunk)
+            p.wait(max(0.0, deadline - time.monotonic()))
+        except BaseException:
+            p.kill()
+            raise
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
 def _hyprctl_json(*args):
     try:
-        return json.loads(subprocess.run(["hyprctl", *args, "-j"], capture_output=True, text=True,
-                                         timeout=5).stdout or "null")
+        return json.loads(capped_output(["hyprctl", *args, "-j"], HYPRCTL_MAX_BYTES, 5) or "null")
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
@@ -1390,6 +1521,10 @@ def terminal_tag(pid, on):
 PLACEMENT_RE = re.compile(r"\b(float|tile|size|move|center|centre|workspace|monitor|fullscreen|maximi[sz]e|pseudo)")
 
 
+# Files seen per config folder walked for window rules (Omarchy's own has a few dozen).
+WINDOW_RULES_MAX_FILES = 2000
+
+
 def user_window_rules(dirs=None):
     """True when the user's Hyprland config (or Omarchy's) has a rule of its own for OMARemote's
     windows: then that rule decides where and how big one opens, and OMARemote does not float, size
@@ -1404,7 +1539,11 @@ def user_window_rules(dirs=None):
         dirs = (os.path.join(config, "hypr"),
                 os.path.join(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy", "default", "hypr"))
     for top in dirs:
+        seen = 0
         for folder, _, names in os.walk(top):
+            seen += len(names)
+            if seen > WINDOW_RULES_MAX_FILES:
+                break  # not a config any more (a backup tree, a checkout): what was read decides
             for name in names:
                 if not name.endswith((".lua", ".conf")) or name == "omaremote.lua" or ".bak" in name or "backup" in name:
                     continue
@@ -1732,16 +1871,14 @@ def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=Tru
     main_config = os.path.join(hypr_dir, "hyprland.lua")
     managed = os.path.join(hypr_dir, HYPR_MANAGED)
     try:
-        with open(main_config, encoding="utf-8") as f:
-            config = f.read()
+        config = read_text(main_config, USER_CONFIG_MAX_BYTES, strict=True)
     except FileNotFoundError:
         return {"mode": "unsupported", "shortcuts": count, "changed": False}
     changed = False
     block = HYPR_MARKER_BEGIN + "\n" + hypr_loader_line() + "\n" + HYPR_MARKER_END
     try:
-        with open(managed, encoding="utf-8") as f:
-            managed_before = f.read()
-    except OSError:
+        managed_before = read_text(managed, USER_CONFIG_MAX_BYTES, strict=True)
+    except (OSError, ValueError):
         managed_before = None
     try:
         span = hypr_block_span(config)
@@ -1761,9 +1898,8 @@ def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=Tru
         # bindings file itself is still kept current when the folder allows it.
         if enabled and user_file_writable(managed):
             try:
-                with open(managed, encoding="utf-8") as f:
-                    current = f.read()
-            except OSError:
+                current = read_text(managed, USER_CONFIG_MAX_BYTES, strict=True)
+            except (OSError, ValueError):
                 current = None
             if current != text:
                 write_json_text(managed, text)
@@ -1773,9 +1909,8 @@ def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=Tru
         return {"mode": "readonly", "shortcuts": count, "changed": changed, "line": hypr_loader_line()}
     if enabled:
         try:
-            with open(managed, encoding="utf-8") as f:
-                current = f.read()
-        except OSError:
+            current = read_text(managed, USER_CONFIG_MAX_BYTES, strict=True)
+        except (OSError, ValueError):
             current = None
         if current != text:
             write_json_text(managed, text)
@@ -1880,14 +2015,17 @@ def write_user_file(path, text, mode=0o644):
     (After hyprmoncfg's WriteFileAtomic, internal/config/hyprland.go.)"""
     real = os.path.realpath(path)
     folder = os.path.dirname(real) or "."
-    keep = os.stat(real).st_mode & 0o777 if os.path.exists(real) else mode
+    try:
+        keep = os.stat(real).st_mode & 0o777
+    except FileNotFoundError:
+        keep = mode
     fd, tmp = tempfile.mkstemp(dir=folder, prefix="." + os.path.basename(real) + ".omaremote-")
     try:
+        os.fchmod(fd, keep)  # the descriptor itself: the name could be another file by now
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, keep)
         os.replace(tmp, real)
     except BaseException:
         try:
@@ -2095,8 +2233,7 @@ def restart_gvfs():
 def monitor_scale():
     """The focused monitor's scale in percent, or 100 when Hyprland cannot answer."""
     try:
-        out = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=3)
-        for m in json.loads(out.stdout):
+        for m in json.loads(capped_output(["hyprctl", "monitors", "-j"], HYPRCTL_MAX_BYTES, 3)):
             if m.get("focused"):
                 return int(round(float(m.get("scale", 1)) * 100))
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -2352,6 +2489,8 @@ def build_ssh_command(conn):
 SSH_DIR = os.path.expanduser("~/.ssh")
 SSH_MANAGED = "omaremote.conf"
 SSH_INCLUDE = "Include " + SSH_MANAGED
+# What is looked at in ~/.ssh (keys) and per Include pattern: far above any real one.
+SSH_DIR_MAX_FILES = 512
 SSH_INCLUDE_RE = re.compile(r"^\s*include\s+(~/\.ssh/)?omaremote\.conf\s*$", re.I | re.M)
 
 
@@ -2364,7 +2503,8 @@ def ssh_keys(ssh_dir=SSH_DIR):
     """Keys in ~/.ssh: private key files, and public keys alone (their private half lives in an agent
     such as 1Password; IdentityFile on the .pub makes ssh use the agent's matching key)."""
     try:
-        names = sorted(os.listdir(ssh_dir))
+        with os.scandir(ssh_dir) as entries:
+            names = sorted(e.name for e in itertools.islice(entries, SSH_DIR_MAX_FILES))
     except OSError:
         return []
     out = []
@@ -2458,8 +2598,7 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
     managed = os.path.join(ssh_dir, SSH_MANAGED)
     config = os.path.join(ssh_dir, "config")
     try:
-        with open(config, encoding="utf-8") as f:
-            user_config = f.read()
+        user_config = read_text(config, USER_CONFIG_MAX_BYTES, strict=True)
     except FileNotFoundError:
         user_config = None
     ours = user_config is not None and SSH_MARKER in user_config
@@ -2495,9 +2634,8 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
         return {"mode": mode, "keys": 0, "changed": changed}  # nothing to write yet, config untouched
     os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
     try:
-        with open(managed, encoding="utf-8") as f:
-            current = f.read()
-    except OSError:
+        current = read_text(managed, USER_CONFIG_MAX_BYTES, strict=True)
+    except (OSError, ValueError):
         current = None
     if current != text:
         _write_private(managed, text)
@@ -2835,6 +2973,13 @@ IMPORT_GROUP = "Imported"   # where connections go whose source names no group
 IMPORT_MAX_BYTES = 1 << 20
 IMPORT_MAX_FILES = 500
 IMPORT_MAX_ENTRIES = 2000
+# All files of one import together (a 1Remote database may be 64 MiB on its own), and the problems
+# listed by name before the rest are counted in one line.
+IMPORT_MAX_TOTAL_BYTES = 64 << 20
+IMPORT_MAX_ERRORS = 100
+# What an entry the import cannot take shows of itself: its fields can be any size.
+IMPORT_SHOW_CHARS = 120
+IMPORT_MAX_NOTES = 20
 IMPORT_SUFFIXES = (".rdp", ".remmina")
 REMMINA_DIRS = ("~/.local/share/remmina", "~/.var/app/org.remmina.Remmina/data/remmina")
 ONEREMOTE_MAX_BYTES = 64 << 20
@@ -2843,7 +2988,15 @@ ONEREMOTE_PROTOCOLS = {"RDP": "rdp", "VNC": "vnc", "SSH": "ssh"}
 SSH_WILDCARD_RE = re.compile(r"[*?!]")
 
 
-def _read_foreign(path):
+def _take(budget, size):
+    """Takes size bytes off a one-item budget list, or refuses (OverBudget) when they do not fit."""
+    if budget is not None:
+        if size > budget[0]:
+            raise OverBudget(f"the files take more than {IMPORT_MAX_TOTAL_BYTES >> 20} MiB in all")
+        budget[0] -= size
+
+
+def _read_foreign(path, budget=None):
     """A small text file in whatever encoding Windows or Linux wrote it: .rdp files are often
     UTF-16 with a byte order mark."""
     with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_NONBLOCK)) as f:
@@ -2853,6 +3006,7 @@ def _read_foreign(path):
         raw = f.read(IMPORT_MAX_BYTES + 1)
     if len(raw) > IMPORT_MAX_BYTES:
         raise ValueError("larger than 1 MiB")
+    _take(budget, len(raw))
     if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
         return raw.decode("utf-16")
     if raw.startswith(b"\xef\xbb\xbf"):
@@ -2974,7 +3128,7 @@ def _oneremote_list(value):
     return value if isinstance(value, list) else []
 
 
-def parse_1remote(path):
+def parse_1remote(path, budget=None):
     """A 1Remote database (SQLite, %APPDATA%\\1Remote\\1Remote.db on Windows): one connection per
     server it holds. Returns ([(conn, notes)], errors). Passwords stay behind (1Remote encrypts
     them), and so do the commands it runs around a connection."""
@@ -2988,6 +3142,7 @@ def parse_1remote(path):
         data = f.read(ONEREMOTE_MAX_BYTES + 1)
     if len(data) > ONEREMOTE_MAX_BYTES:
         raise ValueError("larger than 64 MiB")
+    _take(budget, len(data))
     if not data.startswith(b"SQLite format 3\0"):
         raise ValueError("not a 1Remote database")
     try:
@@ -3120,7 +3275,7 @@ def _ssh_hosts(path, ssh_dir, seen):
                 pattern = os.path.expanduser(pattern)
                 if not os.path.isabs(pattern):
                     pattern = os.path.join(ssh_dir, pattern)
-                for name in sorted(glob.glob(pattern)):
+                for name in sorted(itertools.islice(glob.iglob(pattern), SSH_DIR_MAX_FILES)):
                     if os.path.isfile(name):
                         out += _ssh_hosts(name, ssh_dir, seen)
     return out
@@ -3132,11 +3287,47 @@ def import_sources():
     return {"remmina": remmina, "sshConfig": os.path.isfile(os.path.join(SSH_DIR, "config"))}
 
 
+class _Problems(list):
+    """The errors of an import: the first IMPORT_MAX_ERRORS by name, each short; the rest counted."""
+    more = 0
+
+    def append(self, text):
+        if len(self) < IMPORT_MAX_ERRORS:
+            super().append(str(text)[:300])
+        else:
+            self.more += 1
+
+    def summed(self):
+        return list(self) + ([f"{self.more} more problems"] if self.more else [])
+
+
+def _folder_files(folder, suffixes, limit):
+    """The names in folder ending in one of suffixes, sorted; at most limit + 1 are collected, so a
+    folder of millions costs no memory (more than limit is said by the caller)."""
+    names = []
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if entry.name.lower().endswith(suffixes):
+                names.append(entry.name)
+                if len(names) > limit:
+                    break
+    return sorted(names)
+
+
 def _foreign_entries(sources, ssh_dir=SSH_DIR):
     """(conn, notes, also, source) per connection the sources hold, in their order, and the errors
     on the way. A source is a file, a folder (its .rdp and .remmina files), "remmina" or
-    "ssh-config"."""
-    entries, errors, files = [], [], 0
+    "ssh-config". Bounded: IMPORT_MAX_FILES files, IMPORT_MAX_TOTAL_BYTES read in all,
+    IMPORT_MAX_ENTRIES connections, IMPORT_MAX_ERRORS problems by name."""
+    entries, errors, files, budget = [], _Problems(), 0, [IMPORT_MAX_TOTAL_BYTES]
+
+    def full():
+        if len(entries) < IMPORT_MAX_ENTRIES:
+            return False
+        del entries[IMPORT_MAX_ENTRIES:]
+        errors.append(f"only the first {IMPORT_MAX_ENTRIES} connections")
+        return True
+
     for source in sources:
         if source == "ssh-config":
             try:
@@ -3144,40 +3335,49 @@ def _foreign_entries(sources, ssh_dir=SSH_DIR):
                             for c, n, a in parse_ssh_config(os.path.join(ssh_dir, "config"), ssh_dir)]
             except (OSError, ValueError) as e:
                 errors.append(f"~/.ssh/config: {e}")
+            if full():
+                break
             continue
         if source == "remmina":
-            paths = [os.path.join(d, n) for d in import_sources()["remmina"] for n in sorted(os.listdir(d))
-                     if n.endswith(".remmina")]
+            paths = [os.path.join(d, n) for d in import_sources()["remmina"]
+                     for n in _folder_files(d, (".remmina",), IMPORT_MAX_FILES)]
         elif os.path.isdir(os.path.expanduser(source)):
             folder = os.path.expanduser(source)
-            paths = [os.path.join(folder, n) for n in sorted(os.listdir(folder))
-                     if n.lower().endswith(IMPORT_SUFFIXES)]
+            paths = [os.path.join(folder, n) for n in _folder_files(folder, IMPORT_SUFFIXES, IMPORT_MAX_FILES)]
         else:
             paths = [os.path.expanduser(source)]
         for path in paths:
             files += 1
             if files > IMPORT_MAX_FILES:
                 errors.append(f"only the first {IMPORT_MAX_FILES} files")
-                return entries[:IMPORT_MAX_ENTRIES], errors
+                return entries, errors.summed()
             base = os.path.basename(path)
             stem, ext = os.path.splitext(base)
             try:
                 if ext.lower() == ".db":
-                    found, problems = parse_1remote(path)
+                    found, problems = parse_1remote(path, budget)
                     entries += [(conn, notes, None, base) for conn, notes in found]
-                    errors += [f"{plain(base)[:60]}: {p}" for p in problems]
+                    for p in problems:
+                        errors.append(f"{plain(base)[:60]}: {p}")
+                    if full():
+                        return entries, errors.summed()
                     continue
                 if ext.lower() == ".rdp":
-                    conn, notes = parse_rdp(_read_foreign(path), stem)
+                    conn, notes = parse_rdp(_read_foreign(path, budget), stem)
                 elif ext.lower() == ".remmina":
-                    conn, notes = parse_remmina(_read_foreign(path), stem)
+                    conn, notes = parse_remmina(_read_foreign(path, budget), stem)
                 else:
                     raise ValueError("not an .rdp, .remmina or 1Remote file")
+            except OverBudget as e:
+                errors.append(f"{plain(base)[:60]} and what follows: {e}")
+                return entries, errors.summed()
             except (OSError, ValueError, configparser.Error, UnicodeError) as e:
                 errors.append(f"{plain(base)[:60]}: {e}")
                 continue
             entries.append((conn, notes, None, base))
-    return entries[:IMPORT_MAX_ENTRIES], errors
+            if full():
+                return entries, errors.summed()
+    return entries, errors.summed()
 
 
 def _foreign_problem(conn):
@@ -3234,12 +3434,18 @@ def scan_foreign(sources, path=CONNECTIONS, ssh_dir=SSH_DIR):
             else "trashed" if keys & binned else "new"
         if not problem:
             listed |= keys
-        entries.append({"ref": "%s|%s|%d" % key, "status": status, "reason": problem,
-                        "protocol": conn["protocol"], "name": conn.get("name") or conn.get("host", ""),
-                        "host": conn.get("host", ""), "port": key[2], "group": conn["group"],
-                        "username": conn.get("username", ""), "gateway": conn.get("gateway", ""),
-                        "notes": notes, "source": source,
-                        "_conn": conn})
+        entry = {"ref": "%s|%s|%d" % key, "status": status, "reason": problem,
+                 "protocol": conn["protocol"], "name": conn.get("name") or conn.get("host", ""),
+                 "host": conn.get("host", ""), "port": key[2], "group": conn["group"],
+                 "username": conn.get("username", ""), "gateway": conn.get("gateway", ""),
+                 "notes": [str(n)[:IMPORT_SHOW_CHARS] for n in notes[:IMPORT_MAX_NOTES]], "source": source,
+                 "_conn": conn}
+        if problem:
+            # Never taken in, so only enough to recognise it: its fields can be any size.
+            short = lambda v: str(v)[:IMPORT_SHOW_CHARS]
+            entry.update(ref=short(entry["ref"]), name=short(entry["name"]), host=short(entry["host"]),
+                         group=short(entry["group"]), username="", gateway="", _conn={})
+        entries.append(entry)
     return {"entries": entries, "errors": errors}
 
 
@@ -3418,7 +3624,14 @@ def kerberos_env(conn, runtime_dir=RUNTIME_DIR, discover=discover_kdcs):
 
 # ---------------------------------------------------------------- session state
 
+# A session id is joined onto SESSIONS_DIR (record, log, socket, stop file): never a separator, never
+# "." or "..". Made as time.strftime("%Y%m%d-%H%M%S-") + 6 hex.
+SESSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
 def _session_path(sid):
+    if not isinstance(sid, str) or not SESSION_ID_RE.fullmatch(sid):
+        raise ValueError("not a session id")
     return os.path.join(SESSIONS_DIR, sid + ".json")
 
 
@@ -3532,28 +3745,53 @@ def ensure_changes():
     os.close(os.open(CHANGES, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600))
 
 
+# A session's record is well under 1 KiB; `list` (read whole by the window and the bar plugin)
+# shows at most the newest SESSIONS_MAX of them, so a folder full of files cannot fill memory.
+SESSION_MAX_BYTES = 16 << 10
+SESSIONS_MAX = 256
+
+
 def list_sessions():
-    sessions = []
+    sessions, newest = [], []
     try:
-        names = os.listdir(SESSIONS_DIR)
+        with os.scandir(SESSIONS_DIR) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                try:
+                    item = (entry.stat(follow_symlinks=False).st_mtime_ns, entry.name)
+                except OSError:
+                    continue
+                if len(newest) < SESSIONS_MAX:
+                    heapq.heappush(newest, item)
+                else:
+                    heapq.heappushpop(newest, item)  # drops the oldest
     except FileNotFoundError:
         return sessions
+    names = [name for _, name in newest]
     try:
         hotkeys = {c.get("id") for c in load_connections() if is_hotkey(c)}
     except (OSError, ValueError):
         hotkeys = set()
     for name in names:
-        if not name.endswith(".json"):
-            continue
         try:
-            s = read_json_file(os.path.join(SESSIONS_DIR, name), follow=False)
+            s = read_json_file(os.path.join(SESSIONS_DIR, name), follow=False, limit=SESSION_MAX_BYTES)
         except (OSError, ValueError):
             continue
-        if not isinstance(s, dict):
+        # Only a record whose id is its own file name: prune removes and the log view opens by it.
+        if not isinstance(s, dict) or s.get("id") != name[:-5] or not SESSION_ID_RE.fullmatch(name[:-5]):
             continue
         if s.get("state") in ("connecting", "connected") and not _alive(s.get("supervisor"), s.get("supervisorStart")):
             s["state"] = "failed"
             s["error"] = s.get("error") or "The session supervisor disappeared"
+        # The window's log view opens what this names: only the session's own log, an ordinary file
+        # (a FIFO or a device there would hang or flood it, a symlink lead anywhere).
+        log = os.path.join(SESSIONS_DIR, str(s.get("id")) + ".log")
+        try:
+            ordinary = s.get("log") == log and stat.S_ISREG(os.lstat(log).st_mode)
+        except OSError:
+            ordinary = False
+        s["log"] = log if ordinary else ""
         s.setdefault("view", "tab" if s.get("tab") else "window")
         s.setdefault("viewer", None)
         # An own window that is gone (closed or crashed) leaves its session for the manager's tabs.
@@ -3585,7 +3823,7 @@ def prune(sessions):
             for suffix in (".json", ".log", ".stop"):
                 try:
                     os.remove(os.path.join(SESSIONS_DIR, s["id"] + suffix))
-                except (FileNotFoundError, KeyError):
+                except (OSError, KeyError):
                     pass
     return kept
 
@@ -3871,10 +4109,12 @@ def stop(sid):
 
 
 def forget(sid):
+    if not isinstance(sid, str) or not SESSION_ID_RE.fullmatch(sid):
+        return 1  # joined onto SESSIONS_DIR below: never a path
     for suffix in (".json", ".log", ".stop", ".sock"):
         try:
             os.remove(os.path.join(SESSIONS_DIR, sid + suffix))
-        except FileNotFoundError:
+        except OSError:
             pass
     touch_changes()
     return 0
@@ -3918,10 +4158,14 @@ def main(argv):
         print(json.dumps(export_file(rest[0])))
         return 0
     if cmd == "import" and rest:
+        limit_memory()
         try:
-            print(json.dumps(import_file(rest[0])))
+            print(answer_json(import_file(rest[0])))
         except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
+            return 1
+        except MemoryError:
+            print(json.dumps({"error": "import " + OUT_OF_MEMORY}))
             return 1
         return 0
     if cmd == "import-sources":
@@ -3931,6 +4175,7 @@ def main(argv):
     # the environment (JSON lists): file names are often server names, and host names never go on a
     # command line. Without picked refs every new one is added.
     if cmd in ("import-scan", "import-foreign"):
+        limit_memory()
         try:
             sources = rest or json.loads(os.environ.get("OMAREMOTE_IMPORT_SOURCES") or "[]")
             if not sources:
@@ -3939,12 +4184,15 @@ def main(argv):
                 scan = scan_foreign(sources)
                 for e in scan["entries"]:
                     del e["_conn"]
-                print(json.dumps(scan))
+                print(answer_json(scan))
             else:
                 picked = os.environ.get("OMAREMOTE_IMPORT_PICK")
-                print(json.dumps(import_foreign(sources, json.loads(picked) if picked else None)))
+                print(answer_json(import_foreign(sources, json.loads(picked) if picked else None)))
         except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
+            return 1
+        except MemoryError:
+            print(json.dumps({"error": "import " + OUT_OF_MEMORY}))
             return 1
         return 0
     if cmd == "sync":
@@ -3957,10 +4205,14 @@ def main(argv):
             address = tuple(address) + tuple(json.loads(os.environ.get("OMAREMOTE_ALLOW_ADDRESS") or "[]"))
         except ValueError:
             pass
+        limit_memory()
         try:
-            print(json.dumps(sync_folder(allow_deletions=allow, allow_address=address)))
+            print(answer_json(sync_folder(allow_deletions=allow, allow_address=address)))
         except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
+            return 1
+        except MemoryError:
+            print(json.dumps({"error": "sync " + OUT_OF_MEMORY}))
             return 1
         return 0
     if cmd == "pick" and rest and rest[0] in ("folder", "open", "save", "key", "import", "1remote"):
@@ -3978,7 +4230,7 @@ def main(argv):
     if cmd == "ssh-config":
         try:
             print(json.dumps(ssh_config_sync()))
-        except OSError as e:
+        except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
             return 1
         return 0
@@ -4039,7 +4291,7 @@ def main(argv):
     if cmd == "hypr-hotkeys":
         try:
             print(json.dumps(hypr_hotkeys_sync()))
-        except OSError as e:
+        except (OSError, ValueError) as e:
             print(json.dumps({"error": str(e)}))
             return 1
         return 0

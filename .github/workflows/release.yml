@@ -36,7 +36,10 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-latest
-            image: archlinux:base-devel
+            # By digest (base-devel, 2026-10-22), as the actions are by SHA: a tag can be moved.
+            # ci-build.sh brings it up to date from Omarchy's mirror (-Syyuu) anyway. A newer one:
+            # the docker-content-digest of registry-1.docker.io/v2/library/archlinux/manifests/base-devel.
+            image: archlinux:base-devel@sha256:3cbf69d2d5958d6a294f3722c5668e6187c4df8e00fa27f72352f0bf83e495e1
           - arch: aarch64
             runner: ubuntu-24.04-arm
             image: archlinuxarm:local

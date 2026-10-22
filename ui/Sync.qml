@@ -114,6 +114,10 @@ Singleton {
             root.busy = false
             var result
             try {
+                // Defence in depth only: the collector has buffered it all by now. The real bound is
+                // the backend, which answers {"error"} instead of more than 16 MiB (ANSWER_MAX_BYTES).
+                if (syncOut.text.length > 16 * 1024 * 1024)
+                    throw new Error("too large")
                 result = JSON.parse(syncOut.text)
             } catch (e) {
                 root.lastError = runnerDeadline.hit ? "sync took longer than a minute and was stopped" : "sync gave no answer"

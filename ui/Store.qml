@@ -43,6 +43,8 @@ Singleton {
     // merge computed before the latest one.
     property int localRevision: 0
     property bool loaded: false
+    // Whether connections.json was there (read, or written by us): a new one is made 0600 after its first write.
+    property bool fileExisted: false
     // connections.json did not read as ours (a hand edit gone wrong, half a file): nothing is
     // written until it reads again, or the next write would replace it with an empty list. A copy is
     // kept beside it as connections.json.broken.
@@ -269,6 +271,9 @@ Singleton {
 
     function parse(text) {
         try {
+            // Read whole by now; the backend refuses the same file above 16 MiB (SYNC_MAX_BYTES).
+            if (text && text.length > 16 * 1024 * 1024)
+                throw new Error("larger than 16 MiB")
             var data = JSON.parse(text || "{}")
             if (Array.isArray(data))
                 data = { connections: data }
@@ -301,6 +306,14 @@ Singleton {
         file.setText(JSON.stringify({ version: 3, ui: ui, credentials: credentials, groups: groupSettings,
                                       connections: stored, trash: trash, deleted: deleted,
                                       deletedGroups: deletedGroups, quick: quick }, null, 2) + "\n")
+        // A file this write made has the umask's mode: only the user reads it (the folder is 0700 too).
+        if (!root.fileExisted) {
+            root.fileExisted = true
+            if (mkdir.running)
+                mkdir.again = true // still at its first run: once more after it
+            else
+                mkdir.running = true
+        }
     }
 
     function setUi(key, value) {
@@ -688,11 +701,19 @@ Singleton {
         // Only the user reads it: user names, hosts and domains, even with the passwords in the keyring.
         command: ["sh", "-c", "mkdir -p -m 700 \"$1\" && chmod 700 \"$1\" && { [ ! -e \"$1/connections.json\" ] || chmod 600 \"$1/connections.json\"; }", "sh", root.configDir]
         running: true
+        property bool again: false
+        onExited: {
+            if (again) {
+                again = false
+                running = true
+            }
+        }
     }
 
     Process {
         id: keepBroken
-        command: ["cp", "--", root.path, root.path + ".broken"]
+        // Removed first: a symlink at .broken is replaced, never written through.
+        command: ["cp", "--remove-destination", "--", root.path, root.path + ".broken"]
     }
 
     FileView {
@@ -701,6 +722,9 @@ Singleton {
         printErrors: false
         onLoaded: {
             try {
+                // The backend writes a few KiB; more is not its file (read whole by now, so only kept out).
+                if (text().length > 1024 * 1024)
+                    return
                 var data = JSON.parse(text())
                 if (data && typeof data === "object" && !Array.isArray(data))
                     root.lastSeen = data
@@ -716,9 +740,15 @@ Singleton {
         path: root.path
         blockLoading: true
         watchChanges: true
+        // In place, on purpose: an atomic write (Quickshell 0.3.2) reports a change that reloads the
+        // old text, which parse() would take as the user's. In place also writes through a dotfile
+        // manager's symlink, as write_user_file does in the backend.
         atomicWrites: false
         printErrors: false
-        onLoaded: root.parse(text())
+        onLoaded: {
+            root.fileExisted = true
+            root.parse(text())
+        }
         // No file yet is a fresh start; a file that is there but cannot be read is not.
         onLoadFailed: function (error) {
             if (error !== FileViewError.FileNotFound && !root.broken) {

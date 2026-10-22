@@ -133,6 +133,39 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(scan["entries"], [])
         self.assertIn("larger than 1 MiB", scan["errors"][0])
 
+    def test_an_entry_it_cannot_take_shows_only_enough_to_recognise_it(self):
+        # Its fields went to the window whole: 3 files of 400 KB fields made a 2.3 MB answer.
+        big = "u" * 400000
+        self.write("x/a.rdp", f"full address:s:ok.lan\nusername:s:{big}\nalternate shell:s:{big}\n")
+        entry = self.scan(os.path.join(self.root, "x"))["entries"][0]
+        self.assertEqual(entry["status"], "invalid")
+        self.assertEqual(entry["username"], "")
+        self.assertLess(len(json.dumps(entry)), 2000)
+
+    def test_an_import_is_bounded_in_files_bytes_connections_and_problems(self):
+        folder = os.path.join(self.root, "x")
+        for i in range(6):
+            self.write(f"x/s{i}.rdp", f"full address:s:pc{i}.lan\n")
+        for i in range(6):
+            self.write(f"x/z{i}.rdp", "")  # no address: a problem each
+        with mock.patch.object(session, "IMPORT_MAX_FILES", 4):
+            scan = self.scan(folder)
+            self.assertEqual(len(scan["entries"]), 4)
+            self.assertIn("only the first 4 files", scan["errors"])
+        with mock.patch.object(session, "IMPORT_MAX_TOTAL_BYTES", 3 * len("full address:s:pc0.lan\n")):
+            scan = self.scan(folder)
+            self.assertEqual(len(scan["entries"]), 3)
+            self.assertIn("s3.rdp and what follows", " ".join(scan["errors"]))
+        with mock.patch.object(session, "IMPORT_MAX_ENTRIES", 2):
+            scan = self.scan(folder)
+            self.assertEqual(len(scan["entries"]), 2)
+            self.assertIn("only the first 2 connections", scan["errors"])
+        with mock.patch.object(session, "IMPORT_MAX_ERRORS", 2), \
+                mock.patch.object(session, "_read_foreign", mock.Mock(side_effect=ValueError("bad"))):
+            errors = self.scan(folder)["errors"]
+            self.assertEqual(errors[-1], "10 more problems")
+            self.assertEqual(len(errors), 3)
+
     # ------------------------------------------------ idempotent
 
     def test_importing_twice_adds_nothing_the_second_time(self):

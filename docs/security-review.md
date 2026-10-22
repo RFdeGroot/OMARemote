@@ -88,6 +88,25 @@ an audit after two sync findings in a row found six more), and add the class her
   (clipboard 1 MiB, titles 4 KiB), files a size (sync 16 MiB), lists a length. Width × height and
   offsets are computed in 64 bits before any check, and a shared buffer is checked to be as long as
   its numbers say before it is mapped. (0.9.0, 0.9.4, 0.9.5, 0.9.7)
+- **A limit per item is not a limit on the whole.** Each sync file was capped, yet a round read any
+  number of them. Bound the sum too, before parsing: another system's file 4 MiB, all of them 16
+  MiB, 64 files (newest first), and no folder of more than 1024 OMARemote files read at all; the
+  answer the window reads whole is refused above 16 MiB, and the sync command runs under
+  RLIMIT_DATA 1 GiB; our own file is read under the same 4 MiB. The same for every folder read
+  whole: `list` shows the newest 256 session records, each at most 16 KiB. Nesting depth is a limit too, and
+  the strictest reader sets it: `[[[[…` made json.loads raise RecursionError, which no `except
+  ValueError` caught; caught, 2000 levels in a connection's unknown key still merged and broke the
+  window's JSON.parse (at most 1024) on every round. Every JSON file is now refused deeper than 64
+  levels, checked without recursion. (0.9.14, marketplace #12587)
+- **When a finding comes in, sweep its class through the whole tree, not only the line named.**
+  #12587 named sync; the sweep found the same unbounded reads in the import scan (an entry it
+  refuses still carried its 400 KB fields to the window; now only a short name, and 64 MiB, 500
+  files, 2000 connections and 100 problems per import), `import` of an export file (4 MiB, like
+  sync), the session list, hyprctl's JSON (`capped_output`: 8 MiB and a deadline), the user's own
+  configs read before a rewrite (`read_text`, strict UTF-8, 4 MiB), the walks of ~/.config/hypr and
+  ~/.ssh, and the window's log view (only the session's own ordinary log). connections.json stays
+  written in place (an atomic write in Quickshell 0.3.2 reloads the old text), made 0600 when new;
+  .broken never written through a symlink. The release container is pinned by digest. (0.9.14)
 - **A library allocating for a server is bounded before it allocates, not by what we show after.**
   The 8192 desktop check came after FFmpeg had already sized its decoder from the server's SPS, and
   FreeRDP's /gfx surfaces never met it at all. Bound what a server announces against what we asked

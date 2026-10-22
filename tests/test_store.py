@@ -38,7 +38,7 @@ ShellRoot {
 
 @unittest.skipUnless(QS, "needs quickshell (qs)")
 class StoreFile(unittest.TestCase):
-    def run_store(self, text, stamps=None):
+    def run_store(self, text, stamps=None, missing=False, before=None):
         with tempfile.TemporaryDirectory() as d:
             shell = os.path.join(d, "shell")
             os.makedirs(os.path.join(shell, "store"))
@@ -51,7 +51,9 @@ class StoreFile(unittest.TestCase):
             cfg = os.path.join(d, "config", "omaremote")
             os.makedirs(cfg)
             path = os.path.join(cfg, "connections.json")
-            if text is None:
+            if missing:
+                pass
+            elif text is None:
                 os.mkdir(path)
             else:
                 with open(path, "w") as f:
@@ -59,6 +61,8 @@ class StoreFile(unittest.TestCase):
             if stamps is not None:
                 with open(os.path.join(cfg, "last-connected.json"), "w") as f:
                     json.dump(stamps, f)
+            if before:
+                before(cfg)
             env = dict(os.environ, XDG_CONFIG_HOME=os.path.join(d, "config"), QT_QPA_PLATFORM="offscreen",
                        QT_FORCE_STDERR_LOGGING="1", XDG_RUNTIME_DIR=d)
             out = subprocess.run([QS, "-p", shell], env=env, capture_output=True, text=True, timeout=30)
@@ -67,8 +71,13 @@ class StoreFile(unittest.TestCase):
             self.last_err = out.stderr
             after = None
             if os.path.isfile(path):
+                self.mode = os.stat(path).st_mode & 0o777
                 with open(path) as f:
                     after = f.read()
+            self.outside = None
+            if os.path.exists(os.path.join(d, "outside")):
+                with open(os.path.join(d, "outside")) as f:
+                    self.outside = f.read()
             broken = os.path.join(cfg, "connections.json.broken")
             kept = None
             if os.path.exists(broken):
@@ -106,6 +115,28 @@ class StoreFile(unittest.TestCase):
         data = json.loads(after)
         self.assertTrue(data["ui"]["pinned"])
         self.assertEqual(data["connections"][0]["lastConnected"], 100)
+
+    def test_a_new_file_is_only_the_users(self):
+        old = os.umask(0o022)
+        try:
+            probe, after, _ = self.run_store(None, missing=True)
+        finally:
+            os.umask(old)
+        self.assertFalse(probe["broken"])
+        self.assertTrue(json.loads(after)["ui"]["pinned"])
+        self.assertEqual(self.mode, 0o600)
+
+    def test_a_symlink_at_broken_is_replaced_not_written_through(self):
+        def plant(cfg):
+            outside = os.path.join(os.path.dirname(os.path.dirname(cfg)), "outside")
+            with open(outside, "w") as f:
+                f.write("mine\n")
+            os.symlink(outside, os.path.join(cfg, "connections.json.broken"))
+        text = '{"connections": [,]}'
+        probe, after, kept = self.run_store(text, before=plant)
+        self.assertTrue(probe["broken"])
+        self.assertEqual(kept, text)
+        self.assertEqual(self.outside, "mine\n")
 
 
 if __name__ == "__main__":
