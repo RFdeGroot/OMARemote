@@ -20,3 +20,13 @@ var shortcut = 128
 
 // Any field that names none of the above.
 var standard = 256
+
+// How many of each connections.json holds at most: the same as STORE_MAX_* in omaremote-session
+// (tests/test_limits.py keeps them equal), which reads no file holding more. The window adds no more.
+var count = {
+    connections: 2000,
+    groups: 200,
+    credentials: 200,
+    trash: 2000,
+    quick: 50
+}

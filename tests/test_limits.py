@@ -53,6 +53,14 @@ class Limits(unittest.TestCase):
     def test_ui_and_backend_agree(self):
         self.assertEqual(js_limits(), session.LIMITS)
 
+    def test_ui_and_backend_agree_on_counts(self):
+        with open(os.path.join(UI, "js", "Limits.js"), encoding="utf-8") as f:
+            block = re.search(r"^var count = \{(.*?)\}", f.read(), re.M | re.S).group(1)
+        counts = {k: int(v) for k, v in re.findall(r"(\w+): (\d+)", block)}
+        self.assertEqual(counts, {"connections": session.STORE_MAX_CONNECTIONS, "groups": session.STORE_MAX_GROUPS,
+                                  "credentials": session.STORE_MAX_CREDENTIALS, "trash": session.STORE_MAX_TRASH,
+                                  "quick": session.STORE_MAX_QUICK})
+
     def test_every_field_names_its_limit(self):
         known = js_limits()
         missing = [f"{f}:{n}" for f, n, lim in inputs() if lim is None]

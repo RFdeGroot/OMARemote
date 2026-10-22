@@ -22,7 +22,7 @@ Sections, in order (`# ------- <name>` lines):
 
 | Section | What |
 | --- | --- |
-| store | `load_data`, `load_connections` (saved + quick), `resolve` (group inheritance), `mark_connected` |
+| store | `read_store` (`read`: bounded, for the window and the plugin; counts `STORE_MAX_*`, `store_counts`), `load_data`, `load_connections` (saved + quick), `resolve` (group inheritance), `mark_connected` |
 | export, import and sync | `portable`, `merge` (guards: `LOCAL_KEYS`, `ADDRESS_KEYS`, `_signs_in_here`, tombstones), `HOST_RE`, `ID_RE`; budgets of a round: `SYNC_PEER*`, `SYNC_MAX_*`, `answer_json` + `limit_memory` (also import) |
 | keyring | secret-tool calls, labels by id |
 | scaling | monitor scale, desktop scale |
@@ -35,7 +35,7 @@ Sections, in order (`# ------- <name>` lines):
 | session state | the runtime state files, `list_sessions` (newest `SESSIONS_MAX`, own ordinary log only) |
 | supervisor | `main()`: the command switch (`if cmd == "…"`), launching and watching a session |
 
-Commands (`omaremote-session <cmd>`): list stop forget args export import sync pick ssh-keys
+Commands (`omaremote-session <cmd>`; `run_bounded` caps what each one the window reads whole prints, `ANSWER_LIMITS`): read list stop forget args export import sync pick ssh-keys
 import-sources import-scan import-foreign ssh-config watch-folder system-name paths view float terminal-tag summon open-window toggle place
 hide close-key browse unmount mounts restart-gvfs hotkeys hypr-hotkeys fullscreen center plugin-check
 update-check focus monitor-scale secret, plus launch.
@@ -46,7 +46,7 @@ Singletons:
 
 | File | What |
 | --- | --- |
-| Store.qml | connections.json: `stored`, `connections` (resolved), `quick`, trash, credential sets, groups, `write()`, `upsert`, `quickConnect`, `saveQuick` |
+| Store.qml | connections.json (read through `omaremote-session read`, the FileView only watches and writes): `stored`, `connections` (resolved), `quick`, trash, credential sets, groups, `write()`, `upsert`, `quickConnect`, `saveQuick` |
 | Sessions.qml | the running sessions (`omaremote-session list`), `launch`, `launchInTab`, `stop`, secrets, files over SFTP |
 | Sync.qml | export/import, folder sync, the file pickers, import from other clients (`scanForeign`, `importPreview`, `applyForeign`) |
 | Hotkeys.qml | hotkey windows and the Hyprland config they write |
@@ -69,7 +69,7 @@ The manager window:
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
 | Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim scrollbar on panes that scroll; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
-| js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; sources in docs/limits.md |
+| js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; `Limits.count`: how many connections, groups, … (`STORE_MAX_*`, `Store.full`); sources in docs/limits.md |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels, `sessionSpec`/`isSessionChord` |
 
 ## native/ (C++)

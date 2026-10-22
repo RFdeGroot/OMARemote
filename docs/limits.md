@@ -27,3 +27,25 @@ Each limit is the largest value a real system takes, with room to spare. Counted
 A paste reads at most 16 KiB (the longest field as UTF-8). One that would not fit the field is
 refused whole, with a hint, rather than cut to what fits. Pasting into a session (RDP, VNC, SSH)
 goes another way and has none of these limits.
+
+## How many
+
+connections.json holds at most so many of each (`Limits.count` in `ui/js/Limits.js`, `STORE_MAX_*`
+in `bin/omaremote-session`, kept equal by tests/test_limits.py). Far above a real library (tens, a
+few hundred), below what the window's lists build in a moment: 2000 connections in 195 groups,
+the pinned list shown, render in about a second more and 240 MiB more than the sample library.
+Sync, import and the window add no more (the window says why); another system's sync file holding more connections or groups than this, or more than 20,000 deletions, is not read at all; a file holding more is not read,
+like a broken one, and never written over. The trash keeps the newest 2000.
+
+| Count | At most |
+| --- | --- |
+| `connections` | 2000 |
+| `groups` | 200 (by name: a connection's group, or a group's own settings) |
+| `credentials` | 200 credential sets |
+| `trash` | 2000 |
+| `quick` | 50 (the window keeps 10) |
+| deletions, deleted groups | 20,000 each, the newest (only of what this system knows: a deletion of an id or group never seen here is not kept, and needs no passing on, since every system reads every other's file) |
+
+The file itself is read through `omaremote-session read` (an ordinary file, at most 16 MiB, nested
+at most 64 deep), never whole by the window. What a command the window reads whole prints is
+capped too (`ANSWER_LIMITS`, 4 KiB to 16 MiB by command).

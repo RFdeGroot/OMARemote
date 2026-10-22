@@ -23,8 +23,9 @@ on:
         description: Tag to build and release (its PKGBUILD _tag must match)
         required: true
 
+# Read only, but for the job that publishes the release.
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -46,6 +47,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # No token left in .git/config: the build container (makepkg, pacman) sees this folder.
+          persist-credentials: false
 
       - name: Check the PKGBUILD is for this tag
         run: |
@@ -89,11 +93,16 @@ jobs:
   release:
     needs: package
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # No token left in .git/config: this job publishes with gh (GH_TOKEN) only.
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:

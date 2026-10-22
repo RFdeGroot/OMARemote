@@ -4,6 +4,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import "js/Format.js" as Format
+import "js/Limits.js" as Limits
 
 // The saved connections. This window is the only writer of connections.json; it is watched (sync
 // and hand edits land in it) and written in place, so the watch keeps firing. When each connection
@@ -13,6 +14,8 @@ Singleton {
 
     readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/omaremote"
     readonly property string path: configDir + "/connections.json"
+    // As Sessions.bin (Store is read before Sessions, and on its own in tests).
+    readonly property string bin: Quickshell.env("OMAREMOTE_BIN") || (Quickshell.shellDir + "/../../bin/omaremote-session")
 
     // As saved: each connection holds only what differs from what it inherits.
     property var stored: []
@@ -269,16 +272,41 @@ Singleton {
         return (prefix || "c-") + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36)
     }
 
+    // What `omaremote-session read connections` answered: the file as stored, read bounded there
+    // (an ordinary file, 16 MiB, nesting, the counts in Limits.count), never whole here.
     function parse(text) {
+        var answer = null
         try {
-            // Read whole by now; the backend refuses the same file above 16 MiB (SYNC_MAX_BYTES).
-            if (text && text.length > 16 * 1024 * 1024)
-                throw new Error("larger than 16 MiB")
-            var data = JSON.parse(text || "{}")
-            if (Array.isArray(data))
-                data = { connections: data }
-            if (data === null || typeof data !== "object")
-                throw new Error("not an object")
+            answer = JSON.parse(text)
+        } catch (e) {
+        }
+        if (!answer || typeof answer !== "object" || (!answer.error && (!answer.data || typeof answer.data !== "object")))
+            answer = { error: "no answer from omaremote-session read", broken: false }
+        if (answer.error) {
+            console.warn("connections.json not read, leaving it untouched: " + answer.error)
+            // Read and refused: kept as it is (a change brings the next read), a copy beside it
+            // (`read` writes it from what it read). Unreadable, or no answer (omaremote-session
+            // mid-upgrade): tried again a few times.
+            root.copied = answer.copied === true
+            if (!answer.broken && retry.step < retry.delays.length) {
+                retry.interval = retry.delays[retry.step++] * 1000
+                retry.restart()
+            }
+            root.broken = true
+            root.loaded = true
+            return
+        }
+        retry.step = 0
+        root.copied = false
+        if (answer.exists)
+            root.fileExisted = true
+        try {
+            var data = answer.data
+            // The backend refuses more already; never laid out here either.
+            var counts = { connections: data.connections, credentials: data.credentials, trash: data.trash, quick: data.quick }
+            for (var key in counts)
+                if (counts[key] && !(Array.isArray(counts[key]) && counts[key].length <= Limits.count[key]))
+                    throw new Error(key + ": not a list of at most " + Limits.count[key])
             root.stored = (data.connections || []).filter(function (c) { return c && c.id })
             root.credentials = (data.credentials || []).filter(function (c) { return c && c.id })
             root.groupSettings = data.groups || {}
@@ -289,9 +317,8 @@ Singleton {
             root.quick = (data.quick || []).filter(function (c) { return c && c.id })
             root.broken = false
         } catch (e) {
-            console.warn("connections.json is not valid JSON, leaving it untouched: " + e)
-            if (!root.broken)
-                keepBroken.running = true
+            // What the backend took but this window cannot: kept as it is, never written over.
+            console.warn("connections.json is not what this window reads, leaving it untouched: " + e)
             root.broken = true
         }
         root.loaded = true
@@ -303,6 +330,7 @@ Singleton {
             console.warn("connections.json not written: " + (root.broken ? "it could not be read" : "not read yet"))
             return
         }
+        root.writes++
         file.setText(JSON.stringify({ version: 3, ui: ui, credentials: credentials, groups: groupSettings,
                                       connections: stored, trash: trash, deleted: deleted,
                                       deletedGroups: deletedGroups, quick: quick }, null, 2) + "\n")
@@ -334,6 +362,27 @@ Singleton {
         write()
     }
 
+    // Why c (a connection as the editor holds it, saved or new) does not fit any more: more
+    // connections, groups or credential sets than Limits.count (what the backend reads). "" if it fits.
+    function full(c) {
+        var isNew = !c.id || !storedGet(c.id)
+        if (isNew && stored.length >= Limits.count.connections)
+            return "OMARemote holds at most " + Limits.count.connections + " connections"
+        return groupFull(c.group || "") || (c.credential === "new" ? credentialsFull() : "")
+    }
+
+    // Why a group of that name cannot be made any more ("" if it can, or is there).
+    function groupFull(name) {
+        if (name === "" || groups.indexOf(name) >= 0 || groupSettings[name] || groups.length < Limits.count.groups)
+            return ""
+        return "OMARemote holds at most " + Limits.count.groups + " groups"
+    }
+
+    function credentialsFull() {
+        return credentials.length < Limits.count.credentials ? ""
+            : "OMARemote holds at most " + Limits.count.credentials + " credential sets"
+    }
+
     // Takes a full connection (as the editor holds it); returns the stored id.
     function upsert(c) {
         var copy = normalize(c)
@@ -356,7 +405,8 @@ Singleton {
 
     // ---------------------------------------------------------------- trash
 
-    // Deleting keeps the connection (and its keyring password) in the trash for 30 days.
+    // Deleting keeps the connection (and its keyring password) in the trash for 30 days, at most
+    // Limits.count.trash of them: returns the ids of the oldest that make room, for the keyring.
     function trashConnections(ids, from) {
         var now = Date.now()
         var bin = trash.slice()
@@ -368,9 +418,15 @@ Singleton {
             gone[c.id] = now
             return false
         })
+        var dropped = []
+        if (bin.length > Limits.count.trash) {
+            bin.sort(function (a, b) { return (b.deleted || 0) - (a.deleted || 0) })
+            dropped = bin.splice(Limits.count.trash).map(function (e) { return e.connection.id })
+        }
         root.trash = bin
         root.deleted = gone
         edited()
+        return dropped
     }
 
     function trashed(id) {
@@ -710,53 +766,100 @@ Singleton {
         }
     }
 
-    Process {
-        id: keepBroken
-        // Removed first: a symlink at .broken is replaced, never written through.
-        command: ["cp", "--remove-destination", "--", root.path, root.path + ".broken"]
+    // Whether connections.json.broken holds a copy of the file that was refused.
+    property bool copied: false
+
+    Timer {
+        id: retry
+        readonly property var delays: [1, 2, 5, 10]
+        property int step: 0
+        onTriggered: root.read()
     }
 
-    FileView {
-        path: root.configDir + "/last-connected.json"
-        watchChanges: true
-        printErrors: false
-        onLoaded: {
+    // Both files are read through `omaremote-session read`, which reads them bounded (an ordinary
+    // file only, a size and count limit): a FileView reads a file whole, whatever its size.
+    // The FileViews only watch, and write connections.json.
+    property int writes: 0
+
+    function read() {
+        if (reader.running) {
+            reader.again = true
+        } else {
+            reader.startedAt = root.writes
+            reader.running = true
+        }
+    }
+
+    Process {
+        id: reader
+        command: [root.bin, "read", "connections"]
+        property bool again: false
+        property int startedAt: 0
+        stdout: StdioCollector { id: readOut; waitForEnd: true }
+        onExited: {
+            // Changed again while it read, or written here since: what it read may be older than
+            // what this window holds now. Once more.
+            if (again || root.writes !== startedAt) {
+                again = false
+                startedAt = root.writes
+                running = true
+                return
+            }
+            root.parse(readOut.text)
+        }
+    }
+
+    Process {
+        id: lastReader
+        command: [root.bin, "read", "last-connected"]
+        property bool again: false
+        stdout: StdioCollector { id: lastOut; waitForEnd: true }
+        onExited: {
+            if (again) {
+                again = false
+                running = true
+                return
+            }
             try {
-                // The backend writes a few KiB; more is not its file (read whole by now, so only kept out).
-                if (text().length > 1024 * 1024)
-                    return
-                var data = JSON.parse(text())
-                if (data && typeof data === "object" && !Array.isArray(data))
+                var data = JSON.parse(lastOut.text)
+                if (data && typeof data === "object" && !Array.isArray(data) && !data.error)
                     root.lastSeen = data
             } catch (e) {
                 // Caught mid-write: the next change brings it whole.
             }
         }
-        onFileChanged: reload()
+    }
+
+    function readLast() {
+        if (lastReader.running)
+            lastReader.again = true
+        else
+            lastReader.running = true
+    }
+
+    Component.onCompleted: {
+        read()
+        readLast()
+    }
+
+    FileView {
+        path: root.configDir + "/last-connected.json"
+        preload: false
+        watchChanges: true
+        printErrors: false
+        onFileChanged: root.readLast()
     }
 
     FileView {
         id: file
         path: root.path
-        blockLoading: true
+        preload: false
         watchChanges: true
         // In place, on purpose: an atomic write (Quickshell 0.3.2) reports a change that reloads the
         // old text, which parse() would take as the user's. In place also writes through a dotfile
         // manager's symlink, as write_user_file does in the backend.
         atomicWrites: false
         printErrors: false
-        onLoaded: {
-            root.fileExisted = true
-            root.parse(text())
-        }
-        // No file yet is a fresh start; a file that is there but cannot be read is not.
-        onLoadFailed: function (error) {
-            if (error !== FileViewError.FileNotFound && !root.broken) {
-                console.warn("connections.json could not be read: " + FileViewError.toString(error))
-                root.broken = true
-            }
-            root.loaded = true
-        }
-        onFileChanged: reload()
+        onFileChanged: root.read()
     }
 }

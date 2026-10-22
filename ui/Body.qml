@@ -532,6 +532,12 @@ FocusScope {
 
     // from: the name it had ("" for a new group); a different name renames it.
     function saveGroup(from, name, credential, newCredential, settings, apply) {
+        var full = (from === "" ? Store.groupFull(name) : "") // a rename makes no more of them
+            || (credential === "new" ? Store.credentialsFull() : "")
+        if (full) {
+            say(full, true)
+            return
+        }
         if (credential === "new")
             credential = createCredential(newCredential.username, newCredential.domain,
                                           newCredential.savePassword, newCredential.password)
@@ -600,6 +606,10 @@ FocusScope {
 
     // Drag and drop and m: into a group, "" for none. Says what happened to signing in.
     function moveToGroup(ids, name) {
+        if (Store.groupFull(name)) {
+            say(Store.groupFull(name), true)
+            return
+        }
         var before = {}
         for (var i = 0; i < ids.length; i++) {
             var c = Store.get(ids[i])
@@ -640,6 +650,10 @@ FocusScope {
     }
 
     function saveEdit(c, password, passwordTouched, gatewayPassword, gatewayPasswordTouched) {
+        if (Store.full(c)) {
+            say(Store.full(c), true)
+            return
+        }
         if (c.credential === "new")
             c.credential = createCredential(c.username.trim(), String(c.domain || "").trim(), !!c.savePassword, password)
         // Whether a gateway password was saved before this edit: only then can there be one to clear.
@@ -698,8 +712,12 @@ FocusScope {
             say("Deleted " + (c.name || c.host) + " for good")
             return
         }
-        // The trash keeps it 30 days, keyring password included.
-        Store.trashConnections([c.id], "local")
+        // The trash keeps it 30 days, keyring password included (the oldest go when it is full).
+        var dropped = Store.trashConnections([c.id], "local")
+        for (var i = 0; i < dropped.length; i++) {
+            Sessions.clearSecret("connection", dropped[i])
+            Sessions.clearSecret("gateway", dropped[i])
+        }
         say("Moved " + (c.name || c.host) + " to Recently deleted (5, then r restores it)")
     }
 
@@ -707,6 +725,11 @@ FocusScope {
         if (!selected || !inTrash)
             return
         var c = selected
+        var full = Store.full(c)
+        if (full) {
+            say(full, true)
+            return
+        }
         Store.restore(c.id)
         say("Restored " + (c.name || c.host))
     }
@@ -716,6 +739,10 @@ FocusScope {
             return
         if (!selected)
             return
+        if (Store.full({ group: selected.group })) {
+            say(Store.full({ group: selected.group }), true)
+            return
+        }
         selectedId = Store.duplicate(selected.id)
         say("Duplicated")
     }
@@ -1329,7 +1356,9 @@ FocusScope {
             id: statusBar
             Layout.fillWidth: true
             // A broken connections.json stays on screen: nothing is saved until it is fixed.
-            notice: root.notice || (Store.broken ? "connections.json could not be read: nothing is saved until it is fixed (a copy is in connections.json.broken)" : "")
+            notice: root.notice || (!Store.broken ? "" : Store.copied
+                ? "connections.json could not be read: nothing is saved until it is fixed (a copy is in connections.json.broken)"
+                : "connections.json could not be read: nothing is saved until it can be")
             noticeIsError: root.notice ? root.noticeIsError : Store.broken
             hints: root.currentTab !== "home" && root.currentEnded
                        ? [["⏎", "reconnect"], ["l", "log"], ["w", "close tab"], ["ctrl+alt+home", "connections"],
@@ -1736,12 +1765,22 @@ FocusScope {
             root.seenFailures = next
             root.adoptTabs()
             root.stepReplacing()
-            root.ready = true
+            root.sessionsKnown = true
         }
     }
-    property bool ready: false
+    property bool sessionsKnown: false
+    // Sessions and connections both known: connections.json is read by a process of its own, which
+    // may answer after the first session list.
+    readonly property bool ready: sessionsKnown && Store.loaded
+    // An open that arrived before (over IPC): run once ready.
+    property string pendingOpen: ""
     // `omaremote open <name>` while the app was not running: connect once sessions are known.
     onReadyChanged: {
+        if (ready && pendingOpen !== "") {
+            var name = pendingOpen
+            pendingOpen = ""
+            Qt.callLater(function () { root.openNamed(name) })
+        }
         if (ready && Quickshell.env("OMAREMOTE_OPEN"))
             Qt.callLater(function () { root.openNamed(Quickshell.env("OMAREMOTE_OPEN")) })
         if (ready && Quickshell.env("OMAREMOTE_QUICK") === "1")
@@ -1791,6 +1830,10 @@ FocusScope {
     // Shows the connection's running session, or connects it; brings this window forward unless
     // the session lives in its own window (connect() focuses that one).
     function openNamed(name) {
+        if (!ready) {
+            pendingOpen = name
+            return "ok"
+        }
         var c = findConnection(name)
         if (!c)
             return showRunning(name) ? "ok" : "unknown connection: " + name

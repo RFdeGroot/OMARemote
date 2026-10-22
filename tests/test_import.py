@@ -190,6 +190,16 @@ class ImportTest(unittest.TestCase):
         self.assertEqual([e["status"] for e in self.scan(os.path.join(self.root, "x"))["entries"]], ["new", "twice"])
         self.assertEqual(len(self.run_import(os.path.join(self.root, "x"))["added"]), 1)
 
+    def test_no_more_connections_than_it_holds(self):
+        here = session.STORE_MAX_CONNECTIONS - 3
+        self.save({"connections": [{"id": f"c{i}", "host": f"h{i}.lan", "protocol": "rdp"} for i in range(here)]})
+        with open(os.path.join(self.ssh, "config"), "w") as f:
+            f.write("".join(f"Host s{i}\n  HostName s{i}.acme.lan\n" for i in range(10)))
+        report = self.run_import("ssh-config")
+        self.assertEqual(len(report["added"]), 3)
+        self.assertIn(f"no more than {session.STORE_MAX_CONNECTIONS} connections", " ".join(report["errors"]))
+        self.assertEqual(len(self.stored()), session.STORE_MAX_CONNECTIONS)
+
     def test_ssh_alias_and_real_name_are_the_same_server(self):
         with open(os.path.join(self.ssh, "config"), "w") as f:
             f.write("Host build\n  HostName build.acme.lan\n")
@@ -314,6 +324,14 @@ class ImportTest(unittest.TestCase):
         self.assertNotIn("sshKey", git)
         self.assertEqual((screen["protocol"], screen["port"]), ("vnc", 5901))
         self.assertEqual(self.run_import(path)["added"], [])
+
+    def test_1remote_a_deep_row_is_one_bad_row(self):
+        # json.loads raises RecursionError, which `except ValueError` let through: the whole
+        # import ended with a traceback and no answer.
+        path = self.oneremote(("RDP", "[" * 200000), ("RDP", {"DisplayName": "Ok", "Address": "ok.lan"}))
+        scan = self.scan(path)
+        self.assertEqual(len(scan["errors"]), 1)
+        self.assertEqual([e["status"] for e in scan["entries"]], ["new"])
 
     def test_1remote_bent_rows_and_not_a_database(self):
         path = self.oneremote(("RDP", "{not json"), ("RDP", '["a list"]'),

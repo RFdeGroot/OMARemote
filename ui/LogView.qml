@@ -36,19 +36,66 @@ Rectangle {
         event.accepted = true
     }
 
-    FileView {
+    // The log is only watched here; its end is read by `omaremote-session read log` (the session's
+    // own ordinary file, its last MiB), at most every 250 ms while the session writes.
+    QtObject {
         id: file
         property string loadedText: ""
+    }
+
+    FileView {
         path: root.session ? root.session.log : ""
-        watchChanges: true
+        preload: false
+        blockAllReads: true
+        watchChanges: path !== ""
         printErrors: false
-        onLoaded: {
-            var follow = view.atYEnd
-            loadedText = text()
-            if (follow)
-                Qt.callLater(view.positionViewAtEnd)
+        onFileChanged: if (!settle.running) settle.start()
+    }
+
+    Timer {
+        id: settle
+        interval: 250
+        onTriggered: root.readLog()
+    }
+
+    function readLog() {
+        if (!root.session || !root.session.log)
+            return
+        if (reader.running) {
+            reader.again = true
+            return
         }
-        onFileChanged: reload()
+        reader.command = [Sessions.bin, "read", "log", root.session.id]
+        reader.running = true
+    }
+
+    onSessionChanged: {
+        file.loadedText = ""
+        readLog()
+    }
+    Component.onCompleted: readLog()
+
+    Process {
+        id: reader
+        property bool again: false
+        stdout: StdioCollector { id: logOut; waitForEnd: true }
+        onExited: {
+            if (again) {
+                again = false
+                root.readLog()
+                return
+            }
+            try {
+                var answer = JSON.parse(logOut.text)
+                if (typeof answer.text !== "string")
+                    return
+                var follow = view.atYEnd
+                file.loadedText = answer.text
+                if (follow)
+                    Qt.callLater(view.positionViewAtEnd)
+            } catch (e) {
+            }
+        }
     }
 
     ColumnLayout {

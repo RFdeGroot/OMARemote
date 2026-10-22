@@ -43,6 +43,7 @@ so closing the window never closes a remote desktop.
   omaremote-session sync [--allow-deletions <system,…>] [--allow-address <id,…>]
                                          one round of folder sync, JSON for the UI
   omaremote-session system-name          this system's name in the sync folder
+  omaremote-session read connections|favourites|last-connected|log <session id>   one of OMARemote's files, bounded, JSON
   omaremote-session watch-folder <dir>   print each *.omaremote.json that arrives or changes there
   omaremote-session ssh-keys             keys in ~/.ssh (files, and agent keys by their .pub), JSON
   omaremote-session ssh-config           write ~/.ssh/omaremote.conf for SSH connections with a key
@@ -51,6 +52,7 @@ so closing the window never closes a remote desktop.
 """
 
 import base64
+import bisect
 import configparser
 import contextlib
 import errno
@@ -59,6 +61,7 @@ import glob
 import hashlib
 import heapq
 import hmac
+import io
 import itertools
 import json
 import os
@@ -323,14 +326,19 @@ def mark_connected(conn_id, path=LAST_CONNECTED):
     its own lastConnected). Rewritten in place under a lock, so the UI's watch on it keeps firing and
     two sessions coming up at once do not lose a stamp."""
     try:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        # Without blocking: a FIFO there opens (O_RDWR) and would hang the read, and with it the
+        # session's supervisor. Only an ordinary file is read and rewritten.
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
     except OSError:
         return
-    with os.fdopen(fd, "r+", encoding="utf-8") as f:
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return
+    with os.fdopen(fd, "r+", encoding="utf-8", errors="replace") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
-                data = json.loads(f.read(1 << 20) or "{}")
+                data = parse_json(f.read(LAST_CONNECTED_MAX_BYTES) or "{}")
             except ValueError:
                 data = {}
             if not isinstance(data, dict):
@@ -388,6 +396,11 @@ def load_raw(path=CONNECTIONS):
         data = read_json_file(path)
     except FileNotFoundError:
         data = {}
+    return store_shape(data)
+
+
+def store_shape(data):
+    """connections.json's parsed data, checked for its shape (ValueError for another)."""
     if isinstance(data, list):
         data = {"connections": data}
     # Sync, export and import write what they read back: a file of another shape is refused whole,
@@ -518,9 +531,11 @@ def _future(when, now):
     return isinstance(when, _NUMBER) and when > now + SYNC_SKEW_MS
 
 
-def _drop_aliases(conn, ids):
-    """conn without the aliases in ids (ids that belong to connections of their own)."""
-    left = set(conn.get("aliases") or []) - set(ids)
+def _drop_aliases(conn, ids, but=None):
+    """conn without the aliases in ids (ids that belong to connections of their own: a set, or a
+    test), except but (its own id, which may be in ids)."""
+    inside = ids if callable(ids) else ids.__contains__
+    left = {a for a in conn.get("aliases") or [] if a == but or not inside(a)}
     if left == set(conn.get("aliases") or []):
         return conn
     conn = dict(conn)
@@ -605,6 +620,31 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
               "pendingAddress": [], "errors": []}
     address_ok = lambda key: allow_address == "*" or key in allow_address
 
+    # The group names here (groups' own and connections'): counted again at each file and once its
+    # groups are merged, then kept as connections arrive, so room() never scans.
+    names = set()
+
+    def recount():
+        names.clear()
+        names.update(groups)
+        names.update(c.get("group") for c in conns if c.get("group"))
+
+    def note_group(conn):
+        if conn.get("group"):
+            names.add(conn["group"])
+
+    def room(conn, system, adding=True):
+        """Whether one more connection here (adding; else one changed), and its group when new,
+        stays within STORE_MAX_*; what does not fit is left out, said once per file."""
+        why = f"more than {STORE_MAX_CONNECTIONS} connections" if adding and len(conns) >= STORE_MAX_CONNECTIONS \
+            else f"more than {STORE_MAX_GROUPS} groups" \
+            if conn.get("group") and conn["group"] not in names and len(names) >= STORE_MAX_GROUPS else ""
+        if why and system not in full:
+            full.add(system)
+            report["errors"].append(f"{system}: not everything taken in: OMARemote holds no {why}")
+        return not why
+    full = set()
+
     def held(old, ic, new):
         """Whether ic's change to old (here, or in the trash) waits for the user: it points elsewhere
         or shares more, compared as a session would use them (a move into another group, new here
@@ -628,24 +668,50 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
     # of its own here. (Before 0.4.4 a duplicate, which keeps its original's host, was taken for the
     # original on other systems and recorded as its alias.)
     own = {c.get("id") for c in conns}
-    conns[:] = [_drop_aliases(c, own - {c.get("id")}) for c in conns]
+    conns[:] = [_drop_aliases(c, own, but=c.get("id")) for c in conns]
 
-    for inc in incoming:
+    def unreadable(inc):
+        """Why a file is not read at all ("" when it is)."""
         if not isinstance(inc, dict) or inc.get("format") not in ("omaremote-sync", "omaremote-export"):
-            report["errors"].append("not an OMARemote file: " + str((inc or {}).get("_path", "?")))
-            continue
+            return "not an OMARemote file: " + str((inc or {}).get("_path", "?"))
         system = plain(str(inc.get("system") or "another system"))[:64]
         version = inc.get("version") or 0
         if not isinstance(version, int) or isinstance(version, bool) or not all(
                 isinstance(inc.get(k) or {}, dict) for k in ("groups", "deleted", "deletedGroups")) \
                 or not isinstance(inc.get("connections") or [], list):
-            report["errors"].append(f"{system}: not an OMARemote file of a kind this one reads")
-            continue
+            return f"{system}: not an OMARemote file of a kind this one reads"
         if version > 1:
-            report["errors"].append(f"{system}: written by a newer OMARemote")
+            return f"{system}: written by a newer OMARemote"
+        # More than this system would hold is no real library: refused whole, like a file too large
+        # (it would only cost the round its time).
+        if len(inc.get("connections") or []) > STORE_MAX_CONNECTIONS or len(inc.get("groups") or {}) > STORE_MAX_GROUPS \
+                or len(inc.get("deleted") or {}) > STORE_MAX_DELETED or len(inc.get("deletedGroups") or {}) > STORE_MAX_DELETED:
+            return (f"{system}: not read: it holds more than {STORE_MAX_CONNECTIONS} connections, "
+                    f"{STORE_MAX_GROUPS} groups or {STORE_MAX_DELETED} deletions")
+        return ""
+
+    # Every deletion this round's files carry, the newest time of each, known here or not: what
+    # keeps one file's stale copy from adding what another deleted, whichever is read first. Only
+    # those of what is known here are kept in `deleted` (see below).
+    round_deleted, round_gone_groups = {}, {}
+    for inc in incoming:
+        if unreadable(inc):
             continue
+        for into, key, valid in ((round_deleted, "deleted", lambda k: ID_RE.match(str(k))),
+                                 (round_gone_groups, "deletedGroups", lambda k: isinstance(k, str) and len(k) <= LIMITS["name"])):
+            for k, when in (inc.get(key) or {}).items():
+                if isinstance(when, _NUMBER) and not isinstance(when, bool) and not _future(when, now) and valid(k):
+                    into[k] = max(into.get(k, when), when)
+
+    for inc in incoming:
+        why = unreadable(inc)
+        if why:
+            report["errors"].append(why)
+            continue
+        system = plain(str(inc.get("system") or "another system"))[:64]
         # The groups as they were before this file: what a connection moved by it inherited until now.
         groups_before = json.loads(json.dumps(groups))
+        recount()
 
         for name, g in (inc.get("groups") or {}).items():
             if not isinstance(g, dict):
@@ -665,8 +731,10 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             mine = groups.get(name)
             if mine is not None and g.get("modified", 0) <= mine.get("modified", 0):
                 continue
-            if g.get("modified", 0) <= gone_groups.get(name, -1):
-                continue  # deleted or renamed here after that change
+            if g.get("modified", 0) <= max(gone_groups.get(name, -1), round_gone_groups.get(name, -1)):
+                continue  # deleted or renamed here (or in this round's files) after that change
+            if mine is None and not room({"group": name}, system):
+                continue
             theirs_settings = {k: v for k, v in (g.get("settings") or {}).items() if k not in GROUP_LOCAL_SETTINGS}
             # The group's own set signs in through it, and so does every member that signs in here
             # (its gateway takes the member's saved password, or a saved gateway password).
@@ -686,13 +754,18 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             mine["modified"] = g.get("modified", 0)
             mine.setdefault("credential", "")
             groups[name] = mine
+            names.add(name)
 
         # A group deleted or renamed there. Its connections moved out with newer changes of their
         # own, which travel like any other edit; only the group's settings go here. That waits like a
         # change when this system signs in through the group and its members would lose its gateway,
         # KDC or certificate checks (its local security level): they would then sign in another way.
+        # Groups this system knows (its own, its connections', its trash's): only their deletions are
+        # kept. Every system reads every other's file itself, so one never seen here needs no
+        # passing on, and a file of fresh names each round would grow connections.json for good.
+        known_groups = set(names) | {(t.get("connection") or {}).get("group") for t in trash}
         for name, when in (inc.get("deletedGroups") or {}).items():
-            if not isinstance(when, _NUMBER) or _future(when, now):
+            if not isinstance(when, _NUMBER) or _future(when, now) or name not in known_groups:
                 continue
             mine = groups.get(name)
             if mine is not None and when > mine.get("modified", 0):
@@ -707,107 +780,169 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
                 del groups[name]
             gone_groups[name] = max(gone_groups.get(name, 0), when)
 
+        recount()  # after the groups it deleted
         listed = [ic for ic in inc.get("connections") or [] if isinstance(ic, dict) and ic.get("id")]
         # A value of another kind would stop this merge or a session; a change dated well ahead of
-        # this system's clock would win over every edit made here.
-        for ic in [ic for ic in listed if odd_types(ic)]:
-            report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic.get('host')))[:40]!r}: "
-                                    f"its {odd_types(ic)} is a value of the wrong kind")
-            listed.remove(ic)
-        listed = [ic for ic in listed if ic["host"].strip()]
-        for ic in [ic for ic in listed if _future(ic.get("modified", 0), now)]:
-            report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic['host']))[:40]!r}: "
-                                    "dated in the future")
-            listed.remove(ic)
+        # this system's clock would win over every edit made here. (Filtered, never removed one by
+        # one: a file of many bad entries would make that quadratic.)
+        kept = []
+        for ic in listed:
+            if odd_types(ic):
+                report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic.get('host')))[:40]!r}: "
+                                        f"its {odd_types(ic)} is a value of the wrong kind")
+            elif not ic["host"].strip():
+                pass
+            elif _future(ic.get("modified", 0), now):
+                report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic['host']))[:40]!r}: "
+                                        "dated in the future")
+            else:
+                kept.append(ic)
+        listed = kept
         # Ids and hosts end up in commands and settings: a file that bends them is not taken in.
         odd = [ic for ic in listed if not ID_RE.match(str(ic["id"])) or not HOST_RE.match(ic["host"].strip())
                or any(not ID_RE.match(str(a)) for a in ic.get("aliases") or [])]
         if odd:
             report["errors"].append(f"{system}: skipped {len(odd)} connection(s) with an invalid id or host")
-            listed = [ic for ic in listed if ic not in odd]
+            odd_ids = {id(ic) for ic in odd}
+            listed = [ic for ic in listed if id(ic) not in odd_ids]
         # A field longer than the UI takes would be cut short when edited: not taken in either.
-        for ic in [ic for ic in listed if too_long(ic)]:
-            key, limit = too_long(ic)
-            report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic['host']))[:40]!r}: "
-                                    f"its {key} is longer than {limit} characters")
-            listed.remove(ic)
+        kept = []
+        for ic in listed:
+            if too_long(ic):
+                key, limit = too_long(ic)
+                report["errors"].append(f"{system}: skipped connection {plain(str(ic.get('name') or ic['host']))[:40]!r}: "
+                                        f"its {key} is longer than {limit} characters")
+            else:
+                kept.append(ic)
+        listed = kept
         # Ids that are connections of their own in that file: never the same connection as another
         # one there, whatever host they share (a duplicate keeps its original's host).
         separate = {ic["id"] for ic in listed}
-        conns[:] = [_drop_aliases(c, separate - {c.get("id")}) if c.get("id") in separate else c for c in conns]
+        conns[:] = [_drop_aliases(c, separate, but=c.get("id")) if c.get("id") in separate else c for c in conns]
+        # Looked up, never scanned per connection (a round stays linear in what arrives: 20,000
+        # connections against 2000 here took 89 s, past the round's deadline). Positions in conns
+        # and in trash, in order, so "the first one" is the same as a scan's; kept current on every
+        # change below (a changed connection keeps its position, its ids only grow).
+        by_id, by_ids, by_key = {}, {}, {}
+
+        def add(index_, k, at):
+            bucket = index_.setdefault(k, [])
+            i = bisect.bisect_left(bucket, at)
+            if i == len(bucket) or bucket[i] != at:
+                bucket.insert(i, at)
+
+        def index(at):
+            c = conns[at]
+            by_id.setdefault(c.get("id"), at)
+            for i in ids_of(c):
+                add(by_ids, i, at)
+            add(by_key, connection_key(c), at)
+        for at in range(len(conns)):
+            index(at)
+        trash_ids, trash_key, restored = {}, {}, set()
+        for at, t in enumerate(trash):
+            tc = t.get("connection") or {}
+            for i in ids_of(tc):
+                trash_ids.setdefault(i, []).append(at)
+            trash_key.setdefault(connection_key(tc), []).append(at)
+        first = lambda index_, ids: min((p for i in ids for p in index_.get(i, ())[:1]), default=None)
         matched = set()
         for ic in listed:
-            own = {c.get("id") for c in conns}
             # Its aliases, without ids that are separate connections there or here.
-            ic = _drop_aliases(ic, (separate - {ic["id"]}) | ((own - {ic["id"]}) if ic["id"] in own else set()))
+            mine_too = ic["id"] in by_id
+            ic = _drop_aliases(ic, lambda a: a in separate or (mine_too and a in by_id), but=ic["id"])
             changed = ic.get("modified", 0)
             theirs = ids_of(ic)
-            if any(deleted.get(i, -1) >= changed for i in theirs):
+            if any(max(deleted.get(i, -1), round_deleted.get(i, -1)) >= changed for i in theirs):
                 continue  # deleted here after that change
             key = connection_key(ic)
             # Its own id first, then an alias, then (only when exactly one connection here could be
             # it, and that one is not listed there itself) the same server under another id.
-            by_host = [c for c in conns if connection_key(c) == key and c.get("id") not in separate
-                       and c.get("id") not in matched]
-            match = next((c for c in conns if c.get("id") == ic["id"]), None) \
-                or next((c for c in conns if ids_of(c) & theirs), None) \
-                or (by_host[0] if len(by_host) == 1 else None)
-            if match is not None:
+            by_host = [p for p in by_key.get(key, ()) if connection_key(conns[p]) == key
+                       and conns[p].get("id") not in separate and conns[p].get("id") not in matched]
+            at = by_id.get(ic["id"])
+            if at is None:
+                at = first(by_ids, theirs)
+            if at is None and len(by_host) == 1:
+                at = by_host[0]
+            if at is not None:
+                match = conns[at]
                 matched.add(match.get("id"))
                 # Compared as a session would use them: a move into another group (new here, or with
                 # a gateway or sharing of its own) widens it as much as a change of its own fields.
                 new = _with_aliases(dict(portable_connection(ic), **_local_part(match), id=match["id"]), match, ic)
-                if changed > match.get("modified", 0) and held(match, ic, new):
+                if changed > match.get("modified", 0) and (held(match, ic, new) or not room(new, system, False)):
                     continue
                 if changed > match.get("modified", 0):
-                    conns[conns.index(match)] = new
+                    conns[at] = new
                     report["updated"].append(new.get("name") or new.get("host"))
                 elif not theirs <= ids_of(match):
                     # The same server under another id: remember it, so its deletion finds this one.
-                    conns[conns.index(match)] = _with_aliases(dict(match), match, ic)
+                    conns[at] = _with_aliases(dict(match), match, ic)
+                else:
+                    continue
+                note_group(conns[at])
+                index(at)  # its ids only grow; a new host is looked up under its new key too
                 continue
-            binned_by_host = [t for t in trash if connection_key(t.get("connection") or {}) == key
-                              and (t.get("connection") or {}).get("id") not in separate]
-            binned = next((t for t in trash if ids_of(t.get("connection") or {}) & theirs), None) \
-                or (binned_by_host[0] if len(binned_by_host) == 1 else None)
-            if binned is not None:
+            binned_by_host = [p for p in trash_key.get(key, ()) if p not in restored
+                              and (trash[p].get("connection") or {}).get("id") not in separate]
+            bin_at = min((p for i in theirs for p in trash_ids.get(i, ()) if p not in restored), default=None)
+            if bin_at is None and len(binned_by_host) == 1:
+                bin_at = binned_by_host[0]
+            if bin_at is not None:
+                binned = trash[bin_at]
                 if changed > binned.get("deleted", 0):
                     old = binned["connection"]
                     new = _with_aliases(dict(portable_connection(ic), **_local_part(old), id=old["id"]), old, ic)
                     # A restore keeps this system's sign-in: it waits like a change (#11837).
-                    if held(old, ic, new):
+                    if held(old, ic, new) or not room(new, system):
                         continue
-                    trash.remove(binned)
+                    restored.add(bin_at)
                     deleted.pop(old["id"], None)
                     conns.append(new)
+                    note_group(new)
+                    index(len(conns) - 1)
                     report["restored"].append(new.get("name") or new.get("host"))
                 continue
             new = portable_connection(ic)
             # Nothing of this system's signs a connection from elsewhere in: not its group's credential
             # set either, until the user picks it here (#11837; imports do the same).
             new["credential"] = "custom"
-            conns.append(new)
-            report["added"].append(new.get("name") or new.get("host"))
-
-        doomed = []
-        for cid, when in (inc.get("deleted") or {}).items():
-            if not isinstance(when, _NUMBER) or _future(when, now):
+            if not room(new, system):
                 continue
-            c = next((c for c in conns if c.get("id") == cid), None) \
-                or next((c for c in conns if cid in ids_of(c)), None)
+            conns.append(new)
+            note_group(new)
+            index(len(conns) - 1)
+            report["added"].append(new.get("name") or new.get("host"))
+        if restored:
+            trash[:] = [t for at, t in enumerate(trash) if at not in restored]
+
+        doomed = {}
+        for cid, when in (inc.get("deleted") or {}).items():
+            if not isinstance(when, _NUMBER) or _future(when, now) or not ID_RE.match(str(cid)):
+                continue
+            at = by_id.get(cid)
+            if at is None:
+                at = first(by_ids, (cid,))
+            c = conns[at] if at is not None else None
             if c is not None and when > c.get("modified", 0):
-                doomed.append((c, when))
-            elif c is None:
-                deleted[cid] = max(deleted.get(cid, 0), when)  # passes the deletion on to others
+                # Once, however many of its ids were deleted there (its own and an alias).
+                doomed[at] = max(doomed.get(at, when), when)
+            elif c is None and (cid in deleted or any(p not in restored for p in trash_ids.get(cid, ()))):
+                # Known here (deleted already, or in the trash): passed on to others. An id never
+                # seen here is not kept (see known_groups).
+                deleted[cid] = max(deleted.get(cid, 0), when)
         if doomed and len(doomed) > max(3, len(conns) // 4) and system not in allow_deletions:
-            report["pendingDeletions"].append({"system": system, "ids": [c["id"] for c, _ in doomed],
-                                               "names": [c.get("name") or c.get("host") for c, _ in doomed]})
+            report["pendingDeletions"].append({"system": system, "ids": [conns[at]["id"] for at in doomed],
+                                               "names": [conns[at].get("name") or conns[at].get("host") for at in doomed]})
             continue
-        for c, when in doomed:
-            conns.remove(c)
+        for at, when in doomed.items():
+            c = conns[at]
             trash.append({"connection": c, "deleted": when, "from": system})
             deleted[c["id"]] = max(deleted.get(c["id"], 0), when)
             report["trashed"].append(c.get("name") or c.get("host"))
+        if doomed:
+            conns[:] = [c for at, c in enumerate(conns) if at not in doomed]
     return data, report
 
 
@@ -818,8 +953,18 @@ def purge_trash(data, now=None):
     gone = [t["connection"]["id"] for t in data.get("trash", [])
             if t.get("deleted", 0) < cutoff and (t.get("connection") or {}).get("id")]
     data["trash"] = [t for t in data.get("trash", []) if t.get("deleted", 0) >= cutoff]
+    # At most STORE_MAX_TRASH, the newest kept: a system that adds and deletes again every round
+    # would otherwise grow it until the file is no longer read.
+    if len(data["trash"]) > STORE_MAX_TRASH:
+        newest = sorted(data["trash"], key=lambda t: t.get("deleted", 0), reverse=True)
+        gone += [t["connection"]["id"] for t in newest[STORE_MAX_TRASH:] if (t.get("connection") or {}).get("id")]
+        data["trash"] = newest[:STORE_MAX_TRASH]
     data["deleted"] = {k: v for k, v in (data.get("deleted") or {}).items() if v >= cutoff}
     data["deletedGroups"] = {k: v for k, v in (data.get("deletedGroups") or {}).items() if v >= cutoff}
+    # The newest STORE_MAX_DELETED of each (merge keeps only what is known here; this bounds it).
+    for key in ("deleted", "deletedGroups"):
+        if len(data[key]) > STORE_MAX_DELETED:
+            data[key] = dict(heapq.nlargest(STORE_MAX_DELETED, data[key].items(), key=lambda kv: kv[1]))
     return gone
 
 
@@ -890,6 +1035,16 @@ def read_json_file(path, follow=True, limit=SYNC_MAX_BYTES, budget=None):
     one-item list of bytes left, is shared by several reads: a file that does not fit is refused
     (OverBudget) before it is parsed, one that does is taken off it. Nesting deeper than
     JSON_MAX_DEPTH is refused like any other broken file."""
+    raw = read_bounded(path, follow, limit)
+    if budget is not None:
+        if len(raw) > budget[0]:
+            raise OverBudget(f"other systems' files take more than {SYNC_PEERS_MAX_BYTES >> 20} MiB in all")
+        budget[0] -= len(raw)
+    return parse_json(raw)
+
+
+def read_bounded(path, follow=True, limit=SYNC_MAX_BYTES):
+    """read_json_file's read: the bytes of an ordinary file, at most limit (ValueError for more)."""
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
     try:
         fd = os.open(path, flags)
@@ -903,12 +1058,15 @@ def read_json_file(path, follow=True, limit=SYNC_MAX_BYTES, budget=None):
         raw = f.read(limit + 1)
     if len(raw) > limit:
         raise ValueError(f"larger than {limit >> 20} MiB")
-    if budget is not None:
-        if len(raw) > budget[0]:
-            raise OverBudget(f"other systems' files take more than {SYNC_PEERS_MAX_BYTES >> 20} MiB in all")
-        budget[0] -= len(raw)
+    return raw
+
+
+def parse_json(raw):
+    """read_json_file's parse: UTF-8 JSON (bytes, or text) nested at most JSON_MAX_DEPTH deep
+    (ValueError else). Every JSON that is not this program's own goes through here: json.loads
+    raises RecursionError (no ValueError) for "[[[[…"."""
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
     except UnicodeDecodeError as e:
         raise ValueError(str(e)) from None
     except RecursionError:  # "[[[[…": a RuntimeError, which no caller expects
@@ -1018,6 +1176,7 @@ def sync_folder(path=CONNECTIONS, now=None, allow_deletions=(), allow_address=()
         errors.append(f"this system's sync file is larger than {SYNC_PEER_MAX_BYTES >> 20} MiB: "
                       "other systems do not read it")
     merged, report = merge(data, incoming, now, allow_deletions, allow_address)
+    purged += purge_trash(merged, now)  # what this round moved to the trash, within STORE_MAX_TRASH
     report["errors"] = errors + report["errors"]
     return {"data": merged, "report": report, "purged": purged, "system": system, "folder": folder}
 
@@ -1043,6 +1202,197 @@ def limit_memory():
 
 
 OUT_OF_MEMORY = "ran out of memory: the files read hold more than OMARemote takes in"
+
+
+# How many of each connections.json holds at most: far above a real library (tens, a few hundred),
+# below what the window's lists (and the bar plugin's) build in a moment. Sync and import add no
+# more; the window adds no more; a file holding more is not read (like a broken one), so nothing
+# downstream ever lays out tens of thousands of rows (plugin 0.4.17 sweep: 20,000 favourites
+# delivered through sync blocked the bar 23 s). Bytes alone (SYNC_PEER_MAX_BYTES) do not bound it.
+STORE_MAX_CONNECTIONS = 2000
+STORE_MAX_GROUPS = 200  # by name: a connection's group, or a group's own settings
+STORE_MAX_CREDENTIALS = 200
+STORE_MAX_TRASH = 2000
+STORE_MAX_QUICK = 50
+# What `read favourites` answers at most (the bar plugin's list): the rest is only counted.
+FAVOURITES_MAX = 100
+LAST_CONNECTED_MAX_BYTES = 1 << 20
+# Deletions (and deleted groups) kept, and one other system's file may pass on: 30 days of them on
+# a real one. Only deletions of what this system knows are kept, the newest STORE_MAX_DELETED.
+STORE_MAX_DELETED = 20000
+
+
+class Refused(ValueError):
+    """A file read but not taken (not JSON, too many, …); copied: a copy is in <file>.broken."""
+
+    def __init__(self, message, copied=False):
+        super().__init__(message)
+        self.copied = copied
+
+
+def store_counts(data):
+    """What in connections.json's data is over its STORE_MAX_*: a list of sentences, empty if none."""
+    conns = data.get("connections") or []
+    groups = set(data.get("groups") or {}) | {c.get("group") for c in conns if isinstance(c, dict) and c.get("group")}
+    over = []
+    for what, n, limit in (("connections", len(conns), STORE_MAX_CONNECTIONS),
+                           ("groups", len(groups), STORE_MAX_GROUPS),
+                           ("credential sets", len(data.get("credentials") or []), STORE_MAX_CREDENTIALS),
+                           ("connections in the trash", len(data.get("trash") or []), STORE_MAX_TRASH),
+                           ("quick connections", len(data.get("quick") or []), STORE_MAX_QUICK)):
+        if n > limit:
+            over.append(f"more than {limit} {what}")
+    return over
+
+
+# What the log view shows of a session's log at most: its end (the log itself takes LOG_MAX).
+LOG_VIEW_MAX_BYTES = 1 << 20
+
+
+def read_log(sid):
+    """`omaremote-session read log <session id>`: {"text", "cut"}, the end of that session's own
+    log (SESSIONS_DIR/<id>.log, an ordinary file, no symlink followed), at most LOG_VIEW_MAX_BYTES
+    from a line start; cut: there is more before it."""
+    if not isinstance(sid, str) or not SESSION_ID_RE.fullmatch(sid):
+        raise ValueError("not a session id")
+    path = os.path.join(SESSIONS_DIR, sid + ".log")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ValueError("a symlink, not a file") from None
+        raise
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError("not an ordinary file")
+        cut = st.st_size > LOG_VIEW_MAX_BYTES
+        if cut:
+            f.seek(st.st_size - LOG_VIEW_MAX_BYTES)
+        raw = f.read(LOG_VIEW_MAX_BYTES)
+    if cut:
+        raw = raw[raw.find(b"\n") + 1:]  # from the first whole line
+    return {"text": raw.decode("utf-8", "replace"), "cut": cut}
+
+
+def read_store(what, path=CONNECTIONS, last_path=LAST_CONNECTED):
+    """`omaremote-session read <what>`: one of OMARemote's files, bounded, for the window and the bar
+    plugin (which never read them whole themselves: a FileView reads a 300 MB file as it is).
+      connections   {"exists", "data"}: connections.json as stored (load_raw: an ordinary file,
+                    symlink followed, SYNC_MAX_BYTES, JSON_MAX_DEPTH) within the STORE_MAX_* counts
+      favourites    {"exists", "favourites": [{id, name, host, protocol, group}], "more"}: the
+                    favourite connections, the first FAVOURITES_MAX in the file's order
+      last-connected  {id: ms}: when each was last up (at most LAST_CONNECTED_KEPT; not a symlink)
+    Raises OSError (unreadable) or ValueError (read, but refused: not JSON, too large or too many)."""
+    if what == "last-connected":
+        try:
+            data = read_json_file(last_path, follow=False, limit=LAST_CONNECTED_MAX_BYTES)
+        except FileNotFoundError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        stamps = [(k, v) for k, v in data.items() if isinstance(v, _NUMBER) and not isinstance(v, bool)]
+        return dict(sorted(stamps, key=lambda kv: kv[1], reverse=True)[:LAST_CONNECTED_KEPT])
+    exists = os.path.lexists(path)
+    try:
+        raw = read_bounded(path)
+    except FileNotFoundError:
+        raw = None
+    try:
+        data = store_shape(parse_json(raw)) if raw is not None else {}
+        # Deletions are kept to be passed on, not shown: more than STORE_MAX_DELETED (a library
+        # filled by an older OMARemote's relay) is cut to the newest, which the window then writes.
+        for key in ("deleted", "deletedGroups"):
+            if len(data.get(key) or {}) > STORE_MAX_DELETED:
+                stamps = [(k, v) for k, v in data[key].items() if isinstance(v, _NUMBER) and not isinstance(v, bool)]
+                data[key] = dict(heapq.nlargest(STORE_MAX_DELETED, stamps, key=lambda kv: kv[1]))
+        over = store_counts(data)
+        if over:
+            raise ValueError("connections.json holds " + ", ".join(over))
+    except ValueError as e:
+        # The window never writes over a file it refused; this keeps a copy of it beside it, from
+        # the bytes read (never a second open: a FIFO swapped in meanwhile would hang a cp).
+        copied = False
+        if raw is not None and what == "connections":
+            try:
+                write_private(path + ".broken", raw)
+                copied = True
+            except OSError:
+                pass
+        raise Refused(str(e), copied) from None
+    if what == "connections":
+        return {"exists": exists, "data": data}
+    favs = [c for c in data.get("connections") or [] if isinstance(c, dict) and c.get("favourite") is True
+            and isinstance(c.get("id"), str) and c["id"]]
+    pick = lambda c: {k: c[k] for k in ("id", "name", "host", "protocol", "group") if isinstance(c.get(k), str)}
+    return {"exists": exists, "favourites": [pick(c) for c in favs[:FAVOURITES_MAX]],
+            "more": max(0, len(favs) - FAVOURITES_MAX)}
+
+
+# What each command the window (or the bar plugin) reads whole may print: its StdioCollector holds
+# all of it, so more is never printed. A JSON command answers {"error"} instead, a plain one
+# (ANSWER_PLAIN) nothing; both exit ANSWER_TOO_LARGE. Commands not named here stream, or nothing reads them whole.
+ANSWER_LIMITS = dict.fromkeys(("sync", "import", "import-scan", "import-foreign", "export"), ANSWER_MAX_BYTES)
+ANSWER_LIMITS.update({"read": ANSWER_MAX_BYTES, "list": 4 << 20, "hotkeys": 4 << 20, "hypr-hotkeys": 1 << 20,
+                      "ssh-keys": 1 << 20, "self": 1 << 20, "mounts": 1 << 20, "import-sources": 1 << 20,
+                      "ssh-config": 1 << 20, "pick": 1 << 20, "browse": 64 << 10, "unmount": 64 << 10,
+                      "restart-gvfs": 64 << 10, "paths": 64 << 10, "update-check": 64 << 10,
+                      "plugin-check": 64 << 10, "monitor-scale": 4 << 10, "close-key": 4 << 10,
+                      "system-name": 4 << 10})
+ANSWER_PLAIN = ("monitor-scale", "close-key", "system-name")
+ANSWER_TOO_LARGE = 3
+
+
+class BoundedAnswer(io.TextIOBase):
+    """stdout for a command in ANSWER_LIMITS: kept until the command ends, and dropped as soon as it
+    passes limit bytes (never held past it)."""
+
+    def __init__(self, limit):
+        self.parts, self.size, self.limit, self.over = [], 0, limit, False
+
+    def writable(self):
+        return True
+
+    def write(self, s):
+        if not self.over:
+            self.size += len(s.encode("utf-8", "surrogateescape"))
+            if self.size > self.limit:
+                self.over, self.parts = True, []
+            else:
+                self.parts.append(s)
+        return len(s)
+
+
+def run_bounded(argv, out=None):
+    """main(argv), with its stdout bounded when the command is in ANSWER_LIMITS."""
+    out = out or sys.stdout
+    cmd = argv[1] if len(argv) > 1 else ""
+    if cmd not in ANSWER_LIMITS:
+        return main(argv)
+    answer = BoundedAnswer(ANSWER_LIMITS[cmd])
+    sys.stdout = answer
+    try:
+        try:
+            rc = main(argv)
+        except (RecursionError, MemoryError) as e:
+            # What slipped past the bounds still answers as an error, never a traceback without one.
+            answer.parts, answer.size = [], 0
+            if cmd not in ANSWER_PLAIN:
+                print(json.dumps({"error": f"{cmd}: " + ("nested too deeply" if isinstance(e, RecursionError)
+                                                         else OUT_OF_MEMORY)}))
+            rc = 1
+    finally:
+        sys.stdout = out
+        if not answer.over:
+            out.write("".join(answer.parts))
+    if answer.over:
+        limit = ANSWER_LIMITS[cmd]
+        size = f"{limit >> 20} MiB" if limit >= 1 << 20 else f"{limit >> 10} KiB" if limit >= 1 << 10 else f"{limit} bytes"
+        print(f"omaremote-session {cmd}: the answer takes more than {size}", file=sys.stderr)
+        if cmd not in ANSWER_PLAIN:
+            out.write(json.dumps({"error": f"the answer takes more than {size}"}) + "\n")
+        return ANSWER_TOO_LARGE
+    return rc
 
 
 def watch_folder(folder, out=sys.stdout, wait=30.0, stop=None):
@@ -2070,13 +2420,13 @@ def keep_backup(path, text):
 
 
 def write_private(path, text):
-    """A file of OMARemote's own (a cache, a generated config): a new 0600 file under a random name
-    beside it, renamed into place, so a symlink or FIFO planted at the fixed name is replaced, never
-    written through."""
+    """A file of OMARemote's own (a cache, a generated config, a copy): a new 0600 file under a
+    random name beside it, renamed into place, so a symlink or FIFO planted at the fixed name is
+    replaced, never written through. text may be bytes (written as they are)."""
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".",
                                suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with (os.fdopen(fd, "wb") if isinstance(text, bytes) else os.fdopen(fd, "w", encoding="utf-8")) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -3166,7 +3516,7 @@ def parse_1remote(path, budget=None):
     out, errors = [], []
     for remote, text in rows:
         try:
-            v = json.loads(text) if isinstance(text, str) else None
+            v = parse_json(text) if isinstance(text, str) else None
         except ValueError:
             v = None
         if not isinstance(v, dict):
@@ -3467,6 +3817,12 @@ def import_foreign(sources, picked=None, path=CONNECTIONS, ssh_dir=SSH_DIR, now=
         # Never a group's credential set, even in a group that has one: a file from elsewhere could
         # name your group and its own host, and the set's password would go there. It asks instead.
         new = dict(e["_conn"], id="c-" + uuid.uuid4().hex[:12], modified=now, credential="custom")
+        names = set(data.get("groups") or {}) | {c.get("group") for c in conns if c.get("group")}
+        if len(conns) >= STORE_MAX_CONNECTIONS or (new.get("group") and new["group"] not in names
+                                                   and len(names) >= STORE_MAX_GROUPS):
+            report["errors"].append(f"not everything imported: OMARemote holds no more than "
+                                    f"{STORE_MAX_CONNECTIONS} connections in {STORE_MAX_GROUPS} groups")
+            break
         conns.append(new)
         report["added"].append(new["name"])
     return {"data": data, "report": report}
@@ -3655,10 +4011,10 @@ def _sessions_lock():
 
 def _write_session_locked(state, keep):
     try:
-        with open(_session_path(state["id"]), encoding="utf-8") as f:
-            current = json.load(f)
+        # As list_sessions reads records: an ordinary file of ours, bounded, no symlink followed.
+        current = read_json_file(_session_path(state["id"]), follow=False, limit=SESSION_MAX_BYTES)
         for key in keep:
-            if key in current:
+            if isinstance(current, dict) and key in current:
                 state[key] = current[key]
     except (OSError, ValueError, TypeError):
         pass
@@ -4243,6 +4599,21 @@ def main(argv):
     if cmd == "system-name":
         print(system_name(load_raw()))
         return 0
+    if cmd == "read" and (len(rest) == 1 and rest[0] in ("connections", "favourites", "last-connected")
+                          or len(rest) == 2 and rest[0] == "log"):
+        limit_memory()
+        try:
+            print(answer_json(read_log(rest[1]) if rest[0] == "log" else read_store(rest[0])))
+        except OSError as e:
+            print(json.dumps({"error": str(e), "broken": False}))
+            return 1
+        except (ValueError, MemoryError) as e:
+            # Read and refused (broken): the window never writes over it, nor reads it again
+            # until it changes. copied: `read connections` kept a copy in connections.json.broken.
+            why = "read " + OUT_OF_MEMORY if isinstance(e, MemoryError) else str(e)
+            print(json.dumps({"error": why, "broken": True, "copied": getattr(e, "copied", False)}))
+            return 2
+        return 0
     if cmd == "paths":
         ensure_changes()
         print(json.dumps({"runtime": RUNTIME_DIR, "changes": CHANGES, "connections": CONNECTIONS}))
@@ -4341,4 +4712,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(run_bounded(sys.argv))

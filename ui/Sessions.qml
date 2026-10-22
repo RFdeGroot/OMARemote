@@ -299,8 +299,11 @@ Singleton {
         }
     }
 
+    // Only watched: the change is what counts, never what it holds (read whole otherwise).
     FileView {
         path: root.changesPath
+        preload: false
+        blockAllReads: true
         watchChanges: root.changesPath !== ""
         printErrors: false
         onFileChanged: root.refresh()

@@ -179,6 +179,46 @@ class OddFiles(unittest.TestCase):
             finally:
                 session.SESSIONS_DIR = saved
 
+    def test_a_record_rewrite_never_waits_on_a_fifo(self):
+        import tempfile
+        import threading
+        saved = session.SESSIONS_DIR
+        with tempfile.TemporaryDirectory() as d:
+            session.SESSIONS_DIR = d
+            try:
+                os.mkfifo(os.path.join(d, "s1.json"))
+                t = threading.Thread(target=session._write_session_locked,
+                                     args=({"id": "s1", "state": "connected"}, ("view",)), daemon=True)
+                t.start()
+                t.join(3)
+                self.assertFalse(t.is_alive(), "the rewrite waited on a FIFO")
+                with open(os.path.join(d, "s1.json")) as f:
+                    self.assertEqual(json.load(f)["state"], "connected")
+            finally:
+                session.SESSIONS_DIR = saved
+
+    def test_read_log_is_the_end_of_the_sessions_own_ordinary_log(self):
+        import tempfile
+        saved = session.SESSIONS_DIR
+        with tempfile.TemporaryDirectory() as d:
+            session.SESSIONS_DIR = d
+            try:
+                with open(os.path.join(d, "s1.log"), "w") as f:
+                    for i in range(40000):
+                        f.write(f"line {i} " + "x" * 40 + "\n")
+                out = session.read_log("s1")
+                self.assertTrue(out["cut"])
+                self.assertLessEqual(len(out["text"]), session.LOG_VIEW_MAX_BYTES)
+                self.assertTrue(out["text"].startswith("line "))
+                self.assertTrue(out["text"].endswith("line 39999 " + "x" * 40 + "\n"))
+                os.symlink(os.path.join(d, "s1.log"), os.path.join(d, "s2.log"))
+                os.mkfifo(os.path.join(d, "s3.log"))
+                for sid in ("s2", "s3", "../s1"):
+                    with self.assertRaises(ValueError, msg=sid):
+                        session.read_log(sid)
+            finally:
+                session.SESSIONS_DIR = saved
+
     def test_the_log_view_only_gets_the_sessions_own_ordinary_log(self):
         import tempfile
         saved = session.SESSIONS_DIR
@@ -319,6 +359,23 @@ class QuickConnections(unittest.TestCase):
             session.mark_connected("c1", stamps)
             with open(stamps) as f:
                 self.assertEqual(sorted(json.load(f)), ["c1", "c3"])
+
+    def test_stamps_never_wait_on_a_fifo_nor_crash_on_depth(self):
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as d:
+            stamps = os.path.join(d, "last-connected.json")
+            os.mkfifo(stamps)
+            t = threading.Thread(target=session.mark_connected, args=("c1", stamps), daemon=True)
+            t.start()
+            t.join(3)
+            self.assertFalse(t.is_alive(), "mark_connected waited on a FIFO")
+            os.unlink(stamps)
+            with open(stamps, "w") as f:
+                f.write("[" * 200000)
+            session.mark_connected("c1", stamps)
+            with open(stamps) as f:
+                self.assertEqual(list(json.load(f)), ["c1"])
 
     def test_it_never_syncs_or_exports(self):
         for kind in ("sync", "export"):
@@ -1178,6 +1235,202 @@ class Sync(unittest.TestCase):
             self.assertEqual(out["report"]["added"], [])
             self.assertEqual(len(out["report"]["errors"]), 1)
             self.assertIn("more than", out["report"]["errors"][0])
+
+    # Bytes do not bound how many: 20,000 favourites in 1.8 MB blocked the bar plugin 23 s.
+    def test_no_more_connections_than_it_holds(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            half = session.STORE_MAX_CONNECTIONS // 2 + 5
+            for p in ("a", "b"):
+                with open(os.path.join(folder, f"{p}.omaremote.json"), "w") as f:
+                    json.dump(self.remote(*[self.c(f"{p}{i}", host=f"{p}{i}.lan", favourite=True) for i in range(half)],
+                                          system=p), f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(len(out["data"]["connections"]), session.STORE_MAX_CONNECTIONS)
+            self.assertIn(f"no more than {session.STORE_MAX_CONNECTIONS} connections", " ".join(out["report"]["errors"]))
+            self.assertEqual(session.store_counts(out["data"]), [])
+
+    def test_no_more_groups_than_it_holds(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            half = session.STORE_MAX_GROUPS // 2 + 5
+            for p in ("a", "b"):
+                groups = {f"{p}g{i}": {"settings": {}, "modified": 50} for i in range(half)}
+                with open(os.path.join(folder, f"{p}.omaremote.json"), "w") as f:
+                    json.dump(self.remote(*[self.c(f"{p}{i}", host=f"{p}{i}.lan", group=f"{p}h{i}") for i in range(half)],
+                                          groups=groups, system=p), f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(session.store_counts(out["data"]), [])
+            names = set(out["data"]["groups"]) | {c.get("group") for c in out["data"]["connections"] if c.get("group")}
+            self.assertEqual(len(names), session.STORE_MAX_GROUPS)
+
+    def test_a_file_holding_more_than_a_library_is_not_read(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            with open(os.path.join(folder, "big.omaremote.json"), "w") as f:
+                json.dump(self.remote(*[self.c(f"c{i}", host=f"pc{i}.lan") for i in range(session.STORE_MAX_CONNECTIONS + 1)]), f)
+            with open(os.path.join(folder, "gone.omaremote.json"), "w") as f:
+                json.dump(self.remote(deleted={f"x{i}": 50 for i in range(session.STORE_MAX_DELETED + 1)}, system="gone"), f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(out["data"]["connections"], [])
+            self.assertEqual(sum("not read: it holds more than" in e for e in out["report"]["errors"]), 2)
+
+    # Linear in what arrives: 20,000 against 2000 here took 89 s (the round's deadline is 60 s).
+    def test_a_full_round_is_quick(self):
+        import time
+        local = {"connections": [self.c(f"l{i}", host=f"l{i}.lan", group=f"g{i % 150}") for i in range(session.STORE_MAX_CONNECTIONS)]}
+        files = [self.remote(*[self.c(f"p{p}x{i}", host=f"p{p}x{i}.lan") for i in range(1700)],
+                             *[self.c(f"l{i}", host=f"l{i}.lan", modified=200) for i in range(0, 2000, 7)],
+                             deleted={f"gone{i}": 150 for i in range(5000)}, system=f"p{p}") for p in range(8)]
+        calls = [0]
+        key = session.connection_key
+        def counted(c):
+            calls[0] += 1
+            return key(c)
+        session.connection_key = counted
+        try:
+            t = time.monotonic()
+            data, report = session.merge(local, files, self.NOW)
+            took = time.monotonic() - t
+        finally:
+            session.connection_key = key
+        self.assertEqual(len(report["updated"]), 286)
+        self.assertLess(calls[0], 200000)  # about 2 per connection seen, not one per pair
+        self.assertLess(took, 10)
+
+    # A file of fresh deletion ids every round grew connections.json past what is read (17.6 MiB
+    # after 25 rounds of 20,000): only deletions of what is known here are kept.
+    def test_deletions_of_unknown_ids_are_not_kept(self):
+        import tempfile, uuid
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            with open(conf) as f:
+                raw = json.load(f)
+            raw["connections"] = [self.c("c1", host="one.lan"), self.c("c2", host="two.lan")]
+            raw["trash"] = [{"connection": self.c("t1", host="three.lan"), "deleted": self.NOW - 5000}]
+            with open(conf, "w") as f:
+                json.dump(raw, f)
+            for round_ in range(30):
+                gone = {uuid.uuid4().hex[:20]: self.NOW - 1000 for _ in range(session.STORE_MAX_DELETED - 2)}
+                gone.update({"t1": self.NOW - 1000, "../x": self.NOW - 1000})
+                with open(os.path.join(folder, "peer.omaremote.json"), "w") as f:
+                    json.dump(self.remote(deleted=gone, system="peer"), f)
+                out = session.sync_folder(conf, self.NOW + round_)
+                raw.update(out["data"])
+                with open(conf, "w") as f:
+                    json.dump(raw, f)
+            self.assertEqual(set(raw["deleted"]), {"t1"})
+            self.assertLess(os.path.getsize(conf), 64 << 10)
+            self.assertEqual(session.store_counts(raw), [])
+
+    def test_deletions_of_unknown_groups_are_not_kept(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder, conf = self.sync_setup(d)
+            with open(conf) as f:
+                raw = json.load(f)
+            raw["connections"] = [self.c("c1", group="Lab")]
+            with open(conf, "w") as f:
+                json.dump(raw, f)
+            with open(os.path.join(folder, "peer.omaremote.json"), "w") as f:
+                json.dump(dict(self.remote(system="peer"), deletedGroups={"Lab": self.NOW - 1000, "Nowhere": self.NOW - 1000}), f)
+            out = session.sync_folder(conf, self.NOW)
+            self.assertEqual(set(out["data"]["deletedGroups"]), {"Lab"})
+
+    # Never had here, deleted on one system, still listed by a stale one: not taken in, whichever
+    # file the round reads first (dropping the relay of unknown deletions made it depend on order).
+    def test_a_deletion_elsewhere_wins_over_a_stale_copy_in_either_order(self):
+        gone = self.remote(deleted={"c-x": 500}, groups={}, system="a")
+        gone["deletedGroups"] = {"Old": 500}
+        stale = self.remote(self.c("c-x", host="x.lan", modified=100, group="Old"),
+                            groups={"Old": {"settings": {}, "modified": 100}}, system="d")
+        for files in ((gone, stale), (stale, gone)):
+            data, report = session.merge({"connections": []}, json.loads(json.dumps(files)), self.NOW)
+            self.assertEqual(report["added"], [], [f["system"] for f in files])
+            self.assertEqual(data["connections"], [])
+            self.assertNotIn("Old", data["groups"])
+            self.assertNotIn("c-x", data["deleted"])
+
+    def test_a_library_with_too_many_deletions_is_cut_not_refused(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            conf = os.path.join(d, "connections.json")
+            n = session.STORE_MAX_DELETED + 10
+            with open(conf, "w") as f:
+                json.dump({"connections": [self.c("c1")], "deleted": {f"x{i}": i for i in range(n)}}, f)
+            data = session.read_store("connections", conf)["data"]
+            self.assertEqual(len(data["deleted"]), session.STORE_MAX_DELETED)
+            self.assertNotIn("x0", data["deleted"])
+
+    def test_deletions_keep_the_newest(self):
+        n = session.STORE_MAX_DELETED + 5
+        data = {"deleted": {f"c{i}": self.NOW - i for i in range(n)}, "deletedGroups": {}}
+        session.purge_trash(data, self.NOW)
+        self.assertEqual(len(data["deleted"]), session.STORE_MAX_DELETED)
+        self.assertNotIn(f"c{n - 1}", data["deleted"])
+
+    def test_the_trash_keeps_the_newest(self):
+        n = session.STORE_MAX_TRASH + 3
+        data = {"trash": [{"connection": {"id": f"c{i}"}, "deleted": self.NOW - i} for i in range(n)]}
+        gone = session.purge_trash(data, self.NOW)
+        self.assertEqual(len(data["trash"]), session.STORE_MAX_TRASH)
+        self.assertEqual(gone, [f"c{i}" for i in range(session.STORE_MAX_TRASH, n)])
+
+    def test_read_favourites_is_bounded_and_only_what_the_bar_shows(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            conf = os.path.join(d, "connections.json")
+            conns = [self.c(f"c{i}", favourite=i % 2 == 0, username="alice") for i in range(2 * session.FAVOURITES_MAX + 40)]
+            with open(conf, "w") as f:
+                json.dump({"connections": conns}, f)
+            out = session.read_store("favourites", conf)
+            self.assertEqual(len(out["favourites"]), session.FAVOURITES_MAX)
+            self.assertEqual(out["more"], 20)
+            self.assertEqual(out["favourites"][0], {"id": "c0", "name": "c0", "host": "pc.lan", "protocol": "rdp"})
+            self.assertTrue(out["exists"])
+            # A favourite the bar could not open (no id, or one of another kind) is not one.
+            with open(conf, "w") as f:
+                json.dump({"connections": [self.c("c1", favourite=True), dict(self.c("x"), id=7, favourite=True)]}, f)
+            self.assertEqual([c["id"] for c in session.read_store("favourites", conf)["favourites"]], ["c1"])
+            with open(conf, "w") as f:
+                json.dump({"connections": [self.c(f"c{i}") for i in range(session.STORE_MAX_CONNECTIONS + 1)]}, f)
+            with self.assertRaises(ValueError):
+                session.read_store("connections", conf)
+            self.assertEqual(session.read_store("connections", os.path.join(d, "none.json")),
+                             {"exists": False, "data": {}})
+
+    def test_what_slips_past_the_bounds_still_answers(self):
+        import io
+        out = io.StringIO()
+        real = session.main
+        def deep(argv):
+            print("partial")
+            raise RecursionError("maximum recursion depth exceeded")
+        session.main = deep
+        try:
+            self.assertEqual(session.run_bounded(["omaremote-session", "sync"], out), 1)
+        finally:
+            session.main = real
+        self.assertEqual(json.loads(out.getvalue()), {"error": "sync: nested too deeply"})
+
+    def test_an_answer_above_its_limit_is_never_printed(self):
+        import io
+        out = io.StringIO()
+        old = dict(session.ANSWER_LIMITS)
+        try:
+            session.ANSWER_LIMITS["paths"] = 10
+            self.assertEqual(session.run_bounded(["omaremote-session", "paths"], out), session.ANSWER_TOO_LARGE)
+            self.assertEqual(json.loads(out.getvalue()), {"error": "the answer takes more than 10 bytes"})
+            session.ANSWER_LIMITS["paths"] = 64 << 10
+            out = io.StringIO()
+            self.assertEqual(session.run_bounded(["omaremote-session", "paths"], out), 0)
+            self.assertIn("connections", json.loads(out.getvalue()))
+        finally:
+            session.ANSWER_LIMITS.clear()
+            session.ANSWER_LIMITS.update(old)
 
     def test_deep_nesting_is_a_broken_file_not_a_crash(self):
         # json.loads raises RecursionError (not a ValueError): sync stopped with a traceback.
