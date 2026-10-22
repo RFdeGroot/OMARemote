@@ -140,6 +140,25 @@ an audit after two sync findings in a row found six more), and add the class her
   (`http.client.HTTPException`, which is no OSError) is a failure, not a traceback. (Reviewer, 0.9.11)
 - **Text into a line-based file stays one line.** Log lines (read back for "connected"/"failed"),
   `~/.ssh/omaremote.conf` (a name with a line break added a `Host *` block). (0.8.0, 0.9.0)
+- **A running operation keeps what it started with, or ends when that changes.** Gliff's file
+  paste read the *current* offer and spool at each step: a new offer from the server mid-paste
+  gave it the new file list at the old index and an empty spool path, so it wrote relative to the
+  working directory. Each paste now holds its own manifest, serial and spool (as a descriptor),
+  writes beneath that descriptor only (`openat2`, never a path string), and a new offer ends
+  every running paste. Look for any member a later step reads that a message can replace in
+  between. (0.9.13)
+- **A signal goes to the process that was recorded, not to a number.** A session's record names
+  its processes with their start time (`proc_start`); "alive" means that pid with that start time,
+  and `stop` pins the pid (pidfd) before checking and signalling: a pid reused by another program
+  after a crash is left alone. (0.9.13)
+- **A log a server can make longer is capped where it is written.** The session log is in RAM
+  (the runtime folder) and the log view reads it whole: `copy_log` keeps lines to 8 KiB and the
+  file to 8 MiB, while every line still reaches the state parser. (0.9.13)
+- **Files that are not ours alone are read through `read_text`/`read_json_file`**: one open,
+  without blocking, the descriptor checked for an ordinary file, a size limit; never `isfile()`
+  and then `open()`. Our own files at fixed names are written by replacing them (`write_private`,
+  `write_user_file`) or created new (`O_EXCL`), never with `open(path, "w")`. (0.9.13; the
+  omarchy-plugin-security skill's grep audit finds the rest of this class)
 
 ## Then
 

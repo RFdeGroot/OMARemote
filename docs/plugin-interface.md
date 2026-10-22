@@ -3,7 +3,7 @@
 The [bar plugin](https://github.com/RFdeGroot/omarchy-omaremote) (`rfdegroot.omaremote`) talks to
 OMARemote only through the interface below. A change to any of it is a change for the plugin too:
 keep it compatible, or raise the plugin's `omaremote.minimumVersion` in the same breath. The
-plugin's `AGENTS.md` points back here.
+plugin's `docs/CONTRIBUTING.md` points back here.
 
 | What | Where in OMARemote | Plugin use |
 | --- | --- | --- |

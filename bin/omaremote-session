@@ -238,8 +238,7 @@ DEFAULT_PORTS = {"rdp": 3389, "vnc": 5900, "ssh": 22, "gliff": 22}
 def load_data(path=CONNECTIONS):
     """The saved file: {"connections": [...], "credentials": [...], "groups": {name: {...}}}."""
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_json_file(path)
     except FileNotFoundError:
         data = {}
     if isinstance(data, list):  # the very first format
@@ -383,8 +382,7 @@ def now_ms():
 def load_raw(path=CONNECTIONS):
     """connections.json as stored, every key kept."""
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+        data = read_json_file(path)
     except FileNotFoundError:
         data = {}
     if isinstance(data, list):
@@ -884,6 +882,21 @@ def read_json_file(path, follow=True):
         raise ValueError(str(e)) from None
 
 
+def read_text(path, limit, follow=True, prefix=False):
+    """A file that is not ours alone (a user's config, a key, a cache): opened once, without
+    blocking, and read only when that descriptor is an ordinary file (a FIFO by its name would hang
+    the read, a device never end), at most limit bytes: more is refused, or with prefix the first
+    limit bytes are all that is read. OSError as open() raises it; ValueError for what is refused."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | (0 if follow else os.O_NOFOLLOW)
+    with os.fdopen(os.open(path, flags), "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError("not an ordinary file")
+        raw = f.read(limit if prefix else limit + 1)
+    if len(raw) > limit:
+        raise ValueError(f"larger than {limit} bytes")
+    return raw.decode("utf-8", "replace")
+
+
 def _same_content(a, b):
     strip = lambda d: {k: v for k, v in d.items() if k != "written"}
     return strip(a) == strip(b)
@@ -1213,8 +1226,7 @@ def plugin_check(offline=False, plugins_dir=None, latest=""):
     result = {"supported": bool(shutil.which("omarchy-plugin-add")), "installed": False,
               "version": "", "git": os.path.isdir(os.path.join(folder, ".git")), "latest": latest, "newer": False}
     try:
-        with open(os.path.join(folder, "manifest.json"), encoding="utf-8") as f:
-            result["version"] = str(json.load(f).get("version") or "")
+        result["version"] = str(read_json_file(os.path.join(folder, "manifest.json")).get("version") or "")
         result["installed"] = True
     except (OSError, ValueError):
         pass
@@ -1244,14 +1256,14 @@ def set_view(sid, view, viewer=None):
     """Records where a session is shown; False when there is no such session."""
     with _sessions_lock():
         try:
-            with open(_session_path(sid), encoding="utf-8") as f:
-                state = json.load(f)
+            state = read_json_file(_session_path(sid), follow=False)
         except (OSError, ValueError):
             return False
         if not isinstance(state, dict) or state.get("id") != sid:
             return False
         state["view"] = view
         state["viewer"] = int(viewer) if view == "window" and viewer else None
+        state["viewerStart"] = (proc_start(state["viewer"]) or "") if state["viewer"] else None
         _write_session_locked(state, keep=())
     touch_changes()
     return True
@@ -1395,12 +1407,9 @@ def user_window_rules(dirs=None):
             for name in names:
                 if not name.endswith((".lua", ".conf")) or name == "omaremote.lua" or ".bak" in name or "backup" in name:
                     continue
-                if not os.path.isfile(os.path.join(folder, name)):
-                    continue  # a FIFO or device by that name would hang the read
                 try:
-                    with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as f:
-                        text = f.read(1 << 20)
-                except OSError:
+                    text = read_text(os.path.join(folder, name), 1 << 20, prefix=True)
+                except (OSError, ValueError):
                     continue
                 # Comments out; each line's bracket depth before it, so a line's statement is the
                 # lines around it back to where that depth opened and on to where it closes.
@@ -1583,9 +1592,8 @@ def place_window(sid, pid):
     Hyprland rule places it (user_window_rules); a hotkey window goes to its special workspace and
     shows there; a fullscreen one fills the screen (and leaving fullscreen goes back to the float)."""
     try:
-        with open(_session_path(sid), encoding="utf-8") as f:
-            conn_id = json.load(f).get("connection")
-    except (OSError, ValueError):
+        conn_id = read_json_file(_session_path(sid), follow=False).get("connection")
+    except (OSError, ValueError, AttributeError):
         conn_id = None
     conn = find_connection(conn_id or "", load_connections()) if conn_id else None
     if user_window_rules() and not is_hotkey(conn):
@@ -1616,9 +1624,8 @@ def place_window(sid, pid):
 def hide_window(sid):
     """ctrl+alt+h in a hotkey window: its special workspace closes."""
     try:
-        with open(_session_path(sid), encoding="utf-8") as f:
-            conn_id = json.load(f).get("connection")
-    except (OSError, ValueError):
+        conn_id = read_json_file(_session_path(sid), follow=False).get("connection")
+    except (OSError, ValueError, AttributeError):
         return False
     conn = find_connection(conn_id or "", load_connections())
     if not is_hotkey(conn):
@@ -1773,9 +1780,13 @@ def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=Tru
             write_json_text(managed, text)
             changed = True
         if span is None:
-            if not os.path.exists(main_config + ".omaremote-backup"):
-                with open(main_config + ".omaremote-backup", "w", encoding="utf-8") as f:
+            try:  # made once, new (O_EXCL): never written through something planted at its name
+                with open(os.open(main_config + ".omaremote-backup",
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600),
+                          "w", encoding="utf-8") as f:
                     f.write(config)
+            except FileExistsError:
+                pass
             write_json_text(main_config, hypr_add_block(config, block))
             changed = True
     else:
@@ -1903,6 +1914,26 @@ def user_file_writable(path):
 
 def write_json_text(path, text):
     write_user_file(path, text)
+
+
+def write_private(path, text):
+    """A file of OMARemote's own (a cache, a generated config): a new 0600 file under a random name
+    beside it, renamed into place, so a symlink or FIFO planted at the fixed name is replaced, never
+    written through."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="." + os.path.basename(path) + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------- files over SFTP
@@ -2268,9 +2299,8 @@ def terminal_font_size(terminal=None, fallback=9.0):
             continue
         path, pattern = FONT_SIZE_RES[name]
         try:
-            with open(path, encoding="utf-8") as f:
-                m = re.search(pattern, f.read(), re.M)
-        except OSError:
+            m = re.search(pattern, read_text(path, 1 << 20, prefix=True), re.M)
+        except (OSError, ValueError):
             continue
         if m:
             return float(m.group(1))
@@ -2325,8 +2355,8 @@ def ssh_keys(ssh_dir=SSH_DIR):
     out = []
     for name in names:
         path = os.path.join(ssh_dir, name)
-        if not os.path.isfile(path) or name.startswith("."):
-            continue
+        if name.startswith(".") or not os.path.isfile(path):
+            continue  # a listing only: what is read below is checked on its own descriptor
         if name.endswith(".pub"):
             if os.path.exists(path[:-4]):
                 continue  # listed with its private key
@@ -2334,9 +2364,8 @@ def ssh_keys(ssh_dir=SSH_DIR):
             pub = path
         else:
             try:
-                with open(path, "rb") as f:
-                    head = f.read(64)
-            except OSError:
+                head = read_text(path, 64, prefix=True).encode()
+            except (OSError, ValueError):
                 continue
             if not (head.startswith(b"-----BEGIN") and b"PRIVATE KEY" in head):
                 continue
@@ -2344,14 +2373,13 @@ def ssh_keys(ssh_dir=SSH_DIR):
             pub = path + ".pub"
         key_type, comment = "", ""
         try:
-            with open(pub, encoding="utf-8") as f:
-                parts = f.read().split(None, 2)
+            parts = read_text(pub, 16384, prefix=True).split(None, 2)
             if len(parts) >= 2 and parts[0].startswith(("ssh-", "ecdsa-", "sk-")):
                 key_type = parts[0].replace("ssh-", "").replace("sk-", "security key ")
                 comment = parts[2].strip() if len(parts) > 2 else ""
             elif kind == "agent":
                 continue  # a .pub that is not a public key
-        except OSError:
+        except (OSError, ValueError):
             pass
         out.append({"path": _tilde(path), "name": name, "kind": kind, "type": key_type, "comment": comment})
     return out
@@ -2542,8 +2570,7 @@ def own_host_keys(pattern=OWN_HOST_KEYS):
     blobs, prints = set(), set()
     for path in glob.glob(pattern):
         try:
-            with open(path, encoding="utf-8") as f:
-                parts = f.read(16384).split()
+            parts = read_text(path, 16384, prefix=True).split()
             raw = base64.b64decode(parts[1], validate=True)
         except (OSError, IndexError, ValueError):
             continue
@@ -2556,12 +2583,9 @@ def known_host_keys(names, path):
     """The key blobs path (a known_hosts file) holds for any of names ("host" or "[host]:port"),
     plain or hashed (|1|salt|hash); patterns, negations and @markers are left out."""
     found = set()
-    if not os.path.isfile(path):
-        return found  # a FIFO or device would hang the read
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.read(4 << 20).splitlines()
-    except OSError:
+        lines = read_text(path, 4 << 20, prefix=True).splitlines()
+    except (OSError, ValueError):
         return found
     for line in lines:
         parts = line.split()
@@ -2720,6 +2744,35 @@ def session_stage(line):
 
 SSH_FAILED_RE = re.compile(r"^\[omaremote\] connection failed: (.+)$", re.M)
 
+# ssh's own last words, as a sentence; the log keeps what ssh said. The first that matches wins.
+SSH_WORDS = (
+    # Closed before signing in: too many tries (MaxStartups, fail2ban), or no SSH server on that port.
+    (re.compile(r"kex_exchange_identification"),
+     "The computer closed the connection before signing in: is SSH on that port, or were there too many tries?"),
+    (re.compile(r"Broken pipe|Connection reset|closed by remote host|Connection closed by|not responding"
+                r"|packet_write_wait|Software caused connection abort"),
+     "The connection was lost: the computer may have restarted, or the network changed"),
+    (re.compile(r"Could not resolve hostname|Name or service not known|Temporary failure in name resolution"),
+     "Could not find the computer by its name: check the address, or the network"),
+    (re.compile(r"Connection refused"), "The computer refused the connection: is its SSH server running?"),
+    (re.compile(r"Connection timed out|Operation timed out"),
+     "The computer did not answer: it may be off, or a firewall is in the way"),
+    (re.compile(r"No route to host|Network is unreachable"), "The computer cannot be reached from this network"),
+    (re.compile(r"Permission denied|Too many authentication failures"),
+     "Signing in was refused: check the user name, the key or the password"),
+    # Declined in the terminal, or a key that CHANGED (maybe someone in between): never advise dropping it.
+    (re.compile(r"Host key verification failed"),
+     "The computer's host key was not accepted: if ssh said it changed, check the new key before trusting it"),
+)
+
+
+def ssh_words(said):
+    """A sentence for one of ssh's failure lines, or the line itself when it is none of these."""
+    for pattern, sentence in SSH_WORDS:
+        if pattern.search(said):
+            return sentence
+    return said
+
 
 def describe_exit(code, log_tail, protocol="rdp"):
     """A sentence for the UI, or None when the session simply ended."""
@@ -2736,7 +2789,7 @@ def describe_exit(code, log_tail, protocol="rdp"):
         if code != 255:
             return None
         said = SSH_FAILED_RE.findall(log_tail or "")
-        return said[-1].strip() if said and said[-1].strip() else "Could not connect to the server"
+        return ssh_words(said[-1].strip()) if said and said[-1].strip() else "Could not connect to the server"
     if code is not None and code < 0:
         return None  # killed by a signal: stopped from the UI
     if code in EXIT_MESSAGES:
@@ -3284,23 +3337,24 @@ def discover_kdcs(realm, cache_dir=CACHE_DIR):
     """The fastest reachable KDCs of a realm as "host:port", cached; [] when there is nothing to improve on."""
     path = os.path.join(cache_dir, "kdc-" + realm.lower() + ".json")
     try:
-        with open(path, encoding="utf-8") as f:
-            cached = json.load(f)
+        cached = read_json_file(path, follow=False)
+        if not isinstance(cached, dict) or not isinstance(cached.get("kdcs"), list):
+            raise ValueError("not a KDC cache")
         if time.time() - cached.get("probed", 0) < KDC_CACHE_TTL and cached.get("kdcs"):
             host, _, port = cached["kdcs"][0].rpartition(":")
             # Still answering? A changed network (VPN off, other site) re-probes.
             if probe_kdcs([(host, int(port))], timeout=0.5):
                 return cached["kdcs"]
-    except (OSError, ValueError, KeyError, IndexError):
+    except (OSError, ValueError, KeyError, IndexError, AttributeError, TypeError):
         pass
     targets = srv_records(f"_kerberos._tcp.{realm}") or srv_records(f"_kerberos._udp.{realm}")
     # Dedupe; DNS lists the same DC for both transports.
     targets = list(dict.fromkeys(targets))
     kdcs = [f"{h}:{p}" for _, h, p in probe_kdcs(targets)[:KDC_KEEP]]
     if kdcs:
-        os.makedirs(cache_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"realm": realm, "probed": int(time.time()), "kdcs": kdcs, "candidates": len(targets)}, f)
+        os.makedirs(cache_dir, mode=0o700, exist_ok=True)
+        write_private(path, json.dumps({"realm": realm, "probed": int(time.time()), "kdcs": kdcs,
+                                        "candidates": len(targets)}))
     return kdcs
 
 
@@ -3339,11 +3393,10 @@ def kerberos_env(conn, runtime_dir=RUNTIME_DIR, discover=discover_kdcs):
     kdcs = manual or discover(realm)
     if not kdcs:
         return {}
-    os.makedirs(runtime_dir, exist_ok=True)
+    os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
     text = krb5_config(realm, kdcs, conn.get("host", ""))  # refuses a realm that is not a plain name
     path = os.path.join(runtime_dir, "krb5-" + realm.lower() + ".conf")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    write_private(path, text)
     base = os.environ.get("KRB5_CONFIG") or "/etc/krb5.conf"
     return {"KRB5_CONFIG": path + ":" + base}
 
@@ -3356,7 +3409,7 @@ def _session_path(sid):
 
 # Where a session is shown belongs to whoever shows it (set_view); the supervisor rewrites the rest
 # of the record on every state change and must not put an old view back.
-VIEW_KEYS = ("view", "viewer")
+VIEW_KEYS = ("view", "viewer", "viewerStart")
 
 
 @contextlib.contextmanager
@@ -3401,29 +3454,67 @@ def write_session(state, keep=VIEW_KEYS):
 
 
 def touch_changes():
-    os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
-    fd = os.open(CHANGES, os.O_WRONLY | os.O_CREAT, 0o600)
+    """Wakes the UI's watch. Something other than a file at its name (a FIFO, a link) refuses the
+    open; that only costs the wake-up (the UI polls too), never the session that called it."""
+    try:
+        os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
+        fd = os.open(CHANGES, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
+    except OSError:
+        return
     try:
         os.ftruncate(fd, 0)
         os.write(fd, str(time.time_ns()).encode())
+    except OSError:
+        pass
     finally:
         os.close(fd)
 
 
-def _alive(pid):
+def proc_start(pid):
+    """When pid started (/proc/<pid>/stat's starttime, as text), or None when it is gone. With the
+    pid it names one process: a pid the system hands to another program later starts later."""
+    try:
+        with open(f"/proc/{int(pid)}/stat", "rb") as f:
+            return f.read(4096).rsplit(b")", 1)[1].split()[19].decode()
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
+def _alive(pid, start=None):
+    """pid is running, and (with start, from proc_start when it was recorded) is still that process.
+    A start of "" (the pid was gone when recorded) matches nothing; None is a record from before."""
     try:
         os.kill(pid, 0)
-        return True
     except (ProcessLookupError, TypeError):
         return False
     except PermissionError:
+        pass
+    return start is None or proc_start(pid) == start
+
+
+def signal_recorded(pid, start, sig):
+    """Signals pid only while it is the process that was recorded: the pid is pinned (pidfd) before
+    its start time is checked, so it cannot change hands in between. A record without a start time
+    is from before 0.9.13 (a session still running across the update): its pid is trusted as then."""
+    try:
+        fd = os.pidfd_open(pid)
+    except (ProcessLookupError, OSError, TypeError):
+        return False
+    try:
+        if start is not None and proc_start(pid) != start:
+            return False
+        signal.pidfd_send_signal(fd, sig)
         return True
+    except (ProcessLookupError, PermissionError):
+        return False  # gone, or another user's process: never ours
+    finally:
+        os.close(fd)
 
 
 def ensure_changes():
     """Create the watch target without touching it, so a watcher can attach before any session."""
     os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
-    os.close(os.open(CHANGES, os.O_WRONLY | os.O_CREAT, 0o600))
+    os.close(os.open(CHANGES, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600))
 
 
 def list_sessions():
@@ -3440,19 +3531,18 @@ def list_sessions():
         if not name.endswith(".json"):
             continue
         try:
-            with open(os.path.join(SESSIONS_DIR, name), encoding="utf-8") as f:
-                s = json.load(f)
+            s = read_json_file(os.path.join(SESSIONS_DIR, name), follow=False)
         except (OSError, ValueError):
             continue
         if not isinstance(s, dict):
             continue
-        if s.get("state") in ("connecting", "connected") and not _alive(s.get("supervisor")):
+        if s.get("state") in ("connecting", "connected") and not _alive(s.get("supervisor"), s.get("supervisorStart")):
             s["state"] = "failed"
             s["error"] = s.get("error") or "The session supervisor disappeared"
         s.setdefault("view", "tab" if s.get("tab") else "window")
         s.setdefault("viewer", None)
         # An own window that is gone (closed or crashed) leaves its session for the manager's tabs.
-        if s["view"] == "window" and s.get("tab") and not _alive(s.get("viewer")):
+        if s["view"] == "window" and s.get("tab") and not _alive(s.get("viewer"), s.get("viewerStart")):
             s["view"], s["viewer"] = "tab", None
         # Its connection opens as a hotkey window (is_hotkey: openIn hotkey, not VNC), so
         # `omaremote toggle` shows or hides it.
@@ -3508,6 +3598,7 @@ def supervise(conn, sid, tab=None):
         "host": conn["host"], "protocol": conn.get("protocol", "rdp"), "state": "connecting",
         "stage": "Finding domain controller", "auth": None,
         "started": int(time.time()), "ended": 0, "pid": 0, "supervisor": os.getpid(),
+        "supervisorStart": proc_start(os.getpid()) or "",
         "exitCode": None, "error": None, "log": log_path,
         "tab": bool(tab), "socket": socket_path,
         # tab: drawn in the manager's tab; window: drawn in an own window (viewer is its process),
@@ -3577,6 +3668,7 @@ def supervise(conn, sid, tab=None):
         write_session(state)
         return 1
     state["pid"] = proc.pid
+    state["pidStart"] = proc_start(proc.pid) or ""
     write_session(state)
 
     def forward(signum, _frame):
@@ -3588,29 +3680,26 @@ def supervise(conn, sid, tab=None):
     proc.stdin.close()
     del password, args
 
-    tail = []
-    with open(log_path, "w", encoding="utf-8") as log:
+    def on_line(line):
+        if state["state"] != "connecting":
+            return
+        # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc, -ssh and -gliff say so themselves.
+        if "gdi_init_ex" in line or line.startswith("[omaremote] connected to"):
+            state.update(state="connected", stage=None)
+            write_session(state)
+            mark_connected(conn["id"])
+            return
+        stage, auth = session_stage(line)
+        if (stage and stage != state["stage"]) or (auth and auth != state["auth"]):
+            state["stage"] = stage or state["stage"]
+            state["auth"] = auth or state["auth"]
+            write_session(state)
+
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as log:
         if krb_env:
             log.write(f"[omaremote] Kerberos: {krb_env['KRB5_CONFIG'].split(':')[0]}\n")
-        for line in proc.stdout:
-            log.write(line)
-            log.flush()
-            tail.append(line)
-            del tail[:-60]
-            if state["state"] != "connecting":
-                continue
-            # gdi_init_ex runs in post-connect: the session is up and drawing.
-            # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc, -ssh and -gliff say so themselves.
-            if "gdi_init_ex" in line or line.startswith("[omaremote] connected to"):
-                state.update(state="connected", stage=None)
-                write_session(state)
-                mark_connected(conn["id"])
-                continue
-            stage, auth = session_stage(line)
-            if (stage and stage != state["stage"]) or (auth and auth != state["auth"]):
-                state["stage"] = stage or state["stage"]
-                state["auth"] = auth or state["auth"]
-                write_session(state)
+        tail = copy_log(proc.stdout, log, on_line)
     code = proc.wait()
     stopped = os.path.join(SESSIONS_DIR, sid + ".stop")
     error = None if os.path.exists(stopped) else describe_exit(code, "".join(tail), protocol)
@@ -3623,6 +3712,40 @@ def supervise(conn, sid, tab=None):
     if protocol == "ssh":
         files_after_session(conn)
     return 0
+
+
+# A session's log is in the runtime folder (RAM): a server that keeps a session process talking
+# (warnings, errors it provokes) fills at most this much of it, and the log view reads no more.
+LOG_MAX = 8 << 20
+LOG_LINE_MAX = 8192
+
+
+def copy_log(stream, log, on_line):
+    """A session process's output into its log: lines of at most LOG_LINE_MAX characters (a longer
+    one arrives in parts), at most LOG_MAX bytes, then one line saying so and the rest read and left
+    out. on_line sees every line, kept or not, but only a line's first part: the rest of an
+    over-long one is no new line, so text a server put there cannot pass for one ("[omaremote]
+    connected to"). Returns the last 60 parts (what a failure is worded from, joined)."""
+    tail, written, full, starts = [], 0, False, True
+    while True:
+        line = stream.readline(LOG_LINE_MAX)
+        if not line:
+            break
+        first, starts = starts, line.endswith("\n")
+        if not full:
+            size = len(line.encode("utf-8", "replace"))
+            if written + size > LOG_MAX:
+                full = True
+                log.write(f"[omaremote] the log reached {LOG_MAX >> 20} MiB: later lines are left out\n")
+            else:
+                log.write(line)
+                written += size
+            log.flush()
+        tail.append(line)
+        del tail[:-60]
+        if first:
+            on_line(line)
+    return tail
 
 
 def files_after_session(conn):
@@ -3711,21 +3834,20 @@ def launch(key, tab=None):
 def stop(sid):
     for s in list_sessions():
         if s["id"] == sid and s.get("state") in ("connecting", "connected"):
-            pid = s.get("pid")
-            if not pid:
-                return 1
+            pid, start = s.get("pid"), s.get("pidStart")
+            if not pid or not _alive(pid, start):
+                return 1  # gone, or its pid is another program's now
             # Tells the supervisor the exit that follows was asked for, not a failure.
-            open(os.path.join(SESSIONS_DIR, sid + ".stop"), "w").close()
-            try:
-                os.kill(pid, signal.SIGTERM)
-                # FreeRDP ignores SIGTERM while one of its own dialogs is open.
-                for _ in range(30):
-                    time.sleep(0.1)
-                    if not _alive(pid):
-                        return 0
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            os.close(os.open(os.path.join(SESSIONS_DIR, sid + ".stop"),
+                             os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600))
+            if not signal_recorded(pid, start, signal.SIGTERM):
+                return 0
+            # FreeRDP ignores SIGTERM while one of its own dialogs is open.
+            for _ in range(30):
+                time.sleep(0.1)
+                if not _alive(pid, start):
+                    return 0
+            signal_recorded(pid, start, signal.SIGKILL)
             return 0
     return 1
 

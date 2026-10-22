@@ -472,6 +472,71 @@ class Ssh(unittest.TestCase):
         self.assertIn("clipboard=1", lines)
         self.assertIn("clipboard=0", session.build_ssh_config(self.ssh(clipboard=False)))
 
+    def test_files_not_ours_are_read_from_one_checked_descriptor(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            fifo = os.path.join(d, "fifo")
+            os.mkfifo(fifo)
+            with self.assertRaises(ValueError):
+                session.read_text(fifo, 100)  # refused at once, never a read that hangs
+            big = os.path.join(d, "big")
+            with open(big, "w") as f:
+                f.write("x" * 101)
+            with self.assertRaises(ValueError):
+                session.read_text(big, 100)
+            self.assertEqual(session.read_text(big, 10, prefix=True), "x" * 10)
+            link = os.path.join(d, "link")
+            os.symlink(big, link)
+            with self.assertRaises(OSError):
+                session.read_text(link, 1000, follow=False)
+
+    def test_own_files_replace_what_is_planted_at_their_name(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            victim, path = os.path.join(d, "victim"), os.path.join(d, "kdc.json")
+            with open(victim, "w") as f:
+                f.write("must survive")
+            os.symlink(victim, path)
+            session.write_private(path, "{}")
+            with open(victim) as f:
+                self.assertEqual(f.read(), "must survive")
+            self.assertFalse(os.path.islink(path))
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_a_chatty_server_fills_the_log_only_so_far(self):
+        import io
+        stream = io.StringIO("[omaremote] connected to pc\n" + ("x" * 100 + "\n") * 2000 + "y" * 50000 + "\nlast\n")
+        log, seen = io.StringIO(), []
+        saved = session.LOG_MAX
+        try:
+            session.LOG_MAX = 10000
+            tail = session.copy_log(stream, log, seen.append)
+        finally:
+            session.LOG_MAX = saved
+        text = log.getvalue()
+        self.assertLessEqual(len(text.encode()), 10000 + 100)
+        self.assertTrue(text.startswith("[omaremote] connected to pc\n"))
+        self.assertTrue(text.endswith("later lines are left out\n"))
+        # Every line still reaches the state parser and the tail; a long one in parts.
+        self.assertEqual(seen[0], "[omaremote] connected to pc\n")
+        self.assertEqual(tail[-1], "last\n")
+        self.assertTrue(all(len(l) <= session.LOG_LINE_MAX for l in seen))
+        # The rest of an over-long line is no line of its own: it cannot say "connected".
+        seen = []
+        session.copy_log(io.StringIO("x" * session.LOG_LINE_MAX + "[omaremote] connected to evil\nok\n"),
+                         io.StringIO(), seen.append)
+        self.assertEqual(seen, ["x" * session.LOG_LINE_MAX, "ok\n"])
+
+    def test_a_kdc_cache_of_the_wrong_shape_is_ignored(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            for bad in ("[]", '{"kdcs": [5], "probed": 0}', '{"kdcs": ["a:88"], "probed": "x"}'):
+                with open(os.path.join(d, "kdc-acme.lan.json"), "w") as f:
+                    f.write(bad)
+                with mock.patch.object(session, "srv_records", return_value=[]):
+                    self.assertEqual(session.discover_kdcs("ACME.LAN", cache_dir=d), [])
+
     def test_shell_exit_codes_are_not_failures(self):
         self.assertIsNone(session.describe_exit(0, "", "ssh"))
         self.assertIsNone(session.describe_exit(1, "", "ssh"))
@@ -479,8 +544,18 @@ class Ssh(unittest.TestCase):
 
     def test_ssh_failure_says_why(self):
         tail = "[omaremote] connected to pc.lan\n[omaremote] connection failed: ssh: connect to host pc.lan port 22: Connection refused\n"
-        self.assertEqual(session.describe_exit(255, tail, "ssh"), "ssh: connect to host pc.lan port 22: Connection refused")
+        self.assertEqual(session.describe_exit(255, tail, "ssh"),
+                         "The computer refused the connection: is its SSH server running?")
         self.assertEqual(session.describe_exit(255, "", "ssh"), "Could not connect to the server")
+        # A host that rebooted under an open session; the log keeps ssh's own words.
+        lost = "[omaremote] connection failed: client_loop: send disconnect: Broken pipe\n"
+        self.assertTrue(session.describe_exit(255, lost, "ssh").startswith("The connection was lost"))
+        kex = "[omaremote] connection failed: kex_exchange_identification: Connection closed by remote host\n"
+        self.assertTrue(session.describe_exit(255, kex, "ssh").startswith("The computer closed the connection before"))
+        # Words it does not know are shown as ssh said them.
+        odd = "[omaremote] connection failed: Unable to negotiate with 10.0.0.1 port 22: no matching cipher found\n"
+        self.assertEqual(session.describe_exit(255, odd, "ssh"),
+                         "Unable to negotiate with 10.0.0.1 port 22: no matching cipher found")
 
     def test_font_size_from_the_terminal_config(self):
         import tempfile
@@ -1030,6 +1105,43 @@ class Views(unittest.TestCase):
                 rec = json.load(f)
             self.assertEqual((rec["state"], rec["view"], rec["viewer"]), ("connected", "window", 4242))
         self.assertEqual(sorted(os.listdir(session.SESSIONS_DIR)), [".lock", "s1.json"])
+
+    def _orphan(self):
+        """A process that is not this one's child (the system reaps it), as a session's is not."""
+        import subprocess
+        out = subprocess.run(["sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"], capture_output=True, text=True)
+        return int(out.stdout)
+
+    def test_stop_leaves_a_reused_pid_alone(self):
+        import signal
+        pid = self._orphan()
+        try:
+            # The record names this pid, but a process that started at another time: someone else's now.
+            self.record(pid=pid, pidStart="1")
+            session.stop("s1")
+            time.sleep(0.3)
+            self.assertTrue(session._alive(pid))
+            self.record(pid=pid, pidStart=session.proc_start(pid))
+            self.assertEqual(session.stop("s1"), 0)
+            self.assertFalse(session._alive(pid))
+        finally:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def test_stop_never_signals_another_users_process(self):
+        # pid 1 is root's; a record from before start times were kept (none) still gets no signal.
+        self.record(pid=1)
+        self.assertEqual(session.stop("s1"), 0)
+        self.assertFalse(session.signal_recorded(1, None, 0))
+        self.assertFalse(session._alive(os.getpid(), ""))
+
+    def test_a_reused_supervisor_pid_is_not_alive(self):
+        self.record(supervisorStart="1")
+        self.assertEqual(self.listed()["state"], "failed")
+        self.record(supervisorStart=session.proc_start(os.getpid()))
+        self.assertEqual(self.listed()["state"], "connected")
 
     def test_supervisor_rewrite_keeps_the_window_view(self):
         state = self.record()

@@ -72,11 +72,16 @@ case "${1:-}" in
     setsid -f uwsm-app -- "$0" >/dev/null 2>&1
     ;;
   list)
-    python3 -c 'import json,os,sys
+    # One open, without blocking: only an ordinary file, at most 16 MiB (as omaremote-session reads it).
+    python3 -I -c 'import json,os,stat
 p=os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),"omaremote","connections.json")
-try: cs=json.load(open(p)).get("connections",[])
-except FileNotFoundError: cs=[]
-for c in cs: print(c.get("name") or c.get("host"))'
+try:
+  with os.fdopen(os.open(p,os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC),"rb") as f:
+    raw=f.read(16<<20|1) if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else b""
+  cs=json.loads(raw).get("connections",[]) if 0<len(raw)<=16<<20 else []
+except (OSError,ValueError,AttributeError): cs=[]
+for c in cs if isinstance(cs,list) else []:
+  if isinstance(c,dict): print(c.get("name") or c.get("host"))'
     ;;
   open)
     shift
