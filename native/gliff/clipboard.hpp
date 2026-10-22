@@ -76,6 +76,7 @@ class Clipboard
 
 	void setEnabled(bool on) { m_enabled = on && m_seat.hasClipboard(); }
 	bool enabled() const { return m_enabled; }
+	void enableForTests() { m_enabled = true; } // gliff-proto-test: a seat without a compositor
 	void setFocused(bool focused);
 
 	// From the server.

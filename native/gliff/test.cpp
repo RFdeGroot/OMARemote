@@ -6,11 +6,14 @@
 #include "askpass.hpp"
 #include "clipboard.hpp"
 #include "msg.hpp"
+#include "seat.hpp"
 #include "video.hpp"
 
 #include <cstdio>
 #include <cstdlib>
+#include <fcntl.h>
 #include <filesystem>
+#include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstring>
@@ -267,6 +270,110 @@ static void clipboard_tests()
 	}
 }
 
+// A file paste driven through Clipboard with a seat that never connected (onPaste called by hand).
+// What it writes must land in its own spool, also when the remote replaces its offer mid-paste.
+static void clipboard_paste_tests()
+{
+	namespace fs = std::filesystem;
+	char base[] = "/tmp/gliff-clip-XXXXXX";
+	if (!mkdtemp(base))
+		return expect(false, "a scratch folder");
+	const fs::path cache = fs::path(base) / "cache", cwd = fs::path(base) / "cwd";
+	fs::create_directories(cache);
+	fs::create_directories(cwd);
+	const fs::path oldCwd = fs::current_path();
+	fs::current_path(cwd);
+	setenv("XDG_CACHE_HOME", cache.c_str(), 1);
+
+	auto offer = [](uint32_t serial, std::vector<gliff::ClipboardFile> files) {
+		gliff::ClipOffer o;
+		o.serial = serial;
+		o.files = std::move(files);
+		return o;
+	};
+	auto data = [](gliff::Clipboard& c, uint32_t id, const std::string& bytes) {
+		gliff::ClipData d;
+		d.id = id;
+		d.len = uint32_t(bytes.size());
+		d.done = true;
+		c.onData(d, reinterpret_cast<const uint8_t*>(bytes.data()));
+	};
+	auto readAll = [](int fd) {
+		std::string out;
+		char buf[4096];
+		ssize_t n;
+		while ((n = read(fd, buf, sizeof buf)) > 0)
+			out.append(buf, size_t(n));
+		close(fd);
+		return out;
+	};
+	auto pump = [](gliff::Clipboard& c) {
+		std::vector<pollfd> fds;
+		c.addFds(fds);
+		for (auto& f : fds)
+			f.revents = f.events;
+		c.handleFds(fds);
+	};
+	const std::string spool = (cache / "omaremote" / "clipboard").string();
+
+	{
+		// A whole paste: a folder and a file in it, into the spool, the list pointing there.
+		gliff::Seat seat;
+		gliff::Clipboard clip(seat, [](const std::string&, const std::string&) {}, [](const std::string&) {});
+		clip.enableForTests();
+		clip.onOffer(offer(1, { { "d", 0, true }, { "d/f", 3, false } }));
+		int p[2];
+		expect(pipe2(p, O_CLOEXEC) == 0, "a pipe");
+		seat.onPaste("text/uri-list", p[1]);
+		data(clip, 1, "abc");
+		pump(clip);
+		const std::string list = readAll(p[0]);
+		expect(list.find("file://" + spool) == 0, "the pasted list points into the spool");
+		expect(fs::is_empty(cwd), "a paste writes nothing into the working directory");
+		const std::string first = gliff::parse_uri_list(list).empty() ? "" : gliff::parse_uri_list(list)[0];
+		std::string got;
+		if (FILE* f = fopen((first + "/f").c_str(), "r"))
+		{
+			char buf[8] = {};
+			got.assign(buf, fread(buf, 1, sizeof buf, f));
+			fclose(f);
+		}
+		expect(got == "abc", "the pasted file holds what the remote sent");
+		// A new offer's paste goes into a new spool, not the old one's path.
+		clip.onOffer(offer(2, { { "g", 3, false } }));
+		int q[2];
+		expect(pipe2(q, O_CLOEXEC) == 0, "a pipe");
+		seat.onPaste("text/uri-list", q[1]);
+		data(clip, 3, "ghi");
+		pump(clip);
+		const std::vector<std::string> second = gliff::parse_uri_list(readAll(q[0]));
+		expect(second.size() == 1 && second[0].find(spool) == 0 &&
+		           fs::path(second[0]).parent_path() != fs::path(first).parent_path(),
+		       "a new offer's paste has its own spool");
+	}
+	{
+		// The remote replaces its offer while the first file is on its way: that paste ends, and
+		// nothing of either offer is written outside the spool.
+		gliff::Seat seat;
+		gliff::Clipboard clip(seat, [](const std::string&, const std::string&) {}, [](const std::string&) {});
+		clip.enableForTests();
+		clip.onOffer(offer(1, { { "a", 3, false }, { "b", 3, false } }));
+		int p[2];
+		expect(pipe2(p, O_CLOEXEC) == 0, "a pipe");
+		seat.onPaste("text/uri-list", p[1]);
+		clip.onOffer(offer(2, { { "x", 0, true }, { "x/evil", 3, false } }));
+		data(clip, 1, "abc"); // the old transfer, answered anyway
+		data(clip, 3, "xyz"); // a request the old paste would have made for the new list
+		pump(clip);
+		expect(readAll(p[0]).empty(), "the replaced paste gets nothing");
+		expect(fs::is_empty(cwd), "a new offer mid-paste writes nothing into the working directory");
+	}
+	fs::current_path(oldCwd);
+	std::error_code ec;
+	fs::remove_all(base, ec);
+	unsetenv("XDG_CACHE_HOME");
+}
+
 static void video_tests()
 {
 	const int w = 64, h = 32;
@@ -345,6 +452,7 @@ int main()
 	encodes(gliff::pong(7), "82108107", "Pong");
 	encodes(gliff::ping(7), "820b8107", "Ping (ClientMsg 11)");
 	offered_file_tests();
+	clipboard_paste_tests();
 	// A server's text in the log stays one line (tests/test_gliff.py reads this output).
 	oma::log("server error 1: %s", "x\n[omaremote] connected to evil (1x1)\r\n[omaremote] connection failed: forged");
 	encodes(gliff::frame("ab", "c"), "02000000010000006162" "63", "frame");

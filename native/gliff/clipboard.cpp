@@ -335,6 +335,52 @@ int open_offered(int rootFd, const OfferedFile& f)
 	return fd;
 }
 
+// A pasted entry made beneath the paste's spool folder: its folders one at a time through
+// descriptors, never following a symlink nor leaving the spool (openat2), a file created new
+// (never an existing one). The file's descriptor, 0 for a folder, -1 when it cannot be made.
+static int create_beneath(int spoolFd, const std::string& rel, bool dir)
+{
+	open_how how {};
+	how.resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS;
+	int cur = spoolFd;
+	size_t start = 0;
+	for (;;)
+	{
+		const size_t slash = rel.find('/', start);
+		const std::string part = rel.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+		const bool last = slash == std::string::npos;
+		int next;
+		if (last && !dir)
+		{
+			how.flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
+			how.mode = 0600;
+			next = int(syscall(SYS_openat2, cur, part.c_str(), &how, sizeof how));
+		}
+		else
+		{
+			if (mkdirat(cur, part.c_str(), 0700) != 0 && errno != EEXIST)
+				next = -1;
+			else
+			{
+				how.flags = O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+				how.mode = 0;
+				next = int(syscall(SYS_openat2, cur, part.c_str(), &how, sizeof how));
+			}
+		}
+		if (cur != spoolFd)
+			close(cur);
+		if (next < 0 || (last && !dir))
+			return next;
+		if (last)
+		{
+			close(next);
+			return 0;
+		}
+		cur = next;
+		start = slash + 1;
+	}
+}
+
 // ---------------------------------------------------------------- transfers
 
 struct Clipboard::Outgoing
@@ -368,7 +414,11 @@ struct Clipboard::Paste
 	std::vector<std::pair<std::string, int>> waiting; // more file-list pastes of the same offer
 	uint64_t total = 0, got = 0;
 	uint64_t startedAt = 0, shownAt = 0;
+	// The offer it pastes, as it was when it began: a new offer ends the paste, never changes it.
 	uint32_t serial = 0;
+	std::vector<ClipboardFile> manifest;
+	std::string spool; // its spool folder, and that folder opened (O_PATH) once
+	int spoolFd = -1;
 };
 
 struct Clipboard::Writer
@@ -402,6 +452,9 @@ Clipboard::~Clipboard()
 	if (m_uriFd >= 0)
 		close(m_uriFd);
 	std::error_code ec;
+	for (auto& [job, p] : m_pastes)
+		if (p->spoolFd >= 0)
+			close(p->spoolFd);
 	if (!m_spool.empty())
 		fs::remove_all(m_spool, ec);
 	for (auto& r : m_retired)
@@ -522,6 +575,14 @@ void Clipboard::onOffer(const ClipOffer& offer)
 		oma::log("clipboard: the remote's offer (serial %u) crossed ours; ours stands", offer.serial);
 		return;
 	}
+	// Pastes of the offer this one replaces end here: none goes on with the new offer's files.
+	// Text and image pastes too, and also when the server sends the same offer again (Gliff's
+	// server offers on a change of its selection only): the application sees an empty paste.
+	std::vector<uint32_t> running;
+	for (auto& [job, p] : m_pastes)
+		running.push_back(job);
+	for (uint32_t job : running)
+		endPaste(job, false, "the remote's clipboard changed");
 	m_remote = offer;
 	oma::log("clipboard: the remote offers %zu types, %zu files (serial %u)%s", offer.mimes.size(), offer.files.size(),
 	         offer.serial, m_focused ? "" : ", applied on focus");
@@ -689,8 +750,11 @@ void Clipboard::paste(const std::string& mime, int fd)
 	p->serial = m_remote.serial;
 	p->startedAt = oma::now_ms();
 	if (p->files)
-		for (const auto& f : m_remote.files)
+	{
+		p->manifest = m_remote.files;
+		for (const auto& f : p->manifest)
 			p->total += f.size;
+	}
 	const uint32_t job = m_nextJob++;
 	Paste& ref = *p;
 	m_pastes[job] = std::move(p);
@@ -698,7 +762,9 @@ void Clipboard::paste(const std::string& mime, int fd)
 	{
 		if (m_spool.empty())
 			m_spool = makeSpool();
-		if (m_spool.empty())
+		ref.spool = m_spool;
+		ref.spoolFd = m_spool.empty() ? -1 : ::open(m_spool.c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		if (ref.spoolFd < 0)
 		{
 			endPaste(job, false, "no clipboard folder");
 			return;
@@ -726,22 +792,20 @@ void Clipboard::nextFile(Paste& p)
 	for (auto& [j, q] : m_pastes)
 		if (q.get() == &p)
 			job = j;
-	while (p.next < m_remote.files.size())
+	// Only ever the offer it began with, into its own spool (onOffer ends it before a new offer).
+	if (p.serial != m_remote.serial || p.spool.empty() || p.spoolFd < 0)
+		return endPaste(job, false, "the remote's clipboard changed");
+	while (p.next < p.manifest.size())
 	{
-		const ClipboardFile& f = m_remote.files[p.next];
-		const fs::path dest = fs::path(m_spool) / f.path;
-		std::error_code ec;
+		const ClipboardFile& f = p.manifest[p.next];
 		if (f.dir)
 		{
-			fs::create_directories(dest, ec);
-			if (ec)
+			if (create_beneath(p.spoolFd, f.path, true) < 0)
 				return endPaste(job, false, "could not make a folder");
 			p.next++;
 			continue;
 		}
-		fs::create_directories(dest.parent_path(), ec);
-		const int fd = ec ? -1
-		                  : ::open(dest.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
+		const int fd = create_beneath(p.spoolFd, f.path, false);
 		if (fd < 0)
 			return endPaste(job, false, "could not write a file");
 		const uint32_t id = newId();
@@ -759,9 +823,9 @@ void Clipboard::nextFile(Paste& p)
 	}
 	// Every file is in: the pastes get the list of the top-level entries.
 	m_spooledRoots.clear();
-	for (const auto& f : m_remote.files)
+	for (const auto& f : p.manifest)
 		if (f.path.find('/') == std::string::npos)
-			m_spooledRoots.push_back((fs::path(m_spool) / f.path).string());
+			m_spooledRoots.push_back((fs::path(p.spool) / f.path).string());
 	auto answer = [&](const std::string& mime, int fd) {
 		auto w = std::make_unique<Writer>();
 		w->buf = mime == FILE_MIMES[0] ? uri_list(m_spooledRoots) : gnome_copied_files(m_spooledRoots);
@@ -891,11 +955,14 @@ void Clipboard::endPaste(uint32_t job, bool ok, const std::string& why)
 	if (!ok)
 		oma::log("clipboard: a paste failed: %s", why.c_str());
 	// A file paste that failed leaves part of the files: a new attempt starts in a fresh folder.
-	if (!ok && p.files && !m_spool.empty())
+	if (p.spoolFd >= 0)
+		close(p.spoolFd);
+	if (!ok && p.files && !p.spool.empty())
 	{
 		std::error_code ec;
-		fs::remove_all(m_spool, ec);
-		m_spool.clear();
+		fs::remove_all(p.spool, ec);
+		if (p.spool == m_spool)
+			m_spool.clear();
 	}
 	if (p.shownAt)
 		m_ui("clip-done " + std::to_string(job));
@@ -1078,7 +1145,7 @@ void Clipboard::tick()
 		if (now - p->startedAt > 1000 && now - p->shownAt > 250)
 		{
 			p->shownAt = now;
-			const std::string what = p->files ? std::to_string(std::count_if(m_remote.files.begin(), m_remote.files.end(),
+			const std::string what = p->files ? std::to_string(std::count_if(p->manifest.begin(), p->manifest.end(),
 			                                                                 [](const ClipboardFile& f) { return !f.dir; })) +
 			                                        " files"
 			                                  : mime_label(p->mime);
