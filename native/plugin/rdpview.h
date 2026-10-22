@@ -93,6 +93,9 @@ public:
 	Q_INVOKABLE void disconnectSession();
 	Q_INVOKABLE void releaseAllKeys();
 	Q_INVOKABLE void cancelPaste(int job);
+	// A lost SSH connection that is being tried again: try at once, or give it up.
+	Q_INVOKABLE void reconnectNow();
+	Q_INVOKABLE void cancelReconnect();
 	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
 	Q_INVOKABLE void releaseShortcuts();
 	Q_INVOKABLE int cachedCursors() const { return int(m_cursors.size()); } // for tests
@@ -113,6 +116,9 @@ signals:
 	void pasteDone(int job);
 	// A line about the stream, once a second (Gliff: fps, bandwidth, decode time).
 	void statsChanged(const QString& text);
+	// SSH trying a lost connection again: phase "wait" (seconds until the next try), "trying",
+	// or "off" (back, or given up); attempt counts the tries since the drop.
+	void reconnectChanged(const QString& phase, int attempt, int seconds);
 	void shortcutsCapturedChanged();
 
 protected:

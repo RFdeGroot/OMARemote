@@ -320,6 +320,8 @@ void RdpView::handleLine(const QByteArray& line)
 		emit pasteDone(int(num(1)));
 	else if (cmd == "stats" && w.size() >= 2)
 		emit statsChanged(unb64(w[1]));
+	else if (cmd == "reconnect" && w.size() >= 2 && (w[1] == "wait" || w[1] == "trying" || w[1] == "off"))
+		emit reconnectChanged(QString::fromLatin1(w[1]), int(num(2)), int(num(3)));
 	else if (cmd == "clip" && w.size() >= 2)
 	{
 		// At most MaxClipBytes: the session processes keep to it, this is the backstop.
@@ -989,6 +991,16 @@ void RdpView::applyHeldClip()
 void RdpView::cancelPaste(int job)
 {
 	send("clip-cancel " + QByteArray::number(job));
+}
+
+void RdpView::reconnectNow()
+{
+	send("reconnect now");
+}
+
+void RdpView::cancelReconnect()
+{
+	send("reconnect cancel");
 }
 
 void RdpView::focusOutEvent(QFocusEvent* e)

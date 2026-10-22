@@ -131,8 +131,11 @@ struct Session
 
 	std::set<uint32_t> held; // evdev codes held: the modifiers come from these
 	std::string localClip;   // the UI's clipboard, offered on focus and when it changes
-	bool retryNow = false;   // Enter while a lost connection waits to be tried again
+	bool retryNow = false;   // Enter or the view's Try now while a lost connection waits
+	bool cancelReconnect = false; // the view's Cancel: the lost connection is given up
 	bool typed = false;      // a key went to the remote since the last drop
+	std::string said;        // the end of this try's terminal output: what its exit is judged by
+	std::string reconnectLine; // the view's reconnect banner, sent again when a view attaches
 	std::string osc52;       // a clipboard write from the remote program, gathered in fragments
 	bool osc52TooLong = false; // that write passed kMaxClipBytes: the rest of it is dropped
 
@@ -964,6 +967,14 @@ static void handle_line(const std::string& line)
 		g.localClip = unb64(w[1]);
 	else if (cmd == "disconnect")
 		g.quit = 1;
+	else if (cmd == "reconnect" && w.size() >= 2 && !g.reconnectLine.empty())
+	{
+		// Only while the view shows the banner: a late click never ends a connection that is back.
+		if (w[1] == "now")
+			g.retryNow = true;
+		else if (w[1] == "cancel")
+			g.cancelReconnect = true;
+	}
 }
 
 // ---------------------------------------------------------------- main
@@ -981,29 +992,9 @@ static void replay()
 	send_cursor_shape();
 	if (!g.title.empty())
 		g.link.send("title " + b64(g.title));
+	if (!g.reconnectLine.empty())
+		g.link.send(g.reconnectLine);
 	g.held.clear();
-}
-
-// The last lines the program left on the screen: why ssh gave up, when it did.
-static std::string last_words()
-{
-	std::vector<std::string> lines;
-	for (int row = 0; row < g.rows; row++)
-	{
-		std::string text;
-		for (int col = 0; col < g.cols; col++)
-		{
-			VTermScreenCell c;
-			if (!vterm_screen_get_cell(g.screen, VTermPos{ row, col }, &c) || c.chars[0] == uint32_t(-1))
-				continue;
-			text += c.chars[0] ? QString::fromUcs4(reinterpret_cast<const char32_t*>(&c.chars[0]), 1).toStdString() : " ";
-		}
-		while (!text.empty() && text.back() == ' ')
-			text.pop_back();
-		if (!text.empty())
-			lines.push_back(text);
-	}
-	return lines.empty() ? std::string() : lines.back();
 }
 
 // How long a session that lost its connection keeps trying, and how long an ssh must have run
@@ -1011,10 +1002,54 @@ static std::string last_words()
 // A `reconnectMs=` config line scales every pause, kUpMs and kReconnectMs by it/1000 (tests/test_ssh.py).
 static constexpr uint64_t kReconnectMs = 10 * 60 * 1000;
 static constexpr uint64_t kUpMs = 5000;
+// How long a try keeps running after it first printed (a prompt, a shell) to count as answered.
+static constexpr uint64_t kAnsweredMs = 2000;
 // Drops in a row with nothing typed in between: then it is no one at work there, and a server
 // that makes "Broken pipe" its last words (and exits 255, as ssh does) cannot keep us dialling.
 static constexpr int kMaxQuietDrops = 20;
 static uint64_t g_pace = 1000; // milliseconds in a second of pause
+
+// The last line of this try's terminal output (ssh's words, or the remote program's last ones),
+// its escapes left out: what its exit is judged by. Never the screen, where a program's cursor
+// moves can leave older words at the bottom.
+static std::string said_last()
+{
+	std::string text;
+	for (size_t i = 0; i < g.said.size(); i++)
+	{
+		const unsigned char c = static_cast<unsigned char>(g.said[i]);
+		if (c == 0x1b && i + 1 < g.said.size())
+		{
+			const char kind = g.said[++i];
+			if (kind == '[') // CSI: up to its final byte
+				while (i + 1 < g.said.size() && !(g.said[i + 1] >= 0x40 && g.said[i + 1] <= 0x7e))
+					i++;
+			if (kind == '[' || kind == '(' || kind == ')')
+				i++;
+			else if (kind == ']') // OSC: up to BEL or ST
+				while (i + 1 < g.said.size() && g.said[i + 1] != '\a' && g.said[i + 1] != 0x1b)
+					i++;
+			continue;
+		}
+		text += c == '\r' ? '\n' : (c < 0x20 && c != '\n') ? ' ' : char(c);
+	}
+	const size_t end = text.find_last_not_of(" \n");
+	if (end == std::string::npos)
+		return {};
+	const size_t nl = text.rfind('\n', end);
+	const size_t start = nl == std::string::npos ? 0 : nl + 1;
+	std::string line = text.substr(start, end + 1 - start);
+	line.erase(0, line.find_first_not_of(' '));
+	return line.size() > 512 ? line.substr(0, 512) : line;
+}
+
+// The view's banner: "wait <try> <seconds>" before a try, "trying <try>" during one, "off" when
+// the connection is back or given up.
+static void show_reconnect(const std::string& what)
+{
+	g.reconnectLine = what == "off" ? std::string() : "reconnect " + what;
+	g.link.send(what == "off" ? std::string("reconnect off") : g.reconnectLine);
+}
 
 // ssh in a new terminal the size of the view: at the start, and again after a lost connection.
 static bool start_ssh(std::vector<std::string>& args)
@@ -1050,10 +1085,17 @@ static bool start_ssh(std::vector<std::string>& args)
 static int run_ssh()
 {
 	uint64_t lastThemeCheck = 0;
+	uint64_t saidAt = 0; // when this try first printed something
 	char buf[65536];
 	bool ended = false;
-	while (!g.quit && !ended)
+	g.said.clear();
+	while (!g.quit && !ended && !g.cancelReconnect)
 	{
+		// A try that answered (a prompt, a shell) and keeps running is a connection again: the
+		// view's banner goes. One still waiting for the computer prints nothing and keeps it; one
+		// that failed prints its reason and exits at once.
+		if (!g.reconnectLine.empty() && saidAt && oma::now_ms() - saidAt >= kAnsweredMs * g_pace / 1000)
+			show_reconnect("off");
 		pollfd fds[3] = { { g.pty, POLLIN, 0 }, { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
 		const int n = poll(fds, g.link.attached() ? 3 : 2, 500);
 		if (n < 0 && errno != EINTR)
@@ -1067,6 +1109,11 @@ static int run_ssh()
 				if (got > 0)
 				{
 					vterm_input_write(g.vt, buf, size_t(got));
+					g.said.append(buf, size_t(got));
+					if (!saidAt)
+						saidAt = oma::now_ms();
+					if (g.said.size() > 8192)
+						g.said.erase(0, g.said.size() - 4096);
 					continue;
 				}
 				if (got < 0 && (errno == EAGAIN || errno == EINTR))
@@ -1087,10 +1134,10 @@ static int run_ssh()
 	flush();
 
 	int rc = 0;
-	if (g.quit && !ended)
+	if ((g.quit || g.cancelReconnect) && !ended)
 	{
 		kill(g.child, SIGHUP);
-		rc = 11;
+		rc = g.quit ? 11 : 255; // a cancelled try fails as the drop it was for
 	}
 	int status = 0;
 	for (int i = 0; i < 50 && waitpid(g.child, &status, WNOHANG) == 0; i++)
@@ -1141,7 +1188,10 @@ static void note(std::string text)
 	// Never a control character from a setting (the host): nothing here can be an escape.
 	text.erase(std::remove_if(text.begin(), text.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }),
 	           text.end());
-	static const char reset[] = "\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m";
+	// Its own screen only when one is on: ?1049l also puts the cursor back where it was saved.
+	if (g.altScreen)
+		vterm_input_write(g.vt, "\x1b[?1049l", 8);
+	static const char reset[] = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m";
 	vterm_input_write(g.vt, reset, sizeof(reset) - 1);
 	const std::string line = "\r\n\x1b[2m\xe2\x94\x80\xe2\x94\x80 " + text + " \xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n";
 	vterm_input_write(g.vt, line.data(), line.size());
@@ -1154,7 +1204,7 @@ static bool wait_serving(uint64_t ms)
 {
 	const uint64_t until = oma::now_ms() + ms;
 	g.retryNow = false;
-	while (!g.quit && !g.retryNow && oma::now_ms() < until)
+	while (!g.quit && !g.retryNow && !g.cancelReconnect && oma::now_ms() < until)
 	{
 		pollfd fds[2] = { { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
 		poll(fds, g.link.attached() ? 2 : 1, int(std::min<uint64_t>(200, until - oma::now_ms())));
@@ -1162,7 +1212,7 @@ static bool wait_serving(uint64_t ms)
 			handle_line(l);
 		flush();
 	}
-	return !g.quit;
+	return !g.quit && !g.cancelReconnect;
 }
 
 int main(int argc, char** argv)
@@ -1250,15 +1300,16 @@ int main(int argc, char** argv)
 	// giveUp: trying again until then. A connection that came back and stayed up (kUpMs) before
 	// dropping again starts a new 10 minutes; kMaxQuietDrops ends that when no one types.
 	uint64_t giveUp = 0, delay = 0;
-	int quietDrops = 0;
+	int quietDrops = 0, tries = 0;
+	std::string lost; // what ssh said when the connection went
 	int rc;
 	for (;;)
 	{
 		const uint64_t began = oma::now_ms();
 		rc = run_ssh();
-		if (rc != 255 || !reconnect)
+		if (rc != 255 || !reconnect || g.cancelReconnect)
 			break;
-		const std::string said = last_words();
+		const std::string said = said_last();
 		const uint64_t now = oma::now_ms();
 		if (now - began >= kUpMs * g_pace / 1000 && lost_words(said))
 		{
@@ -1267,26 +1318,41 @@ int main(int argc, char** argv)
 			if (quietDrops > kMaxQuietDrops)
 				break;
 			log("connection lost: %s; trying again", said.c_str());
+			lost = said;
 			giveUp = now + kReconnectMs * g_pace / 1000;
 			delay = 2000;
+			tries = 0;
 		}
 		else if (!giveUp || now >= giveUp || !transient_words(said))
 			break;
 		else
 			delay = std::min<uint64_t>(delay * 2, 15000);
-		note("connection lost: trying again in " + std::to_string(delay / 1000) + " s (Enter: now)");
+		tries++;
+		note("connection lost: trying again in " + std::to_string(delay / 1000) + " s");
+		show_reconnect("wait " + std::to_string(tries) + " " + std::to_string(delay / 1000));
 		if (!wait_serving(delay * g_pace / 1000))
 		{
-			rc = 11;
+			if (g.quit)
+				rc = 11;
 			break;
 		}
 		note("connecting to " + host);
+		show_reconnect("trying " + std::to_string(tries));
 		if (!start_ssh(args))
 			break;
 	}
+	if (!g.reconnectLine.empty())
+		show_reconnect("off");
+	if (g.cancelReconnect)
+	{
+		// Given up from the view: it ends as the drop it was, in ssh's words then.
+		log("reconnecting cancelled");
+		rc = 255;
+		g.said = lost;
+	}
 	// ssh exits 255 when the connection failed; what it said is on the screen.
 	if (rc == 255)
-		log("connection failed: %s", last_words().c_str());
+		log("connection failed: %s", said_last().c_str());
 	log("session ended (%d)", rc);
 	g.link.send(std::string(rc == 255 ? "state failed " : "state ended ") + std::to_string(rc));
 	g.link.close();

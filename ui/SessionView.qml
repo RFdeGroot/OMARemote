@@ -60,6 +60,8 @@ Item {
     }
     onHasPromptChanged: if (current) Qt.callLater(focusDesktop)
     onLiveChanged: {
+        if (!live)
+            reconnect = null
         if (current)
             Qt.callLater(focusDesktop)
         if (!live && isSsh)
@@ -140,9 +142,76 @@ Item {
             if (root.session)
                 Sessions.setStats(root.session.id, text)
         }
+        onReconnectChanged: function (phase, attempt, seconds) {
+            root.reconnect = phase === "off" ? null : { phase: phase, attempt: attempt, seconds: seconds, at: Date.now() }
+        }
         onPasteDone: function (job) {
             if (root.paste && root.paste.job === job)
                 root.paste = null
+        }
+    }
+
+    // SSH trying a lost connection again (omaremote-ssh): what it does, and a way out. The
+    // terminal stays usable under it (ssh may ask for a password on a try).
+    property var reconnect: null
+    property int reconnectLeft: 0
+    Timer {
+        running: !!root.reconnect && root.reconnect.phase === "wait"
+        interval: 250
+        repeat: true
+        triggeredOnStart: true
+        onTriggered: root.reconnectLeft = Math.max(0, Math.ceil(root.reconnect.seconds - (Date.now() - root.reconnect.at) / 1000))
+    }
+    Rectangle {
+        id: reconnectCard
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.top: parent.top
+        anchors.topMargin: Theme.panelPad
+        visible: root.live && !!root.reconnect
+        width: Math.min(parent.width - 2 * Theme.panelPad, reconnectRow.implicitWidth + 2 * Theme.padX)
+        height: reconnectRow.implicitHeight + Theme.gap * 2
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Theme.warning
+        RowLayout {
+            id: reconnectRow
+            anchors.centerIn: parent
+            spacing: Theme.gap * 2
+            // Still: an endless animation would redraw the window every frame for as long as a try
+            // waits for the computer.
+            Glyph {
+                text: ""
+                color: Theme.warning
+            }
+            ColumnLayout {
+                spacing: 2
+                Text {
+                    textFormat: Text.PlainText
+                    text: !root.reconnect ? ""
+                        : root.reconnect.phase === "trying" ? "Connection lost · reconnecting to " + (root.session ? root.session.host : "") + "…"
+                        : "Connection lost · trying again in " + root.reconnectLeft + " s"
+                    color: Theme.foreground
+                    font.family: Theme.font
+                    font.pixelSize: Theme.small
+                }
+                Text {
+                    textFormat: Text.PlainText
+                    text: root.reconnect ? "Try " + root.reconnect.attempt + " · gives up after 10 minutes" : ""
+                    color: Theme.muted
+                    font.family: Theme.font
+                    font.pixelSize: Theme.small
+                }
+            }
+            ActionButton {
+                visible: !!root.reconnect && root.reconnect.phase === "wait"
+                primary: true
+                icon: ""
+                text: "Try now"
+                hint: "⏎"
+                onClicked: view.reconnectNow()
+            }
+            ActionButton { text: "Cancel"; icon: ""; danger: true; onClicked: view.cancelReconnect() }
         }
     }
 
