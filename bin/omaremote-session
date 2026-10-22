@@ -156,6 +156,7 @@ DEFAULTS = {
     "unlockAfter": 0,        # RDP: minutes away (not in front of you) after which coming back reconnects; 0 off
     "sshArgs": "",           # SSH: extra ssh options, the connection's own (never a group's)
     "sshKey": "",            # SSH: the key to sign in with (~/.ssh/…); also written to ~/.ssh/omaremote.conf
+    "sshReconnect": True,    # SSH: a connection that drops (a restart, another network) is tried again
     "gliffScreen": "mirror",   # Gliff: mirror (the main screen, as Gliff's own client does) | private (one of its own)
     "gliffOutput": "",       # Gliff, mirror: the remote screen to show (DP-1); empty: the focused one
     "gliffColour": "auto",   # Gliff: auto | low (4:2:0, --low-bandwidth) | full (4:4:4 on a CPU server, --full-chroma)
@@ -1780,13 +1781,9 @@ def hypr_hotkeys_sync(path=CONNECTIONS, hypr_dir=None, launcher=None, reload=Tru
             write_json_text(managed, text)
             changed = True
         if span is None:
-            try:  # made once, new (O_EXCL): never written through something planted at its name
-                with open(os.open(main_config + ".omaremote-backup",
-                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600),
-                          "w", encoding="utf-8") as f:
-                    f.write(config)
-            except FileExistsError:
-                pass
+            if not keep_backup(main_config + ".omaremote-backup", config):
+                return {"mode": "on", "shortcuts": count, "changed": changed,
+                        "error": "hyprland.lua.omaremote-backup is not a file of yours: hyprland.lua left alone"}
             write_json_text(main_config, hypr_add_block(config, block))
             changed = True
     else:
@@ -1914,6 +1911,24 @@ def user_file_writable(path):
 
 def write_json_text(path, text):
     write_user_file(path, text)
+
+
+def keep_backup(path, text):
+    """The copy of a user's config made once, before OMARemote first edits it: created new
+    (O_EXCL, no link followed). One already there counts only when it is an ordinary file of this
+    user's; anything else at its name (a link, a FIFO) is no backup, and the caller then leaves the
+    config alone rather than edit it without one."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return False  # gone again meanwhile: no backup now, the next sync makes one
+        return stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid()
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    return True
 
 
 def write_private(path, text):
@@ -2490,10 +2505,9 @@ def ssh_config_sync(path=CONNECTIONS, ssh_dir=SSH_DIR):
     if mode == "auto" and count > 0 and not included and not config_writable:
         return {"mode": "readonly", "keys": count, "changed": changed}
     if mode == "auto" and count > 0 and not included:
-        if user_config is not None and not os.path.exists(config + ".omaremote-backup"):
-            with open(os.open(config + ".omaremote-backup", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
-                      "w", encoding="utf-8") as f:
-                f.write(user_config)
+        if user_config is not None and not keep_backup(config + ".omaremote-backup", user_config):
+            return {"mode": "auto", "keys": count, "changed": changed,
+                    "error": "~/.ssh/config.omaremote-backup is not a file of yours: ~/.ssh/config left alone"}
         head = SSH_MARKER + "\n" + SSH_INCLUDE + "\n"
         _write_private(config, head + ("\n" + user_config if user_config else ""), like=config)
         changed = True
@@ -2702,7 +2716,8 @@ def build_ssh_config(conn):
     """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
     lines = [f"arg={a}" for a in build_ssh_command(conn)]
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size():g}",
-              f"theme={THEME_TERMINAL}", f"clipboard={0 if conn.get('clipboard') is False else 1}"]
+              f"theme={THEME_TERMINAL}", f"clipboard={0 if conn.get('clipboard') is False else 1}",
+              f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)
 
 
@@ -3838,8 +3853,11 @@ def stop(sid):
             if not pid or not _alive(pid, start):
                 return 1  # gone, or its pid is another program's now
             # Tells the supervisor the exit that follows was asked for, not a failure.
-            os.close(os.open(os.path.join(SESSIONS_DIR, sid + ".stop"),
-                             os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600))
+            try:  # only words the exit: something planted at its name (a FIFO) never holds up the stop
+                os.close(os.open(os.path.join(SESSIONS_DIR, sid + ".stop"),
+                                 os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, 0o600))
+            except OSError:
+                pass
             if not signal_recorded(pid, start, signal.SIGTERM):
                 return 0
             # FreeRDP ignores SIGTERM while one of its own dialogs is open.

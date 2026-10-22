@@ -471,6 +471,9 @@ class Ssh(unittest.TestCase):
         # OSC 52 (a program on the server setting the clipboard) follows the Clipboard switch.
         self.assertIn("clipboard=1", lines)
         self.assertIn("clipboard=0", session.build_ssh_config(self.ssh(clipboard=False)))
+        # Reconnecting after a drop is on unless switched off.
+        self.assertIn("reconnect=1", lines)
+        self.assertIn("reconnect=0", session.build_ssh_config(self.ssh(sshReconnect=False)))
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -652,6 +655,13 @@ class SshKeys(unittest.TestCase):
         self.assertEqual(out["mode"], "readonly")
         self.assertEqual(self.read("config"), "Host mine\n")
         self.assertIn("web.lan", self.read("omaremote.conf"))
+
+    def test_ssh_config_is_not_edited_without_a_real_backup(self):
+        self.write("config", "Host mine\n")
+        os.mkfifo(os.path.join(self.ssh, "config.omaremote-backup"))
+        self.connections(conn(id="c1", name="web", host="web.lan", protocol="ssh", sshKey="~/.ssh/id_work"))
+        self.assertIn("left alone", session.ssh_config_sync(self.conf, self.ssh)["error"])
+        self.assertEqual(self.read("config"), "Host mine\n")
 
     def test_managed_file_and_one_include_at_the_top(self):
         self.write("config", "Host mine\n    User me\n")
@@ -1130,6 +1140,19 @@ class Views(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
+    def test_a_fifo_at_the_stop_marker_never_holds_up_a_stop(self):
+        pid = self._orphan()
+        try:
+            self.record(pid=pid, pidStart=session.proc_start(pid))
+            os.mkfifo(os.path.join(session.SESSIONS_DIR, "s1.stop"))
+            self.assertEqual(session.stop("s1"), 0)
+            self.assertFalse(session._alive(pid))
+        finally:
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+
     def test_stop_never_signals_another_users_process(self):
         # pid 1 is root's; a record from before start times were kept (none) still gets no signal.
         self.record(pid=1)
@@ -1396,6 +1419,23 @@ class Hotkeys(unittest.TestCase):
         with open(conf, "w") as f:
             json.dump({"ui": ui, "connections": conns}, f)
         return conf
+
+    def test_no_edit_without_a_real_backup(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            hypr = os.path.join(d, "hypr")
+            os.makedirs(hypr)
+            main = os.path.join(hypr, "hyprland.lua")
+            with open(main, "w") as f:
+                f.write("-- mine\n")
+            os.symlink(os.path.join(d, "elsewhere"), main + ".omaremote-backup")
+            conns = [{"id": "c1", "name": "W", "host": "pc", "protocol": "rdp", "openIn": "hotkey", "hotkey": "SUPER + W"}]
+            conf = self.write_config(d, {"hyprHotkeys": True}, conns)
+            out = session.hypr_hotkeys_sync(conf, hypr, "/usr/bin/omaremote", reload=False)
+            self.assertIn("left alone", out["error"])
+            with open(main) as f:
+                self.assertEqual(f.read(), "-- mine\n")
+            self.assertFalse(os.path.exists(os.path.join(d, "elsewhere")))
 
     def test_hyprland_config_gets_the_bindings_only_when_allowed_and_loses_them_again(self):
         import tempfile
