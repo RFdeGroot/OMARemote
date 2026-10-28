@@ -17,7 +17,7 @@ ShellRoot {
         // Shown once the body has the theme, so it never shows the default colours first; after a
         // second it shows whatever the theme files do (missing, unreadable, never ending). Until it
         // shows, a second `omaremote` does not find it (running_pid asks hyprctl for mapped windows).
-        visible: (body.item && body.item.themed) || themeWait.over
+        visible: (body.item && body.item.showable) || themeWait.over
 
         Timer {
             id: themeWait

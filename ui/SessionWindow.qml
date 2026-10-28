@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import "js/Format.js" as Format
 
@@ -9,8 +10,8 @@ import "js/Format.js" as Format
 FocusScope {
     id: root
     property var host: null
-    // The theme is in: the window (boot/shell.qml, window/shell.qml) shows from then on.
-    readonly property bool themed: Theme.loaded
+    // The window (window/shell.qml) shows from then on: the theme is in, and place waits for it.
+    readonly property bool showable: Theme.loaded && placeReady
 
     property string sessionId: Quickshell.env("OMAREMOTE_SESSION") || ""
     readonly property var session: {
@@ -113,10 +114,20 @@ FocusScope {
     // window goes to its special workspace too (place in bin/omaremote-session).
     Component.onCompleted: {
         claim()
-        Quickshell.execDetached([Sessions.bin, "place", sessionId, String(Quickshell.processId)])
-        // An SSH session's window is a terminal to Hyprland (Omarchy's Super+V/Super+C), as in a tab.
-        if (session && session.protocol === "ssh")
-            Quickshell.execDetached([Sessions.bin, "terminal-tag", String(Quickshell.processId), "on"])
+        placer.running = true
+        tagTerminal()
+    }
+
+    // An SSH session's window is a terminal to Hyprland (Omarchy's Super+V/Super+C), as in a tab.
+    // Tagged once the session is known: when the window starts, the session list is not read yet.
+    readonly property bool isSsh: !!session && session.protocol === "ssh"
+    property bool taggedTerminal: false
+    onIsSshChanged: tagTerminal()
+    function tagTerminal() {
+        if (!isSsh || taggedTerminal)
+            return
+        taggedTerminal = true
+        Quickshell.execDetached([Sessions.bin, "terminal-tag", String(Quickshell.processId), "on"])
     }
     onSessionIdChanged: claim()
 
@@ -177,6 +188,31 @@ FocusScope {
 
     Rectangle {
         anchors.fill: parent
+        color: Theme.background
+    }
+
+    // Hyprland maps a new window tiled, at a tile's size, until place floats it. The window shows
+    // only once place has read what it needs and waits for it ("ready"), so it is floated within
+    // a few hyprctl calls; until then it is its background only, so its title and bars at that size
+    // do not flash by. At the latest after 1.5 s (place waits up to 5 s for a window to show).
+    property bool placeReady: false
+    property bool placed: false
+    Process {
+        id: placer
+        command: [Sessions.bin, "place", root.sessionId, String(Quickshell.processId)]
+        stdout: SplitParser {
+            onRead: function (line) { if (line === "ready") root.placeReady = true }
+        }
+        onExited: {
+            root.placeReady = true
+            root.placed = true
+        }
+    }
+    Timer { interval: 1500; running: true; onTriggered: root.placed = true }
+    Rectangle {
+        anchors.fill: parent
+        z: 100
+        visible: !root.placed
         color: Theme.background
     }
 

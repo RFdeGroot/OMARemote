@@ -1770,15 +1770,17 @@ def _hyprctl_json(*args):
 
 def find_window(kind, value, wait=0.0):
     """The Hyprland client whose class is exactly value (or whose pid is), waiting up to wait seconds
-    for it to appear (a window just started is not mapped yet)."""
+    for it to appear (a window just started is not mapped yet). Asked every 20 ms for the first half
+    second (a new own window shows tiled until it is found and floated), every 100 ms after that."""
     key = "pid" if kind == "pid" else "class"
     want = int(value) if key == "pid" and str(value).isdigit() else value
-    deadline = time.time() + wait
+    start = time.time()
+    deadline = start + wait
     while True:
         window = next((c for c in _hyprctl_json("clients") or [] if c.get(key) == want), None)
         if window or time.time() >= deadline:
             return window
-        time.sleep(0.1)
+        time.sleep(0.02 if time.time() - start < 0.5 else 0.1)
 
 
 def hypr_dispatch(lua, *old):
@@ -1788,6 +1790,18 @@ def hypr_dispatch(lua, *old):
         return
     if old:
         subprocess.run(["hyprctl", "dispatch", *old], capture_output=True)
+
+
+def hypr_dispatch_all(steps):
+    """Several dispatches in one hyprctl call, each step (lua, *old) as hypr_dispatch takes them: a
+    new window is floated, sized and centred in one round trip, not three."""
+    new = subprocess.run(["hyprctl", "--batch", " ; ".join("dispatch " + lua for lua, *_ in steps)],
+                         capture_output=True, text=True)
+    if new.returncode == 0 and "error" not in new.stdout.lower():
+        return
+    old = [" ".join(rest) for _, *rest in steps if rest]
+    if old:
+        subprocess.run(["hyprctl", "--batch", " ; ".join("dispatch " + o for o in old)], capture_output=True)
 
 
 def focus_window(kind, value):
@@ -1818,11 +1832,12 @@ def float_window(pid, percent=90):
     monitor = next((m for m in _hyprctl_json("monitors") or [] if m.get("id") == window.get("monitor")), {})
     width, height = float_size(monitor, percent)
     target = "address:" + window["address"]
-    if not window.get("floating"):
-        hypr_dispatch('hl.dsp.window.float({ action = "enable", window = "%s" })' % target, "setfloating", target)
-    hypr_dispatch('hl.dsp.window.resize({ x = %d, y = %d, window = "%s" })' % (width, height, target),
-                  "resizewindowpixel", "exact %d %d,%s" % (width, height, target))
-    hypr_dispatch('hl.dsp.window.center({ window = "%s" })' % target, "centerwindow")
+    steps = [] if window.get("floating") else \
+        [('hl.dsp.window.float({ action = "enable", window = "%s" })' % target, "setfloating", target)]
+    hypr_dispatch_all(steps + [
+        ('hl.dsp.window.resize({ x = %d, y = %d, window = "%s" })' % (width, height, target),
+         "resizewindowpixel", "exact %d %d,%s" % (width, height, target)),
+        ('hl.dsp.window.center({ window = "%s" })' % target, "centerwindow")])
     return True
 
 
@@ -2086,7 +2101,10 @@ def place_window(sid, pid):
     except (OSError, ValueError, AttributeError):
         conn_id = None
     conn = find_connection(conn_id or "", load_connections()) if conn_id else None
-    if user_window_rules() and not is_hotkey(conn):
+    own_rule = user_window_rules()
+    # All read: the window may show now (it waits for this line), and is placed as soon as it does.
+    print("ready", flush=True)
+    if own_rule and not is_hotkey(conn):
         if not find_window("pid", pid, wait=5):
             return False
     elif not float_window(pid):

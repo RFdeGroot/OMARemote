@@ -15,9 +15,9 @@ ShellRoot {
         implicitWidth: 1280
         implicitHeight: 800
         color: "#101315"
-        // Shown once the body has the theme, so it never shows the default colours first; after a
-        // second it shows whatever the theme files do (missing, unreadable, never ending).
-        visible: (body.item && body.item.themed) || themeWait.over
+        // Shown once the body has the theme and place waits for it (SessionWindow.showable), so it
+        // never shows the default colours or a tiled frame first; after a second in any case.
+        visible: (body.item && body.item.showable) || themeWait.over
 
         Timer {
             id: themeWait

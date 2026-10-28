@@ -1,4 +1,6 @@
+import contextlib
 import importlib.machinery
+import io
 import json
 import re
 import shutil
@@ -1690,6 +1692,81 @@ class FloatSize(unittest.TestCase):
 
     def test_unknown_monitor_falls_back(self):
         self.assertEqual(session.float_size({}, 90), (1728, 972))
+
+
+# Stands in for hyprctl: logs each call to $HYPR_LOG, knows one window (pid 4242) on one monitor,
+# and answers a batch with $HYPR_BATCH ("ok", or "error" for a Hyprland without the Lua dispatchers).
+FAKE_HYPRCTL = """#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["HYPR_LOG"], "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1:2] == ["clients"]:
+    print(json.dumps([{"pid": 4242, "address": "0xabc", "monitor": 0, "floating": False}]))
+elif sys.argv[1:2] == ["monitors"]:
+    print(json.dumps([{"id": 0, "width": 2000, "height": 1000, "scale": 1}]))
+elif sys.argv[1:2] == ["--batch"]:
+    print(os.environ.get("HYPR_BATCH", "ok"))
+"""
+
+
+class Placing(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        fake = os.path.join(self.dir, "hyprctl")
+        with open(fake, "w") as f:
+            f.write(FAKE_HYPRCTL)
+        os.chmod(fake, 0o755)
+        self.log = os.path.join(self.dir, "calls")
+        self.env = {"PATH": self.dir + os.pathsep + os.environ["PATH"], "HYPR_LOG": self.log,
+                    "XDG_CONFIG_HOME": os.path.join(self.dir, "config")}  # no window rules of the user's
+        self.saved = {k: os.environ.get(k) for k in list(self.env) + ["HYPR_BATCH"]}
+        os.environ.update(self.env)
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.dir)
+
+    def calls(self):
+        with open(self.log) as f:
+            return [json.loads(line) for line in f]
+
+    def test_float_size_and_centre_in_one_batch(self):
+        self.assertTrue(session.float_window(4242))
+        batches = [c for c in self.calls() if c[0] == "--batch"]
+        self.assertEqual(len(batches), 1)
+        steps = batches[0][1].split(" ; ")
+        self.assertEqual([s.split("(")[0] for s in steps],
+                         ["dispatch hl.dsp.window.float", "dispatch hl.dsp.window.resize", "dispatch hl.dsp.window.center"])
+        self.assertIn("x = 1800, y = 900", steps[1])
+
+    def test_older_hyprland_gets_the_classic_batch(self):
+        os.environ["HYPR_BATCH"] = "error: unknown dispatcher"
+        session.float_window(4242)
+        batches = [c[1] for c in self.calls() if c[0] == "--batch"]
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[1], "dispatch setfloating address:0xabc ; "
+                                     "dispatch resizewindowpixel exact 1800 900,address:0xabc ; dispatch centerwindow")
+
+    def test_place_says_ready_before_it_looks_for_the_window(self):
+        # The window shows on "ready" (SessionWindow.showable): looking for it first would wait for a
+        # window that waits for this line.
+        log = self.log
+
+        class Marker(io.StringIO):
+            def write(self, text):
+                with open(log, "a") as f:
+                    f.write(json.dumps(["<stdout>", text.strip()]) + "\n")
+                return len(text)
+
+        with contextlib.redirect_stdout(Marker()):
+            self.assertTrue(session.place_window("nosuchsession", "4242"))
+        calls = [c for c in self.calls() if c != ["<stdout>", ""]]
+        self.assertEqual(calls[0], ["<stdout>", "ready"])
+        self.assertEqual(calls[1], ["clients", "-j"])
 
 
 class PluginCheck(unittest.TestCase):
