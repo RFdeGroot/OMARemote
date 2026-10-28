@@ -70,39 +70,62 @@ Singleton {
         return fallback
     }
 
+    // A theme file is a few hundred characters; one longer than this is not parsed here (Omarchy's
+    // Commons.Color still reads it, see below).
+    readonly property int maxThemeLength: 64 * 1024
+
     function applyColors(body) {
         Commons.Color.loadColors(body)
         root.success = pick(body, ["green", "color2"], root.success)
         root.warning = pick(body, ["yellow", "color3"], root.warning)
     }
 
+    // Whether the theme has been read (or could not be): the windows show once it has, so they never
+    // show the default colours first (boot/shell.qml, window/shell.qml, with a timeout of their own).
+    readonly property bool loaded: colorsRead && shellRead
+    property bool colorsRead: false
+    property bool shellRead: false
+
+    // Read in the background, never on the UI thread (blockLoading): a theme file that does not end
+    // (a FIFO, a slow disk) must not freeze the window. Omarchy's Commons.Color reads the same files
+    // itself, whole, so no size bound here would bound this process.
     FileView {
         id: colorsFile
         path: root.stateDir + "/theme/colors.toml"
-        blockLoading: true
         printErrors: false
-        onLoaded: root.applyColors(text())
-        Component.onCompleted: root.applyColors(colorsFile.text())
+        onLoaded: {
+            var t = text()
+            if (t.length <= root.maxThemeLength)
+                root.applyColors(t)
+            root.colorsRead = true
+        }
+        onLoadFailed: root.colorsRead = true
     }
 
     FileView {
         id: shellFile
         path: root.stateDir + "/theme/shell.toml"
-        blockLoading: true
         printErrors: false
-        onLoaded: Commons.Color.loadShell(text())
-        onLoadFailed: Commons.Color.loadShell("")
+        onLoaded: {
+            var t = text()
+            Commons.Color.loadShell(t.length <= root.maxThemeLength ? t : "")
+            root.shellRead = true
+        }
+        onLoadFailed: {
+            Commons.Color.loadShell("")
+            root.shellRead = true
+        }
     }
 
     // omarchy-theme-set replaces the theme directory, killing any watch inside it; theme.name is
     // rewritten in place after the swap, so it is the one file whose watch survives (Flea, Theme.qml).
     FileView {
         path: root.stateDir + "/theme.name"
-        blockLoading: true
+        preload: false
         watchChanges: true
         printErrors: false
+        // Watch only: its content is never used, and the watch keeps firing without a reload.
         onFileChanged: {
-            reload()
             colorsFile.reload()
             shellFile.reload()
             Style.scheduleRefresh()

@@ -11,6 +11,8 @@ import "js/Limits.js" as Limits
 FocusScope {
     id: root
     property var host: null
+    // The theme is in: the window (boot/shell.qml, window/shell.qml) shows from then on.
+    readonly property bool themed: Theme.loaded
 
     property string filter: "all"
     property string query: ""

@@ -14,6 +14,18 @@ ShellRoot {
         implicitWidth: 1040
         implicitHeight: 640
         color: "#101315"
+        // Shown once the body has the theme, so it never shows the default colours first; after a
+        // second it shows whatever the theme files do (missing, unreadable, never ending). Until it
+        // shows, a second `omaremote` does not find it (running_pid asks hyprctl for mapped windows).
+        visible: (body.item && body.item.themed) || themeWait.over
+
+        Timer {
+            id: themeWait
+            interval: 1000
+            running: true
+            property bool over: false
+            onTriggered: over = true
+        }
 
         // Qt.quit() ends Quickshell cleanly (exit code 0); killing the process instead made a
         // shell print "Terminated" after closing the window.

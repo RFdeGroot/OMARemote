@@ -15,6 +15,17 @@ ShellRoot {
         implicitWidth: 1280
         implicitHeight: 800
         color: "#101315"
+        // Shown once the body has the theme, so it never shows the default colours first; after a
+        // second it shows whatever the theme files do (missing, unreadable, never ending).
+        visible: (body.item && body.item.themed) || themeWait.over
+
+        Timer {
+            id: themeWait
+            interval: 1000
+            running: true
+            property bool over: false
+            onTriggered: over = true
+        }
 
         function quit() {
             Qt.quit()
