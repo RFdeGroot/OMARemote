@@ -178,6 +178,11 @@ an audit after two sync findings in a row found six more), and add the class her
   and then `open()`. Our own files at fixed names are written by replacing them (`write_private`,
   `write_user_file`) or created new (`O_EXCL`), never with `open(path, "w")`. (0.9.13; the
   omarchy-plugin-security skill's grep audit finds the rest of this class)
+- **No file read on the UI thread, and the window does not wait for one forever.** A FileView with
+  `blockLoading` on a file that is not ours (Omarchy's theme) froze the window for as long as the
+  read took; the theme files now load in the background, text over 64 K characters is not parsed,
+  and a window that waits for them (or for `place`) shows after a timeout in any case. Omarchy's own
+  Commons.Color reads the same files whole in our process: that bound belongs upstream. (0.9.16)
 
 ## Then
 
