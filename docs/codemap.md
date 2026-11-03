@@ -26,7 +26,7 @@ Sections, in order (`# ------- <name>` lines):
 | export, import and sync | `portable`, `merge` (guards: `LOCAL_KEYS`, `ADDRESS_KEYS`, `_signs_in_here`, tombstones), `HOST_RE`, `ID_RE`; budgets of a round: `SYNC_PEER*`, `SYNC_MAX_*`, `answer_json` + `limit_memory` (also import) |
 | keyring | secret-tool calls, labels by id |
 | scaling | monitor scale, desktop scale |
-| hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `terminal_tag`, `find_window` (`_hyprctl_json` via `capped_output`), `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
+| hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `hang_rect`/`hang_steps`/`show_hotkey` (hotkey windows hang from the top edge, placed in one batch before the slide), `terminal_tag`, `find_window` (`_hyprctl_json` via `capped_output`), `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
 | arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `build_gliff_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |

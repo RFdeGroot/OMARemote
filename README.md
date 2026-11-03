@@ -362,7 +362,7 @@ already, listed twice or not usable say so. The keymap sheet (`?`) runs them too
   and takes you to the manager on its connections; `ctrl+alt+o` in a tab sends it out to its own window. The connection stays up
   either way. `omaremote open --window <name>` does the same from a script or keybinding.
 - **Hotkey window** (Open in): a connection kept at hand. Its shortcut slides it in, floating at
-  90% of the screen you are on and focused, from any workspace; the same shortcut, or `ctrl+alt+h`
+  90% of the screen you are on, hanging from the top edge and focused, from any workspace; the same shortcut, or `ctrl+alt+h`
   in it, hides it again, and it stays connected in between. It lives on a Hyprland special
   workspace of its own (`special:omaremote-<id>`), the way Omarchy's scratchpad does. Up to five.
   - **The shortcut**: set it in the connection's editor (press the keys); it is checked against

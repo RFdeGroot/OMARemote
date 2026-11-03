@@ -1701,9 +1701,9 @@ import json, os, sys
 with open(os.environ["HYPR_LOG"], "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\\n")
 if sys.argv[1:2] == ["clients"]:
-    print(json.dumps([{"pid": 4242, "address": "0xabc", "monitor": 0, "floating": False}]))
+    print(os.environ.get("HYPR_CLIENTS") or json.dumps([{"pid": 4242, "address": "0xabc", "monitor": 0, "floating": False}]))
 elif sys.argv[1:2] == ["monitors"]:
-    print(json.dumps([{"id": 0, "width": 2000, "height": 1000, "scale": 1}]))
+    print(os.environ.get("HYPR_MONITORS") or json.dumps([{"id": 0, "width": 2000, "height": 1000, "scale": 1}]))
 elif sys.argv[1:2] == ["--batch"]:
     print(os.environ.get("HYPR_BATCH", "ok"))
 """
@@ -1719,7 +1719,7 @@ class Placing(unittest.TestCase):
         self.log = os.path.join(self.dir, "calls")
         self.env = {"PATH": self.dir + os.pathsep + os.environ["PATH"], "HYPR_LOG": self.log,
                     "XDG_CONFIG_HOME": os.path.join(self.dir, "config")}  # no window rules of the user's
-        self.saved = {k: os.environ.get(k) for k in list(self.env) + ["HYPR_BATCH"]}
+        self.saved = {k: os.environ.get(k) for k in list(self.env) + ["HYPR_BATCH", "HYPR_CLIENTS", "HYPR_MONITORS"]}
         os.environ.update(self.env)
 
     def tearDown(self):
@@ -1750,6 +1750,104 @@ class Placing(unittest.TestCase):
         self.assertEqual(len(batches), 2)
         self.assertEqual(batches[1], "dispatch setfloating address:0xabc ; "
                                      "dispatch resizewindowpixel exact 1800 900,address:0xabc ; dispatch centerwindow")
+
+    # Hotkey windows: 90% of the monitor, flush with the top of what the bar leaves free.
+    LAPTOP = {"id": 0, "x": 0, "y": 0, "width": 3456, "height": 2234, "scale": 2, "reserved": [0, 32, 0, 0]}
+    BIG = {"id": 1, "x": 1728, "y": 0, "width": 3840, "height": 2160, "scale": 1.25, "reserved": [0, 26, 0, 0]}
+
+    def test_hanging_is_centred_under_the_bar(self):
+        self.assertEqual(session.hang_rect(self.BIG), (1882, 25, 2764, 1555))
+        self.assertEqual(session.hang_rect(self.LAPTOP), (86, 32, 1555, 1005))
+
+    def test_the_top_border_stays_behind_the_bar_at_every_scale(self):
+        # The bar ends on a whole screen pixel; the window's first row may not start below that one.
+        for scale in (1, 1.066667, 1.2, 1.25, 1.333333, 1.5, 1.6, 1.75, 1.8, 2, 2.4, 3):
+            for bar in (24, 26, 27, 30, 32, 33, 37):
+                monitor = {"width": 3840, "height": 2160, "scale": scale, "reserved": [0, bar, 0, 0]}
+                y = session.hang_rect(monitor)[1]
+                self.assertLessEqual(round(y * scale), int(bar * scale + 1e-6), (scale, bar))
+                self.assertLessEqual(bar - y, 1, (scale, bar))  # not further up than needed
+
+    def test_at_a_whole_scale_the_window_starts_right_at_the_bar(self):
+        self.assertEqual(session.hang_rect(dict(self.BIG, scale=1))[1], 26)
+        self.assertEqual(session.hang_rect(dict(self.BIG, scale=1.5))[1], 26)
+        self.assertEqual(session.hang_rect(self.LAPTOP)[1], 32)
+
+    def test_hanging_centres_in_what_a_side_bar_leaves_free(self):
+        monitor = dict(self.BIG, reserved=[100, 0, 0, 0])
+        x, y, width, _ = session.hang_rect(monitor)
+        self.assertEqual((x - 1728 - 100, y), ((3072 - 100 - width) // 2, 0))
+
+    def test_hanging_never_reaches_past_the_free_area(self):
+        monitor = dict(self.LAPTOP, reserved=[0, 300, 0, 0])
+        self.assertEqual(session.hang_rect(monitor)[3], 1117 - 300)
+
+    def test_hanging_counts_a_turned_monitor_and_one_without_a_bar(self):
+        self.assertEqual(session.hang_rect({"x": 0, "y": 0, "width": 1000, "height": 2000, "scale": 1, "transform": 1}),
+                         (100, 0, 1800, 900))
+
+    def hotkey_batch(self, window, focused, here=False):
+        monitors = [dict(self.LAPTOP, focused=focused == 0), dict(self.BIG, focused=focused == 1)]
+        if here:
+            monitors[focused]["specialWorkspace"] = {"name": "special:omaremote-c1"}
+        os.environ["HYPR_MONITORS"] = json.dumps(monitors)
+        session.show_hotkey(window, "omaremote-c1")
+        batches = [c[1] for c in self.calls() if c[0] == "--batch"]
+        self.assertEqual(len(batches), 1)  # one round trip: nothing is seen half done
+        return [s[len("dispatch "):] for s in batches[0].split(" ; ")]
+
+    def test_a_new_hotkey_window_is_in_place_before_it_slides_in(self):
+        window = {"pid": 4242, "address": "0xabc", "monitor": 1, "floating": False, "workspace": {"name": "22"}}
+        steps = self.hotkey_batch(window, 1)
+        names = [s.split("(")[0].replace("hl.dsp.", "") for s in steps]
+        self.assertEqual(names, ["window.float", "window.resize", "window.move", "window.move",
+                                 "workspace.toggle_special", "window.resize", "window.move", "focus"])
+        self.assertIn("x = 2764, y = 1555", steps[1])
+        self.assertIn("x = 1882, y = 25", steps[2])
+        self.assertIn('workspace = "special:omaremote-c1", follow = false', steps[3])
+        self.assertIn("omaremote-c1", steps[4])
+
+    def test_shown_on_another_monitor_it_is_placed_for_that_one_first(self):
+        # Hidden on the big screen, toggled on the laptop: Hyprland keeps the place on the monitor,
+        # so the position counts from the big screen, and the size is the laptop's already.
+        window = {"pid": 4242, "address": "0xabc", "monitor": 1, "floating": True,
+                  "workspace": {"name": "special:omaremote-c1"}}
+        steps = self.hotkey_batch(window, 0)
+        self.assertIn("x = 1555, y = 1005", steps[0])
+        self.assertIn("x = %d, y = 32" % (86 + 1728), steps[1])
+        self.assertIn("toggle_special", steps[2])
+        self.assertIn("x = 86, y = 32", steps[4])
+
+    def test_already_showing_here_it_is_not_toggled_away(self):
+        window = {"pid": 4242, "address": "0xabc", "monitor": 1, "floating": True,
+                  "workspace": {"name": "special:omaremote-c1"}}
+        steps = self.hotkey_batch(window, 1, here=True)
+        self.assertEqual([s.split("(")[0].replace("hl.dsp.", "") for s in steps],
+                         ["window.resize", "window.move", "focus"])
+
+    def test_older_hyprland_gets_the_same_steps_classic(self):
+        os.environ["HYPR_BATCH"] = "error: unknown dispatcher"
+        os.environ["HYPR_MONITORS"] = json.dumps([dict(self.BIG, focused=True)])
+        session.show_hotkey({"pid": 4242, "address": "0xabc", "monitor": 1, "floating": True,
+                             "workspace": {"name": "special:omaremote-c1"}}, "omaremote-c1")
+        classic = [c[1] for c in self.calls() if c[0] == "--batch"][1].split(" ; ")
+        self.assertEqual(classic[:3], ["dispatch resizewindowpixel exact 2764 1555,address:0xabc",
+                                       "dispatch movewindowpixel exact 1882 25,address:0xabc",
+                                       "dispatch togglespecialworkspace omaremote-c1"])
+
+    def test_leaving_fullscreen_a_hotkey_window_hangs_again_and_others_centre(self):
+        os.environ["HYPR_MONITORS"] = json.dumps([dict(self.BIG, id=0)])
+        os.environ["HYPR_CLIENTS"] = json.dumps([{"pid": 4242, "address": "0xabc", "monitor": 0, "floating": True,
+                                                  "workspace": {"name": "special:omaremote-c1"}}])
+        self.assertTrue(session.center_window(4242))
+        calls = " ".join(str(c) for c in self.calls())
+        self.assertIn("x = 1882, y = 25", calls)
+        self.assertNotIn("center", calls)
+        open(self.log, "w").close()
+        os.environ["HYPR_CLIENTS"] = json.dumps([{"pid": 4242, "address": "0xabc", "monitor": 0, "floating": True,
+                                                  "workspace": {"name": "3"}}])
+        self.assertTrue(session.center_window(4242))
+        self.assertIn("window.center", " ".join(str(c) for c in self.calls()))
 
     def test_place_says_ready_before_it_looks_for_the_window(self):
         # The window shows on "ready" (SessionWindow.showable): looking for it first would wait for a

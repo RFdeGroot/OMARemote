@@ -43,7 +43,8 @@ FocusScope {
             return
         }
         settled.stop()
-        // Hyprland brings a floating window back at its size but not centred (part off screen).
+        // Hyprland brings a floating window back at its size but not centred (part off screen). A
+        // hotkey window hangs from the top edge again instead.
         if (wasWholeScreen)
             Quickshell.execDetached([Sessions.bin, "center", String(Quickshell.processId)])
         wasWholeScreen = false
@@ -111,7 +112,8 @@ FocusScope {
     }
     // A new window floats at 90% of its monitor, centred; after that it is an ordinary window
     // (Omarchy's keys resize it, tile it, move it). Not again after a reconnect in it. A hotkey
-    // window goes to its special workspace too (place in bin/omaremote-session).
+    // window goes to its special workspace instead, hanging from the top edge (place in
+    // bin/omaremote-session).
     Component.onCompleted: {
         claim()
         placer.running = true
