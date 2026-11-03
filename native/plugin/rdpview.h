@@ -99,6 +99,7 @@ public:
 	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
 	Q_INVOKABLE void releaseShortcuts();
 	Q_INVOKABLE int cachedCursors() const { return int(m_cursors.size()); } // for tests
+	Q_INVOKABLE QRectF pictureOnScreen() const; // for tests: in screen pixels
 
 signals:
 	void socketPathChanged();

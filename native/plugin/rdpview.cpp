@@ -453,7 +453,23 @@ QRectF RdpView::imageRect() const
 	// Shrink to fit always; grow only when the desktop is not following the item (fixed size).
 	if (fit.width() > width() || fit.height() > height() || !m_followSize)
 		fit = natural.scaled(size(), Qt::KeepAspectRatio);
-	return QRectF(QPointF((width() - fit.width()) / 2, (height() - fit.height()) / 2), fit);
+	QPointF at((width() - fit.width()) / 2, (height() - fit.height()) / 2);
+	// Shown pixel for pixel, it has to start on a whole screen pixel. At a fractional scale the
+	// centring above can land between two (an odd width at 125%: RDP desktops are even, so half a
+	// pixel is left over), and then columns of the picture are drawn twice or not at all.
+	if (fit == natural)
+	{
+		const QPointF scene = mapToScene(at);
+		at += QPointF(qRound(scene.x() * dpr) / dpr, qRound(scene.y() * dpr) / dpr) - scene;
+	}
+	return QRectF(at, fit);
+}
+
+QRectF RdpView::pictureOnScreen() const
+{
+	const QRectF r = imageRect();
+	const qreal dpr = devicePixelRatio();
+	return QRectF(mapToScene(r.topLeft()) * dpr, r.size() * dpr);
 }
 
 // ---------------------------------------------------------------- pictures as dmabufs
@@ -629,10 +645,10 @@ void RdpView::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometr
 {
 	QQuickItem::geometryChange(newGeometry, oldGeometry);
 	if (newGeometry.size() != oldGeometry.size())
-	{
 		scheduleSize();
+	// A move alone can change where the picture falls on the screen's pixels.
+	if (newGeometry != oldGeometry)
 		update();
-	}
 }
 
 void RdpView::itemChange(ItemChange change, const ItemChangeData& value)

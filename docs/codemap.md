@@ -105,7 +105,7 @@ Build: `ninja -C native/build`.
   1Remote, ~/.ssh/config: parsers, refused values, idempotent re-import), test_gliff.py (the protocol
   against gliff-proto's fixtures via gliff-proto-test, the ssh command, exit messages; Decoder: omaremote-gliff against a fake
   gliff-server with ffmpeg-made pictures), test_memory.py (rdp-gfx-test, every session process's memory ceiling), test_session_keys.py (the session
-  keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting), test_clipboard.py
+  keys through tests/qml/sessionkeys.qml, and every chord and hint following the setting), test_picture.py (where a picture falls on the screen's pixels, tests/qml/picture.qml), test_clipboard.py
   (a session tab's clipboard through tests/qml/clipboard.qml against a fake session socket: wl-paste only,
   nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc
   against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept), test_ssh.py
