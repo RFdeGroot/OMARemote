@@ -1849,6 +1849,56 @@ class Placing(unittest.TestCase):
         self.assertTrue(session.center_window(4242))
         self.assertIn("window.center", " ".join(str(c) for c in self.calls()))
 
+    def test_no_monitor_known_a_hotkey_window_stays_where_it_is(self):
+        # hang_rect on no monitor gives 0,0 at a default size: possibly another monitor.
+        os.environ["HYPR_MONITORS"] = "[]"
+        os.environ["HYPR_CLIENTS"] = json.dumps([{"pid": 4242, "address": "0xabc", "monitor": 0, "floating": True,
+                                                  "workspace": {"name": "special:omaremote-c1"}}])
+        self.assertTrue(session.center_window(4242))
+        self.assertEqual([c for c in self.calls() if c[0] == "--batch"], [])
+
+    def test_no_monitor_known_a_hotkey_window_still_shows_and_takes_focus(self):
+        steps = self.hotkey_batch_with_monitors("[]")
+        self.assertEqual([s.split("(")[0].replace("hl.dsp.", "") for s in steps],
+                         ["window.move", "workspace.toggle_special", "focus"])
+        self.assertIn('workspace = "special:omaremote-c1"', steps[0])
+
+    def test_no_focused_monitor_a_hotkey_window_is_not_placed_either(self):
+        steps = self.hotkey_batch_with_monitors(json.dumps([dict(self.BIG, focused=False)]))
+        self.assertEqual([s.split("(")[0].replace("hl.dsp.", "") for s in steps],
+                         ["window.move", "workspace.toggle_special", "focus"])
+
+    def hotkey_batch_with_monitors(self, monitors):
+        os.environ["HYPR_MONITORS"] = monitors
+        session.show_hotkey({"pid": 4242, "address": "0xabc", "monitor": 1, "floating": False,
+                             "workspace": {"name": "22"}}, "omaremote-c1")
+        batches = [c[1] for c in self.calls() if c[0] == "--batch"]
+        self.assertEqual(len(batches), 1)
+        return [s[len("dispatch "):] for s in batches[0].split(" ; ")]
+
+    def test_a_new_hotkey_window_is_placed_in_one_batch_ending_in_focus(self):
+        from unittest import mock
+        os.environ["HYPR_MONITORS"] = json.dumps([dict(self.BIG, id=0, focused=True)])
+        sessions = os.path.join(self.dir, "sessions")
+        os.mkdir(sessions)
+        sid = "20261103-120000-abcdef"
+        with open(os.path.join(sessions, sid + ".json"), "w") as f:
+            json.dump({"connection": "c1"}, f)
+        conn = {"id": "c1", "protocol": "rdp", "openIn": "hotkey", "display": "fullscreen"}  # hotkey wins
+        with mock.patch.object(session, "SESSIONS_DIR", sessions), \
+                mock.patch.object(session, "load_connections", return_value=[conn]), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertTrue(session.place_window(sid, "4242"))
+        self.assertEqual(out.getvalue(), "ready\n")
+        batches = [c[1] for c in self.calls() if c[0] == "--batch"]
+        self.assertEqual(len(batches), 1)
+        steps = [s[len("dispatch "):] for s in batches[0].split(" ; ")]
+        self.assertEqual(steps[0].split("(")[0], "hl.dsp.window.float")
+        self.assertIn('workspace = "special:omaremote-c1", follow = false', " ".join(steps))
+        self.assertIn('toggle_special("omaremote-c1")', " ".join(steps))
+        self.assertEqual(steps[-1], 'hl.dsp.focus({ window = "address:0xabc" })')
+        self.assertNotIn("fullscreen", batches[0])
+
     def test_place_says_ready_before_it_looks_for_the_window(self):
         # The window shows on "ready" (SessionWindow.showable): looking for it first would wait for a
         # window that waits for this line.

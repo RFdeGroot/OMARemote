@@ -1855,8 +1855,9 @@ def center_window(pid):
     if workspace.startswith("special:" + HOTKEY_PREFIX):
         # A hotkey window goes back to hanging from the top edge.
         monitors = _hyprctl_json("monitors") or []
-        monitor = next((m for m in monitors if m.get("id") == window.get("monitor")), {})
-        hypr_dispatch_all(hang_steps(window, monitor, monitor))
+        monitor = next((m for m in monitors if m.get("id") == window.get("monitor")), None)
+        if monitor:  # without one its place is unknown: stay put rather than land on another monitor
+            hypr_dispatch_all(hang_steps(window, monitor, monitor))
     elif not user_window_rules():
         target = "address:" + window["address"]
         hypr_dispatch('hl.dsp.window.center({ window = "%s" })' % target, "centerwindow")
@@ -2090,20 +2091,22 @@ def hang_steps(window, shows_on, is_on):
 def show_hotkey(window, name):
     """Brings the special workspace up on the focused monitor with the window at the front. All in
     one round trip and the showing last: the window is in place before it slides in, for this
-    monitor, and a new one leaves the workspace it opened on at once."""
+    monitor, and a new one leaves the workspace it opened on at once. With no focused monitor known
+    it is shown and focused without placing: a guess could put it on the wrong monitor."""
     monitors = _hyprctl_json("monitors") or []
-    focused = next((m for m in monitors if m.get("focused")), {})
+    focused = next((m for m in monitors if m.get("focused")), None)
     is_on = next((m for m in monitors if m.get("id") == window.get("monitor")), focused)
     here, _ = special_shown(name, monitors)
     target = "address:" + window["address"]
-    steps = hang_steps(window, focused, is_on)
+    steps = hang_steps(window, focused, is_on) if focused else []
     if (window.get("workspace") or {}).get("name") != "special:" + name:
         steps.append(('hl.dsp.window.move({ workspace = "special:%s", follow = false, window = "%s" })' % (name, target),
                       "movetoworkspacesilent", "special:%s,%s" % (name, target)))
     if not here:
         steps.append(('hl.dsp.workspace.toggle_special("%s")' % name, "togglespecialworkspace", name))
         # Arriving can leave it a pixel or two off (a new window, a monitor at another scale).
-        steps += hang_steps(dict(window, floating=True), focused, focused)
+        if focused:
+            steps += hang_steps(dict(window, floating=True), focused, focused)
     steps.append(('hl.dsp.focus({ window = "%s" })' % target, "focuswindow", target))
     hypr_dispatch_all(steps)
 
@@ -2149,12 +2152,12 @@ def place_window(sid, pid):
     own_rule = user_window_rules()
     # All read: the window may show now (it waits for this line), and is placed as soon as it does.
     print("ready", flush=True)
-    if is_hotkey(conn) and not fullscreen_mode(conn):
+    if is_hotkey(conn):
         window = find_window("pid", pid, wait=5)
         if window:
             show_hotkey(window, special_name(conn["id"]))
         return bool(window)
-    if own_rule and not is_hotkey(conn):
+    if own_rule:
         if not find_window("pid", pid, wait=5):
             return False
     elif not float_window(pid):
