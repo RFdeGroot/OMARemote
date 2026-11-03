@@ -24,6 +24,7 @@ Window {
         id: view
         anchors.fill: parent
         shareClipboard: root.args[root.args.length - 3] === "1"
+        withholdPasswords: root.args[root.args.length - 1] === "withhold"
     }
 
     function done() {

@@ -141,6 +141,11 @@ an audit after two sync findings in a row found six more), and add the class her
 - **A server acts on the desktop only while its tab has the keyboard.** What a session sends for
   the clipboard waits until the view is focused and is dropped when the desktop copied since (Gliff,
   then RDP, VNC and SSH's OSC 52). (0.9.7)
+- **"Only on paste" is not a boundary.** A clipboard offered to the other side can be read without a
+  paste: a clipboard history asks at once and keeps it, and for a password manager's selection it
+  still asks (wl-paste reads before it runs the watch command) and only skips storing it. So nothing is offered until the user copied
+  something during the session, and a pending read that an offer waits for ends when the selection
+  changes or the tab loses focus. (Gliff, 0.9.17)
 - **Text that reaches a systemd unit's command line is expanded by systemd first.** Since systemd
   262, `uwsm-app` and `omarchy launch … terminal` expand `${…}` anywhere in the command line, also
   inside shell quotes, and blank names they cannot read. No `${` in a command we hand them, and

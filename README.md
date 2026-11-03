@@ -416,6 +416,9 @@ They come from the keyring and go over NLA as at every sign-in. OMARemote can do
 - Without a saved password, a reconnect asks for it as usual. Kerberos without a password, or a
   server set to always ask for the password, shows its lock or logon screen again after a reconnect.
 
+Clipboard text goes both ways, as with Windows' own client: what you copy is announced to the server and
+sent when it asks. That includes what a password manager copies, which Gliff and VNC hold back.
+
 ## VNC
 
 Pick **VNC** as a connection's protocol (port 5900 by default). VNC sessions always open in a tab.
@@ -428,7 +431,9 @@ They sign in with a VNC password, or a user name and password for servers that a
 - **Quality**: *Auto* (Tight with JPEG), *High* (lossless ZRLE), *Low* (strong compression).
 - **View only** watches without sending keyboard or mouse input.
 - Clipboard text goes both ways (UTF-8 where the server supports it), and the server's cursor is
-  drawn locally. Keys are sent as X keysyms, so the server's own keyboard layout applies.
+  drawn locally. VNC sends the text itself at once, so what a password manager copies normally stays here
+  unless you switch on *Copied passwords* for the connection (on each computer: it does not sync); the
+  server may then keep it. Keys are sent as X keysyms, so the server's own keyboard layout applies.
 
 ## SSH
 
@@ -512,9 +517,20 @@ accept ssh from yours, as for an SSH connection.
   on the picture, the tab takes Hyprland's shortcuts, `super` included, as Gliff's own client does.
   Moving the pointer off gives them back, and so do `ctrl+alt+esc` and `shift+esc` (Settings ›
   Keyboard: or *Double Esc*, or nothing else); a click takes them again.
-- **Clipboard** both ways, text, images and files: nothing moves until you paste, slow pastes show
-  their progress with a cancel button, files land in `~/.cache/omaremote/clipboard/`. It is shared
-  only while the tab has the keyboard, and never a password manager's selection.
+- **Clipboard** both ways, text, images and files: slow pastes show their progress with a cancel
+  button, files land in `~/.cache/omaremote/clipboard/`. Nothing moves at connect: each machine keeps
+  its own clipboard until something is copied during the session. After that a copy here is offered
+  only while the tab has the keyboard, and stays readable there until your next copy. A copy announces its types and the
+  contents follow when the other side asks. That is normally a paste, but the host can ask without one:
+  Omarchy's clipboard history does, at once, and keeps what it gets. What a password manager copies here is
+  not sent, unless you switch on *Copied passwords* for the connection (on each computer: it does not
+  sync, groups do not set it, and a change applies from the next connection). Then the host gets its text as soon as you copy
+  it or return to the tab, without a paste: the history asks for it as well, and only skips storing it
+  because of the manager's marker. It goes from the host's clipboard when the manager clears it, but
+  what a program there already read stays read. The other way there is no switch: a password copied on
+  the host reaches this computer the same way, and the history here skips storing it. What you copy in
+  another app and then return to the tab with reaches the host: switch Clipboard off for a host you do
+  not trust.
 - **A dropped link** is tried again five times, from 1 to 16 seconds apart.
 - **The bottom bar** shows the link's health and as many facts as fit: a green dot, orange when the
   server is congested or the round trip is slow, red when the server does not answer or while

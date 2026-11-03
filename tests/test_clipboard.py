@@ -63,6 +63,27 @@ class Runtime(unittest.TestCase):
             f.write(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nsleep {sleep}\nexec cat "{data}"\n')
         os.chmod(path, 0o755)
 
+    def stub_types(self, content, *types):
+        """wl-paste: --list-types gives the next of types (the last one again after that)."""
+        self.stub(content)
+        answers = os.path.join(self.dir, "types")
+        with open(answers, "w") as f:
+            f.write("\n".join(types) + "\n")
+        path = os.path.join(self.bin, "wl-paste")
+        with open(path) as f:
+            body = f.read().split("\n", 1)[1]
+        with open(path, "w") as f:
+            f.write(f'''#!/bin/sh
+if [ "$1" = "--list-types" ]; then
+    line=$(head -n 1 "{answers}")
+    [ "$(wc -l < "{answers}")" -gt 1 ] && sed -i 1d "{answers}"
+    [ "$line" = "EMPTY" ] && exit 1
+    [ "$line" = "LONG" ] && {{ head -c 70000 /dev/zero | tr '\\0' 'x'; printf '\\nx-kde-passwordManagerHint\\n'; exit 0; }}
+    printf 'text/plain\\n%s\\n' "$line"
+    exit 0
+fi
+{body}''')
+
     def wl_paste_calls(self):
         if not os.path.exists(self.calls):
             return 0
@@ -135,6 +156,36 @@ class Runtime(unittest.TestCase):
         self.assertGreaterEqual(self.wl_paste_calls(), 1)
         with open(self.calls) as f:
             self.assertEqual(f.readline().split(), ["--no-newline", "--type", "text"])
+
+    def test_a_password_is_withheld_when_asked(self):
+        self.stub_types(b"secret", "x-kde-passwordManagerHint")
+        _, offered, _ = self.run_view(True, mode="withhold")
+        self.assertEqual(offered, [])
+
+    def test_a_password_arriving_during_the_read_is_withheld(self):
+        self.stub_types(b"secret", "x-other", "x-kde-passwordManagerHint")
+        _, offered, _ = self.run_view(True, mode="withhold")
+        self.assertEqual(offered, [])
+
+    def test_a_password_cleared_during_the_read_is_withheld(self):
+        self.stub_types(b"secret", "x-other", "EMPTY")
+        _, offered, _ = self.run_view(True, mode="withhold")
+        self.assertEqual(offered, [])
+
+    def test_a_type_list_too_long_to_read_is_withheld(self):
+        self.stub_types(b"secret", "LONG")
+        _, offered, _ = self.run_view(True, mode="withhold")
+        self.assertEqual(offered, [])
+
+    def test_withholding_leaves_other_text_alone(self):
+        self.stub_types(b"from the desktop", "x-other")
+        _, offered, _ = self.run_view(True, mode="withhold")
+        self.assertEqual(offered, ["from the desktop"])
+
+    def test_a_password_is_offered_without_the_withholding(self):
+        self.stub_types(b"secret", "x-kde-passwordManagerHint")
+        _, offered, _ = self.run_view(True)
+        self.assertEqual(offered, ["secret"])
 
     def test_not_shared_never_reads_or_writes_the_clipboard(self):
         self.stub(b"from the desktop")

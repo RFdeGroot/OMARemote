@@ -60,7 +60,7 @@ Singleton {
         protocol: "rdp", name: "", group: "", host: "", port: 3389,
         username: "", domain: "", savePassword: false, credential: "custom",
         display: "fit", fullscreen: "screen", width: 1920, height: 1080, scale: "auto", multimon: false, // multimon: unused since 0.9.12, kept for older files
-        clipboard: true, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
+        clipboard: true, clipboardPasswords: false, audio: "local", microphone: false, homeDrive: false, grabKeyboard: false,
         security: "auto", ignoreCert: false, network: "auto",
         gateway: "", gatewayUser: "", gatewayDomain: "", gatewaySavePassword: false, kdc: "",
         extraArgs: "", openIn: "tab", vncScaling: "fit", vncQuality: "auto", viewOnly: false, unlockAfter: 0, notThisComputer: "", sshArgs: "", sshKey: "", sshReconnect: true, gliffScreen: "mirror", gliffOutput: "", gliffColour: "auto", gliffCapture: "auto", gliffVideo: "auto", gliffServer: "", hotkey: "",
@@ -75,7 +75,7 @@ Singleton {
     // Never exported or synced: LOCAL_KEYS in bin/omaremote-session holds the list, keep in step.
     readonly property var localKeys: ["username", "domain", "credential", "savePassword", "gatewayUser",
         "gatewayDomain", "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey",
-        "ignoreCert", "security", "gliffServer", "unlockAfter", "notThisComputer"]
+        "ignoreCert", "security", "gliffServer", "unlockAfter", "notThisComputer", "clipboardPasswords"]
 
     // Every connection as it will be used: defaults, then its group, then its own values.
     readonly property var connections: stored.map(function (c) { return root.resolve(c) })

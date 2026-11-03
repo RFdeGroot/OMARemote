@@ -4,12 +4,14 @@
 // (crates/gliff-proto/src/clipboard.rs, crates/gliff-transport/src/clipboard):
 //
 // - Nothing is pushed. A side whose clipboard changed offers its mime types (and files); the other
-//   side stands in for that on its own clipboard, and fetches the data only when something there
-//   pastes. Data moves in chunks of at most 256 KiB, four in flight before an Ack.
+//   side stands in for that on its own clipboard, and fetches the data when something there asks:
+//   a paste, or a clipboard history at once, so what is offered counts as read. Data moves in
+//   chunks of at most 256 KiB, four in flight before an Ack.
 // - Files travel as relative paths and sizes; the pasting side writes them into a private spool
 //   folder and pastes a URI list pointing there.
 //
-// What OMARemote adds: the local clipboard is offered to the remote only while the session's view
+// What OMARemote adds: nothing moves at connect (either side's clipboard waits for a copy during
+// the session; see onOffer, setFocused). The local clipboard is offered to the remote only while the session's view
 // has the focus (as a focused window in Gliff's client is what reads the clipboard), and a local
 // change while it does not is withdrawn from the remote at once. The remote's offer becomes the
 // local clipboard when the view gets the focus, unless the local clipboard changed since.
@@ -46,6 +48,25 @@ bool is_text_mime(const std::string& m);
 bool is_file_mime(const std::string& m);
 std::vector<std::string> forwardable_mimes(const std::vector<std::string>& offered);
 std::string resolve_mime(const std::string& requested, const std::vector<std::string>& offered);
+// An offer from the server that crossed ours (sent within a second of it, while we offer): ours stands.
+bool offer_crossed_ours(bool offering, uint64_t offeredAt, uint64_t now);
+// The server's first offer of a connection, before the first picture or just after it: what the
+// remote held when the session began, not something copied there (nobody could through a session
+// not yet on screen). A server need not send one (a selection of its own is no change to it), so a
+// later first offer is a real copy. pictureAt: 0 before the first picture. With files the server
+// reads their list first (up to 5 s, then walks them), so that offer may come later.
+constexpr uint64_t CLIP_FIRST_OFFER_MS = 2000;
+constexpr uint64_t CLIP_FIRST_FILES_OFFER_MS = 15000;
+bool is_starting_offer(bool firstFromServer, bool hasFiles, uint64_t pictureAt, uint64_t now);
+
+// What a reconnect's Clipboard keeps of the one before it: the same session, so a clipboard already
+// shared with this remote is offered again, and the remote's is taken back when it was held here or
+// waited for focus. A first connection has neither: nothing moves at connect.
+struct ClipHandover
+{
+	uint64_t localChangedAt = 0;
+	bool remoteWaiting = false;
+};
 std::vector<std::string> local_mimes_for_offer(const std::vector<std::string>& mimes, bool hasFiles);
 std::vector<std::string> parse_uri_list(const std::string& body);
 std::string uri_list(const std::vector<std::string>& paths);
@@ -71,13 +92,19 @@ class Clipboard
 	using Send = std::function<void(const std::string& body, const std::string& payload)>;
 	using Ui = std::function<void(const std::string& line)>;
 
-	Clipboard(Seat& seat, Send send, Ui ui);
+	friend struct ClipboardTest; // gliff-proto-test
+
+	Clipboard(Seat& seat, Send send, Ui ui, ClipHandover before = {});
 	~Clipboard();
 
 	void setEnabled(bool on) { m_enabled = on && m_seat.hasClipboard(); }
 	bool enabled() const { return m_enabled; }
+	void setSharePasswords(bool on) { m_sharePasswords = on; }
 	void enableForTests() { m_enabled = true; } // gliff-proto-test: a seat without a compositor
 	void setFocused(bool focused);
+	// The first picture of this connection is on screen.
+	void pictureShown();
+	ClipHandover handover() const;
 
 	// From the server.
 	void onOffer(const ClipOffer& offer);
@@ -103,6 +130,7 @@ class Clipboard
 	void localChanged();
 	void offerLocal();
 	void finishLocalOffer(const std::string& uriList);
+	void cancelUriRead();
 	void withdraw();
 	void clearOffered();
 	void applyRemote();
@@ -122,6 +150,7 @@ class Clipboard
 	Send m_send;
 	Ui m_ui;
 	bool m_enabled = false;
+	bool m_sharePasswords = false; // the connection's Copied passwords
 	bool m_focused = false;
 
 	// What we offered the remote, and the local selection it stands for.
@@ -134,6 +163,9 @@ class Clipboard
 	bool m_localOffered = false;
 	uint64_t m_localChangedAt = 0;
 	uint64_t m_offeredAt = 0; // when our last offer (or withdrawal) went
+	bool m_serverOffered = false; // the server's first offer of this connection has come
+	uint64_t m_pictureAt = 0;     // when this connection's first picture came
+	bool m_remoteWaited = false;  // the connection before ended with the remote's offer waiting for focus
 	int m_uriFd = -1; // reading the local URI list before files can be offered
 	uint64_t m_uriSince = 0; // when that read began: an owner that never closes the pipe is given up
 	std::string m_uriBuf;

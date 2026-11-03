@@ -858,6 +858,8 @@ static void on_connected()
 {
 	g.connected = true;
 	g.retries = 0;
+	if (g.clip)
+		g.clip->pictureShown();
 	// The supervisor reads this line as "connected".
 	log("connected to %s (%ux%u)", g.get("host").c_str(), g.frame.width, g.frame.height);
 	g.link.send("state connected");
@@ -1305,11 +1307,13 @@ static bool start_server()
 		return false;
 	}
 	// The clipboard's offers and transfers belong to one server: a new one starts clean.
+	const gliff::ClipHandover before = g.clip ? g.clip->handover() : gliff::ClipHandover{};
 	g.clip.reset();
 	g.clip = std::make_unique<gliff::Clipboard>(
 	    g.seat, [](const std::string& body, const std::string& payload) { send_msg(body, payload); },
-	    [](const std::string& line) { g.link.send(line); });
+	    [](const std::string& line) { g.link.send(line); }, before);
 	g.clip->setEnabled(g.get("clipboard", "1") == "1");
+	g.clip->setSharePasswords(g.get("clipboardPasswords", "0") == "1");
 	if (g.get("clipboard", "1") == "1" && !g.clip->enabled())
 		log("no clipboard access here (ext-data-control): the clipboard is not shared");
 	// A private screen starts at its own size (at most 1920x1080) and follows the tab once the

@@ -9,6 +9,7 @@
 #include "seat.hpp"
 #include "video.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
@@ -203,6 +204,288 @@ static void offered_file_tests()
 	fs::remove_all(dir);
 }
 
+namespace gliff
+{
+// Clipboard itself, with no compositor: nothing here touches the seat's selection (not focused
+// when an offer comes; an empty selection when a read is cancelled).
+struct ClipboardTest
+{
+	static ClipOffer offer(uint32_t serial)
+	{
+		ClipOffer o;
+		o.serial = serial;
+		o.mimes = { "text/plain" };
+		return o;
+	}
+
+	static void run()
+	{
+		Seat seat;
+		const auto send = [](const std::string&, const std::string&) {};
+		const auto ui = [](const std::string&) {};
+		{
+			// Nothing moves at connect, ours on offer or not.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.onOffer(offer(1));
+			expect(!c.m_haveRemote, "the remote's clipboard at connect is not taken");
+			c.onOffer(offer(2));
+			expect(c.m_haveRemote && c.m_remote.serial == 2, "the next offer is taken");
+		}
+		{
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.setFocused(true);
+			expect(c.m_localSerial == 0 && !c.m_localOffered, "focus at connect offers nothing");
+			c.onOffer(offer(1));
+			c.setFocused(false);
+			c.setFocused(true);
+			expect(c.m_localSerial == 0 && !c.m_remoteApplied, "focus coming back still moves nothing");
+			c.localChanged(); // focused
+			expect(c.m_localSerial == 1, "a copy during the session is offered");
+		}
+		{
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.localChanged(); // not focused
+			expect(c.m_localSerial == 0, "a copy while not focused is not offered yet");
+			c.setFocused(true);
+			expect(c.m_localSerial == 1, "a copy during the session is offered on focus");
+		}
+		{
+			// A reconnect: what was shared with this remote is offered again.
+			Clipboard old(seat, send, ui);
+			old.m_enabled = true;
+			old.localChanged();
+			Clipboard c(seat, send, ui, old.handover());
+			c.m_enabled = true;
+			c.setFocused(true);
+			expect(c.m_localSerial == 1, "a reconnect offers a clipboard already shared");
+		}
+		{
+			// A reconnect with the remote's copy waiting for focus: it is taken, not lost.
+			Clipboard old(seat, send, ui);
+			old.m_enabled = true;
+			old.m_serverOffered = true;
+			old.onOffer(offer(2));
+			Clipboard c(seat, send, ui, old.handover());
+			c.m_enabled = true;
+			c.onOffer(offer(1));
+			expect(c.m_haveRemote, "a reconnect takes back the remote's copy that waited for focus");
+		}
+		{
+			// A password manager's selection is offered with its marker, and clearing it ends that.
+			const std::vector<std::string> password = { "text/plain", "x-kde-passwordManagerHint" };
+			{
+				Clipboard off(seat, send, ui);
+				off.m_enabled = true;
+				off.m_focused = true;
+				seat.m_selMimes = password;
+				off.localChanged();
+				expect(!off.m_localOffered && off.m_offeredMimes.empty(), "by default a password is not offered");
+				seat.m_selMimes.clear();
+			}
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_focused = true;
+			c.setSharePasswords(true);
+			seat.m_selMimes = password;
+			c.localChanged();
+			const auto& mimes = c.m_offeredMimes;
+			expect(c.m_localOffered && std::find(mimes.begin(), mimes.end(), "x-kde-passwordManagerHint") != mimes.end(),
+			       "a password is offered with its marker");
+			seat.m_selMimes.clear();
+			c.localChanged();
+			expect(!c.m_localOffered && c.m_offeredMimes.empty() && c.m_localSerial == 2, "clearing it ends the offer");
+			// Not looking: replaced or cleared, the offer ends at once.
+			seat.m_selMimes = password;
+			c.localChanged();
+			c.setFocused(false);
+			seat.m_selMimes.clear();
+			c.localChanged();
+			expect(!c.m_localOffered && c.m_localSerial == 4, "cleared while not focused: withdrawn at once");
+			// At connect a password moves no more than anything else.
+			seat.m_selMimes = password;
+			Clipboard fresh(seat, send, ui);
+			fresh.m_enabled = true;
+			fresh.setSharePasswords(true);
+			fresh.setFocused(true);
+			expect(fresh.m_localSerial == 0, "a password on the clipboard at connect is not offered");
+			seat.m_selMimes.clear();
+		}
+		{
+			// A retry that fails before any offer keeps it, for the next retry.
+			Clipboard old(seat, send, ui);
+			old.m_enabled = true;
+			old.m_serverOffered = true;
+			old.onOffer(offer(2));
+			Clipboard failed(seat, send, ui, old.handover());
+			Clipboard c(seat, send, ui, failed.handover());
+			c.m_enabled = true;
+			c.onOffer(offer(1));
+			expect(c.m_haveRemote, "a failed retry does not forget the remote's copy that waited");
+		}
+		{
+			// A copy here during the retries is newer: the old remote copy is not taken over it.
+			Clipboard old(seat, send, ui);
+			old.m_enabled = true;
+			old.m_serverOffered = true;
+			old.onOffer(offer(2));
+			Clipboard c(seat, send, ui, old.handover());
+			c.m_enabled = true;
+			c.localChanged();
+			expect(!c.m_remoteWaited, "a copy here ends the wait for the remote's");
+			c.onOffer(offer(1));
+			expect(!c.m_haveRemote, "the remote's clipboard at connect does not replace a newer copy here");
+		}
+		{
+			// Focus during the retries offers nothing while the remote's copy is expected back.
+			Clipboard c(seat, send, ui, ClipHandover{ 1, true });
+			c.m_enabled = true;
+			c.setFocused(true);
+			expect(c.m_localSerial == 0 && !c.m_localOffered, "no offer while the remote's copy is expected back");
+			c.setFocused(false);
+			c.onOffer(offer(1));
+			expect(c.m_haveRemote && !c.m_remoteWaited, "the first offer ends the wait");
+			expect(c.m_remoteAt > c.m_localChangedAt, "and is the newest");
+		}
+		{
+			// The wait never blocks a later offer.
+			Clipboard c(seat, send, ui, ClipHandover{ 0, true });
+			c.m_enabled = true;
+			c.m_localOffered = true;
+			c.m_offeredAt = oma::now_ms();
+			c.onOffer(offer(1)); // crossed ours
+			expect(!c.m_remoteWaited, "a crossing first offer ends the wait too");
+		}
+		{
+			// Copied here after that copy: nothing waits any more.
+			Clipboard old(seat, send, ui);
+			old.m_enabled = true;
+			old.m_serverOffered = true;
+			old.onOffer(offer(2));
+			old.m_remoteAt = 1;
+			old.m_localChangedAt = 2;
+			expect(!old.handover().remoteWaiting, "a later copy here means no remote copy is waiting");
+		}
+		{
+			// A reconnect holding the remote's clipboard, dead now: it is taken back.
+			int source = 0;
+			seat.m_source = reinterpret_cast<ext_data_control_source_v1*>(&source);
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.onOffer(offer(1));
+			expect(c.m_haveRemote, "a reconnect takes the remote's clipboard back when it was held here");
+			seat.m_source = nullptr;
+		}
+		{
+			// No first offer from the server: a copy long after the first picture is real.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_pictureAt = oma::now_ms() - CLIP_FIRST_OFFER_MS - 1;
+			c.onOffer(offer(1));
+			expect(c.m_haveRemote, "a first offer well after the first picture is taken");
+		}
+		{
+			// Crossing ours later in the session, and nothing of ours on offer.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_serverOffered = true;
+			c.m_localOffered = true;
+			c.m_offeredAt = oma::now_ms();
+			c.onOffer(offer(2));
+			expect(!c.m_haveRemote, "an offer crossing ours is not taken");
+			c.m_localOffered = false;
+			c.onOffer(offer(3));
+			expect(c.m_haveRemote, "an offer just after a withdrawal is taken");
+		}
+		const auto pending = [](Clipboard& c, int& writeEnd) {
+			int fds[2];
+			if (pipe(fds) != 0)
+				expect(false, "pipe");
+			c.m_uriFd = fds[0];
+			writeEnd = fds[1];
+		};
+		int w = -1;
+		{
+			// Still reading the list counts as offering.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_serverOffered = true;
+			c.m_offeredAt = oma::now_ms();
+			pending(c, w);
+			c.onOffer(offer(2));
+			expect(!c.m_haveRemote, "a list being read counts as on offer: a crossing offer is not taken");
+			close(w);
+		}
+		{
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_focused = true;
+			pending(c, w);
+			c.setFocused(false);
+			expect(c.m_uriFd < 0 && !c.m_localOffered, "leaving the tab cancels a list being read");
+			close(w);
+		}
+		{
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			pending(c, w);
+			c.localChanged();
+			expect(c.m_uriFd < 0 && !c.m_localOffered, "a new selection, not focused, cancels a list being read");
+			close(w);
+		}
+		{
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_focused = true;
+			pending(c, w);
+			const int old = c.m_uriFd;
+			c.localChanged();
+			expect(c.m_uriFd < 0 || c.m_uriFd != old, "a new selection, focused, does not go on with the old list");
+			close(w);
+		}
+		{
+			// An earlier offer stands while the new selection's list is read: it goes on leaving,
+			// so coming back offers the new selection.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_focused = true;
+			c.m_localOffered = true;
+			c.m_localSerial = 7;
+			c.m_localChangedAt = 1;
+			pending(c, w);
+			c.setFocused(false);
+			expect(c.m_uriFd < 0 && !c.m_localOffered && c.m_localSerial == 8, "leaving mid-read withdraws an earlier offer");
+			c.setFocused(true);
+			expect(c.m_localSerial == 9, "coming back offers the new selection");
+			close(w);
+		}
+		{
+			// No read pending: leaving keeps the offer, as before.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_focused = true;
+			c.m_localOffered = true;
+			c.m_localSerial = 7;
+			c.setFocused(false);
+			expect(c.m_localOffered && c.m_localSerial == 7, "leaving with no read pending keeps the offer");
+		}
+		{
+			// The remote's copy applied while our list is read: the read ends with it.
+			Clipboard c(seat, send, ui);
+			c.m_enabled = true;
+			c.m_focused = true;
+			c.m_serverOffered = true;
+			pending(c, w);
+			c.onOffer(offer(2));
+			expect(c.m_remoteApplied && c.m_uriFd < 0 && !c.m_localOffered, "applying the remote's selection cancels a list being read");
+			close(w);
+		}
+	}
+};
+} // namespace gliff
+
 static void clipboard_tests()
 {
 	using V = std::vector<std::string>;
@@ -219,6 +502,17 @@ static void clipboard_tests()
 	expect(gliff::resolve_mime("image/png", { "image/png", "STRING" }) == "image/png", "resolve exact");
 	expect(gliff::resolve_mime("text/plain;charset=utf-8", { "image/png", "STRING" }) == "STRING", "resolve any text");
 	expect(gliff::resolve_mime("image/jpeg", { "image/png" }).empty(), "resolve nothing");
+	expect(gliff::offer_crossed_ours(true, 1000, 1500), "within a second of ours, while offering: it crossed");
+	expect(!gliff::offer_crossed_ours(true, 1000, 2000), "a second after ours: not crossed");
+	expect(!gliff::offer_crossed_ours(false, 1000, 1500), "nothing of ours on offer: not crossed");
+	expect(!gliff::offer_crossed_ours(true, 0, 1500), "never offered: not crossed");
+	expect(gliff::is_starting_offer(true, false, 0, 61000), "first, before the picture: the remote's clipboard at connect");
+	expect(gliff::is_starting_offer(true, false, 60000, 61000), "first, just after the picture: the same");
+	expect(!gliff::is_starting_offer(true, false, 60000, 62000), "first, well after the picture: a real copy");
+	expect(gliff::is_starting_offer(true, true, 60000, 70000), "first with files, 10 s after the picture: still from the start");
+	expect(!gliff::is_starting_offer(true, true, 60000, 75000), "first with files, 15 s after the picture: a real copy");
+	expect(!gliff::is_starting_offer(false, false, 0, 61000), "not the first: a real copy");
+	gliff::ClipboardTest::run();
 	// local_mimes_add_file_lists_only_with_files.
 	expect(gliff::local_mimes_for_offer({ "text/plain", "text/uri-list" }, true) ==
 	           V{ "text/plain", "text/uri-list", "x-special/gnome-copied-files" },
@@ -321,6 +615,7 @@ static void clipboard_paste_tests()
 		gliff::Seat seat;
 		gliff::Clipboard clip(seat, [](const std::string&, const std::string&) {}, [](const std::string&) {});
 		clip.enableForTests();
+		clip.onOffer(offer(0, {})); // what the remote held at connect: not taken
 		clip.onOffer(offer(1, { { "d", 0, true }, { "d/f", 3, false } }));
 		int p[2];
 		expect(pipe2(p, O_CLOEXEC) == 0, "a pipe");
@@ -357,6 +652,7 @@ static void clipboard_paste_tests()
 		gliff::Seat seat;
 		gliff::Clipboard clip(seat, [](const std::string&, const std::string&) {}, [](const std::string&) {});
 		clip.enableForTests();
+		clip.onOffer(offer(0, {})); // what the remote held at connect: not taken
 		clip.onOffer(offer(1, { { "a", 3, false }, { "b", 3, false } }));
 		int p[2];
 		expect(pipe2(p, O_CLOEXEC) == 0, "a pipe");

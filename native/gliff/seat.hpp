@@ -25,6 +25,8 @@ namespace gliff
 class Seat
 {
   public:
+	friend struct ClipboardTest; // gliff-proto-test
+
 	~Seat();
 	// Connects and waits briefly for the first keymap and selection. False without a Wayland
 	// session (the server then uses the remote's own layout, and there is no clipboard).

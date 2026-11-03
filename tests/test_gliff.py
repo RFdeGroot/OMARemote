@@ -46,6 +46,15 @@ class Protocol(unittest.TestCase):
         self.assertEqual(session.SSH_FAILED_RE.findall(out), [])
 
 
+class Reconnect(unittest.TestCase):
+    def test_a_new_clipboard_gets_what_the_one_before_it_knew(self):
+        """gliff-proto-test covers Clipboard's handover; this that start_server hands it on."""
+        with open(os.path.join(HERE, "..", "native", "gliff", "main.cpp")) as f:
+            source = f.read()
+        self.assertIn("g.clip->handover()", source)
+        self.assertRegex(source, r"make_unique<gliff::Clipboard>\(.*\n.*\n.*, before\);")
+
+
 class Command(unittest.TestCase):
     def test_ssh_as_gliff_runs_it(self):
         """Mirroring the main screen by default, as Gliff's own client does without arguments."""
@@ -103,6 +112,9 @@ class Command(unittest.TestCase):
         self.assertIn("headless=1", session.build_gliff_config(gliff(gliffScreen="private")))
         self.assertIn("clipboard=1", lines)
         self.assertIn("clipboard=0", session.build_gliff_config(gliff(clipboard=False)))
+        self.assertIn("clipboardPasswords=0", lines)
+        self.assertIn("clipboardPasswords=1", session.build_gliff_config(gliff(clipboardPasswords=True)))
+        self.assertIn("clipboardPasswords=0", session.build_gliff_config(gliff(clipboardPasswords=1)))  # as VNC reads it
 
     def test_default_port(self):
         data = {"credentials": [], "groups": {}, "connections": []}

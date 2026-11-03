@@ -52,6 +52,8 @@ class RdpView : public QQuickItem
 	// Clipboard switch; Gliff's session process has its own). Off: the clipboard is never read,
 	// and text from the session never set.
 	Q_PROPERTY(bool shareClipboard READ shareClipboard WRITE setShareClipboard NOTIFY shareClipboardChanged)
+	// A password manager's selection is not offered (VNC, without the connection's Copied passwords).
+	Q_PROPERTY(bool withholdPasswords READ withholdPasswords WRITE setWithholdPasswords NOTIFY withholdPasswordsChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -72,6 +74,8 @@ public:
 	void setCaptureShortcuts(bool capture);
 	bool shortcutsCaptured() const { return m_inhibit.held(); }
 	bool shareClipboard() const { return m_shareClipboard; }
+	bool withholdPasswords() const { return m_withholdPasswords; }
+	void setWithholdPasswords(bool on);
 	void setShareClipboard(bool share);
 
 	// The most clipboard text passed either way, in bytes of UTF-8 (as native/common/link.hpp's
@@ -112,6 +116,7 @@ signals:
 	void captureShortcutsChanged();
 	void releaseKeyChanged();
 	void shareClipboardChanged();
+	void withholdPasswordsChanged();
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
 	void pasteDone(int job);
@@ -218,6 +223,7 @@ private:
 	bool m_hasHeldClip = false;
 	void applyHeldClip();
 	bool m_shareClipboard = false;
+	bool m_withholdPasswords = true; // until told otherwise: bindings run in any order
 	bool m_clipReading = false; // a read is under way; one more follows it when asked meanwhile
 	bool m_clipAgain = false;
 	bool m_clipAgainForce = false;

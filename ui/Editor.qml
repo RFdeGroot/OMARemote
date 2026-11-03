@@ -604,12 +604,22 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("clipboard")
                     label: "Clipboard"
-                    help: root.isGliff ? "Shared while the tab has the keyboard; data moves only when pasted"
+                    help: root.isGliff ? "Shared from your first copy after connecting. The host can read it without a paste"
                         : root.isSsh ? "Programs on the server (tmux, Neovim) may set it; copying a selection always works"
                         : "What the server copies arrives once the tab has the keyboard"
                     Check {
                         checked: !!root.d.clipboard
                         onToggled: root.set("clipboard", !checked)
+                    }
+                }
+                FormRow {
+                    label: "Copied passwords"
+                    visible: (root.isGliff || root.isVnc) && !!root.d.clipboard
+                    help: root.isGliff ? "Also send what a password manager copies, without a paste. The host's history skips it. This computer only"
+                        : "Also send what a password manager copies, at once. The host may keep it. This computer only"
+                    Check {
+                        checked: !!root.d.clipboardPasswords
+                        onToggled: root.set("clipboardPasswords", !checked)
                     }
                 }
                 FormRow {

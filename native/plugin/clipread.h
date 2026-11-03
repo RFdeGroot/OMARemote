@@ -18,4 +18,10 @@ namespace oma
 void readClipboard(QObject* owner, qsizetype maxBytes, int timeoutMs, bool primary,
                    std::function<void(bool ok, const QByteArray& data)> done);
 
+// Whether a password manager marked what is on the clipboard (x-kde-passwordManagerHint), read with
+// wl-paste --list-types under the same limits. Whatever cannot be told (wl-paste missing, stuck, a
+// list too long to read) counts as marked, so nothing goes on a guess. emptyIsMarked: an empty
+// clipboard counts too, for the check after a read: what was read may be a password cleared since.
+void clipboardMarked(QObject* owner, int timeoutMs, bool emptyIsMarked, std::function<void(bool marked)> done);
+
 } // namespace oma

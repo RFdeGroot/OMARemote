@@ -26,7 +26,7 @@ const char* const TEXT_MIMES[5] = { "text/plain;charset=utf-8", "text/plain", "U
 static const char* const FILE_MIMES[2] = { "text/uri-list", "x-special/gnome-copied-files" };
 static const char* const NON_DATA[] = { "TARGETS", "TIMESTAMP", "MULTIPLE", "SAVE_TARGETS", "DELETE",
 	                                    "INSERT_PROPERTY", "INSERT_SELECTION" };
-// A selection a password manager marks: never shared.
+
 static const char* const PASSWORD_HINT = "x-kde-passwordManagerHint";
 
 bool is_text_mime(const std::string& m)
@@ -78,6 +78,16 @@ std::string resolve_mime(const std::string& requested, const std::vector<std::st
 			if (std::find(offered.begin(), offered.end(), t) != offered.end())
 				return t;
 	return {};
+}
+
+bool offer_crossed_ours(bool offering, uint64_t offeredAt, uint64_t now)
+{
+	return offering && offeredAt && now - offeredAt < 1000;
+}
+
+bool is_starting_offer(bool firstFromServer, bool hasFiles, uint64_t pictureAt, uint64_t now)
+{
+	return firstFromServer && (!pictureAt || now - pictureAt < (hasFiles ? CLIP_FIRST_FILES_OFFER_MS : CLIP_FIRST_OFFER_MS));
 }
 
 std::vector<std::string> local_mimes_for_offer(const std::vector<std::string>& mimes, bool hasFiles)
@@ -427,7 +437,8 @@ struct Clipboard::Writer
 	uint64_t lastAt = 0;
 };
 
-Clipboard::Clipboard(Seat& seat, Send send, Ui ui) : m_seat(seat), m_send(std::move(send)), m_ui(std::move(ui))
+Clipboard::Clipboard(Seat& seat, Send send, Ui ui, ClipHandover before)
+    : m_seat(seat), m_send(std::move(send)), m_ui(std::move(ui)), m_localChangedAt(before.localChangedAt), m_remoteWaited(before.remoteWaiting)
 {
 	m_seat.onSelection = [this] { localChanged(); };
 	m_seat.onPaste = [this](const std::string& mime, int fd) { paste(mime, fd); };
@@ -475,17 +486,45 @@ void Clipboard::setFocused(bool focused)
 	if (focused == m_focused)
 		return;
 	m_focused = focused;
+	if (!focused && m_uriFd >= 0)
+	{
+		// Nothing is offered once the remote is not being looked at. An earlier offer goes too:
+		// a paste would read the new selection under its types, and with it standing focus
+		// coming back would not offer the new one.
+		cancelUriRead();
+		if (m_localOffered)
+			withdraw();
+	}
 	if (!focused || !m_enabled)
 		return;
 	// Whichever changed last wins: the remote's offer, or this machine's clipboard.
 	if (m_haveRemote && !m_remoteApplied && m_remoteAt > m_localChangedAt)
 		applyRemote();
-	else if (!m_localOffered && !m_seat.ownsSelection())
+	// Only what was copied since connecting (never: m_localChangedAt 0): nothing moves at connect,
+	// see onOffer.
+	// Nor while the remote's copy is expected back (a reconnect): both would hold the other's.
+	else if (m_localChangedAt && !m_localOffered && !m_seat.ownsSelection() && !m_remoteWaited)
 		offerLocal();
+}
+
+ClipHandover Clipboard::handover() const
+{
+	// Still waited for since the connection before: a retry that failed before any offer keeps it.
+	return { m_localChangedAt, m_remoteWaited || (m_haveRemote && !m_remoteApplied && m_remoteAt > m_localChangedAt) };
+}
+
+void Clipboard::pictureShown()
+{
+	if (!m_pictureAt)
+		m_pictureAt = oma::now_ms();
 }
 
 void Clipboard::localChanged()
 {
+	// A file list still being read belongs to the selection just replaced: finished, it would
+	// offer that one's types, and a paste reads whatever is the clipboard then (a password).
+	cancelUriRead();
+	m_remoteWaited = false; // this copy is newer than the remote's from before the link dropped
 	std::string types;
 	for (const auto& m : m_seat.selectionMimes())
 		types += (types.empty() ? "" : ", ") + m;
@@ -503,18 +542,18 @@ void Clipboard::localChanged()
 
 void Clipboard::offerLocal()
 {
+	cancelUriRead();
+	// A password manager's selection only with the connection's Copied passwords on. It goes with
+	// its marker (never filtered: forwardable_mimes), so the remote's clipboard history does not
+	// store it; it still reads it (wl-paste asks before it runs its watch command), so offered is
+	// sent, without a paste. Cleared by the manager, the empty selection comes here and the offer ends.
 	const std::vector<std::string>& mimes = m_seat.selectionMimes();
-	if (std::find(mimes.begin(), mimes.end(), PASSWORD_HINT) != mimes.end())
+	if (!m_sharePasswords && std::find(mimes.begin(), mimes.end(), PASSWORD_HINT) != mimes.end())
 	{
 		withdraw();
 		return;
 	}
 	m_localMimes = mimes;
-	if (m_uriFd >= 0)
-	{
-		close(m_uriFd);
-		m_uriFd = -1;
-	}
 	// Files: the URI list is read first, so the offer can name every file and its size.
 	for (const char* fm : FILE_MIMES)
 		if (std::find(mimes.begin(), mimes.end(), fm) != mimes.end())
@@ -545,6 +584,14 @@ void Clipboard::finishLocalOffer(const std::string& uriList)
 	         m_localFiles.size(), m_localSerial);
 }
 
+void Clipboard::cancelUriRead()
+{
+	if (m_uriFd >= 0)
+		close(m_uriFd);
+	m_uriFd = -1;
+	m_uriBuf.clear();
+}
+
 // The files of our last offer forgotten, their roots' descriptors closed.
 void Clipboard::clearOffered()
 {
@@ -568,11 +615,26 @@ void Clipboard::withdraw()
 
 void Clipboard::onOffer(const ClipOffer& offer)
 {
+	const uint64_t now = oma::now_ms();
+	const bool first = !m_serverOffered;
+	m_serverOffered = true;
+	// Decided by this offer, whichever way: it never blocks a later one.
+	const bool waited = m_remoteWaited;
+	m_remoteWaited = false;
 	// An offer that crossed ours: the server sent it before it took ours, which then replaced
 	// that selection on the remote. Ours is what both sides hold.
-	if (m_offeredAt && oma::now_ms() - m_offeredAt < 1000)
+	if (offer_crossed_ours(m_localOffered || m_uriFd >= 0, m_offeredAt, now))
 	{
 		oma::log("clipboard: the remote's offer (serial %u) crossed ours; ours stands", offer.serial);
+		return;
+	}
+	// Nothing moves at connect: what the remote held then stays there, as what this machine held
+	// stays here (setFocused). Its clipboard history would read an offer at once and keep it, on
+	// either side, without a paste. Unless this machine holds the remote's clipboard already, or
+	// was about to, from before a dropped link: that selection is dead now, and this brings it back.
+	if (is_starting_offer(first, !offer.files.empty(), m_pictureAt, now) && !m_seat.ownsSelection() && !waited)
+	{
+		oma::log("clipboard: the remote's clipboard at connect (serial %u) stays there", offer.serial);
 		return;
 	}
 	// Pastes of the offer this one replaces end here: none goes on with the new offer's files.
@@ -612,6 +674,7 @@ void Clipboard::onOffer(const ClipOffer& offer)
 
 void Clipboard::applyRemote()
 {
+	cancelUriRead(); // finished, it would offer what the remote's selection just replaced
 	m_seat.setSelection(local_mimes_for_offer(m_remote.mimes, !m_remote.files.empty()));
 	oma::log("clipboard: the remote's selection is the local clipboard now");
 	m_remoteApplied = true;

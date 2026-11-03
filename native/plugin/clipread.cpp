@@ -62,4 +62,34 @@ void readClipboard(QObject* owner, qsizetype maxBytes, int timeoutMs, bool prima
 	timer->start(timeoutMs);
 }
 
+void clipboardMarked(QObject* owner, int timeoutMs, bool emptyIsMarked, std::function<void(bool marked)> done)
+{
+	auto* proc = new QProcess;
+	QPointer<QObject> target(owner);
+	auto* timer = new QTimer(proc);
+	timer->setSingleShot(true);
+	QObject::connect(timer, &QTimer::timeout, proc, [proc] { proc->kill(); });
+	QObject::connect(proc, &QProcess::finished, proc, [proc, target, done, emptyIsMarked](int code, QProcess::ExitStatus status) {
+		constexpr qint64 cap = 64 * 1024;
+		const QByteArray types = proc->read(cap + 1);
+		proc->deleteLater();
+		if (!target)
+			return;
+		// wl-paste exits 1 with nothing on the clipboard.
+		const bool told = status == QProcess::NormalExit && (code == 0 || (code == 1 && !emptyIsMarked)) && types.size() <= cap;
+		done(!told || types.split('\n').contains("x-kde-passwordManagerHint"));
+	});
+	QObject::connect(proc, &QProcess::errorOccurred, proc, [proc, target, done](QProcess::ProcessError err) {
+		if (err != QProcess::FailedToStart)
+			return;
+		proc->deleteLater();
+		if (target)
+			done(true);
+	});
+	proc->setStandardInputFile(QProcess::nullDevice());
+	proc->setStandardErrorFile(QProcess::nullDevice());
+	proc->start(QStringLiteral("wl-paste"), {QStringLiteral("--list-types")});
+	timer->start(timeoutMs);
+}
+
 } // namespace oma

@@ -2652,6 +2652,50 @@ class AddressGuard(unittest.TestCase):
         data, report = session.merge(local, [self.remote(self.c(clipboard=True, modified=200))], 1000)
         self.assertEqual(report["pendingAddress"], [])
 
+    def test_copied_passwords_never_comes_from_another_system(self):
+        data = self.local(self.c(clipboardPasswords=True), groups={"G": {"settings": {"clipboardPasswords": True}}})
+        self.assertNotIn("clipboardPasswords", json.dumps(session.portable(data, "here")))
+        evil = self.c(clipboardPasswords=True, modified=200)
+        # An existing connection, signing in here or not, a new one, and a group.
+        for local in (self.c(savePassword=True), self.c()):
+            merged, _ = session.merge(self.local(local), [self.remote(evil)], 1000)
+            self.assertNotIn("clipboardPasswords", merged["connections"][0])
+        new, _ = session.merge(self.local(), [self.remote(evil)], 1000)
+        self.assertNotIn("clipboardPasswords", new["connections"][0])
+        peer = self.remote(evil)
+        peer["groups"] = {"G": {"settings": {"clipboardPasswords": True}, "modified": 200}}
+        grouped, _ = session.merge(self.local(self.c(group="G")), [peer], 1000)
+        self.assertNotIn("clipboardPasswords", json.dumps(grouped))
+        # This system's own stays, whatever the peer says.
+        kept, _ = session.merge(self.local(self.c(clipboardPasswords=True)), [self.remote(self.c(modified=200))], 1000)
+        self.assertIs(kept["connections"][0]["clipboardPasswords"], True)
+        # A host a peer chose gets no copied passwords: the address change waits, and says so.
+        on = self.local(self.c(clipboardPasswords=True))
+        moved, report = session.merge(on, [self.remote(self.c(host="evil.example", modified=200))], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["c1"])
+        self.assertIn("evil.example, with copied passwords", report["pendingAddress"][0]["to"])
+        self.assertNotEqual(moved["connections"][0]["host"], "evil.example")
+        # A group never gives it: not by moving into one, nor a new connection in one, nor by hand.
+        group = {"G": {"settings": {"clipboardPasswords": True}}}
+        self.assertNotIn("clipboardPasswords", session.SETTING_KEYS)
+        data = {"connections": [], "groups": group, "credentials": {}}
+        resolved = session.resolve(self.c(group="G"), data)
+        self.assertFalse(resolved["clipboardPasswords"])
+        # A group's address change waits for a member that has it on.
+        member = self.local(self.c(group="G", clipboardPasswords=True), groups={"G": {"settings": {}, "modified": 1}})
+        peer = self.remote(groups={"G": {"settings": {"gateway": "evil.example"}, "modified": 200}})
+        _, report = session.merge(member, [peer], 1000)
+        self.assertEqual([p["id"] for p in report["pendingAddress"]], ["group:G"])
+        self.assertIn("with copied passwords", report["pendingAddress"][0]["to"])
+        # Nor from a file the user picked: nothing shows them the switch.
+        with tempfile.TemporaryDirectory() as d:
+            exported = os.path.join(d, "x.json")
+            store = os.path.join(d, "store.json")
+            with open(exported, "w") as f:
+                json.dump(peer, f)
+            result = session.import_file(exported, store, 1000)
+        self.assertNotIn("clipboardPasswords", json.dumps(result["data"]))
+
     def test_a_new_protocol_without_a_port_counts_as_a_new_port(self):
         local = self.local(self.c(savePassword=True, port=None))
         _, report = session.merge(local, [self.remote(self.c(protocol="vnc", port=None, modified=200))], 1000)

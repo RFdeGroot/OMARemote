@@ -137,6 +137,7 @@ DEFAULTS = {
     "scale": "auto",         # auto | 100..500
     "multimon": False,       # not used since 0.9.12 (FreeRDP's /multimon fails on Hyprland); kept so files round-trip
     "clipboard": True,
+    "clipboardPasswords": False,  # Gliff, VNC: what a password manager copies is shared too
     "audio": "local",        # local | remote | off
     "microphone": False,
     "homeDrive": False,
@@ -369,8 +370,13 @@ def mark_connected(conn_id, path=LAST_CONNECTED):
 # itself (unlockAfter).
 LOCAL_KEYS = ("username", "domain", "credential", "savePassword", "gatewayUser", "gatewayDomain",
               "gatewaySavePassword", "extraArgs", "sshArgs", "sshKey", "lastConnected", "hotkey", "ignoreCert",
-              "security", "gliffServer", "unlockAfter", "notThisComputer")
-GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security", "unlockAfter")
+              "security", "gliffServer", "unlockAfter", "notThisComputer", "clipboardPasswords")
+# Copied passwords is this machine's own too: it exposes the password manager here, whether or not
+# the connection signs in here, so no other system's file may switch it on. For one connection only
+# (not in SETTING_KEYS, and listed below only so a group's file cannot carry it): a group's setting
+# would let a synced move or a new connection get it.
+GROUP_LOCAL_SETTINGS = ("gatewayUser", "gatewayDomain", "extraArgs", "ignoreCert", "security", "unlockAfter",
+                        "clipboardPasswords")
 # Where a connection signs in. A synced change to these, on a connection or group that signs in here
 # with a saved password or a credential set, waits for the user: it would send those credentials to
 # another server.
@@ -574,6 +580,8 @@ def _describe_address(c, other=None):
     for k, label in SHARING_KEYS:
         if _shares(c, k) and (not DEFAULTS.get(k) or (other is not None and not _shares(other, k))):
             out += ", " + label
+    if c.get("clipboardPasswords") is True:
+        out += ", with copied passwords"
     return out
 
 
@@ -593,9 +601,11 @@ def _effective(conn, groups):
 
 def _signs_in_here(conn, groups):
     """Whether this system would send credentials to wherever the connection points: a saved
-    password (the connection's or its gateway's), a credential set, its group's set, or a chosen
-    SSH key (also written into ~/.ssh/omaremote.conf for that host)."""
-    if conn.get("savePassword") or conn.get("gatewaySavePassword") or (conn.get("sshKey") or "").strip():
+    password (the connection's or its gateway's), a credential set, its group's set, a chosen
+    SSH key (also written into ~/.ssh/omaremote.conf for that host), or what a password manager
+    copies (Copied passwords)."""
+    if conn.get("savePassword") or conn.get("gatewaySavePassword") or (conn.get("sshKey") or "").strip() \
+            or conn.get("clipboardPasswords") is True:
         return True
     mode = conn.get("credential") or "custom"
     if mode == "inherit":
@@ -656,7 +666,9 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
             return False
         report["pendingAddress"].append({
             "system": system, "id": old["id"], "name": old.get("name") or old.get("host"),
-            "from": _describe_address(was, will), "to": _describe_address(will, was)})
+            "from": _describe_address(was, will),
+            # This system's own switch stays through the change: the new address would get it too.
+            "to": _describe_address(dict(will, clipboardPasswords=old.get("clipboardPasswords")), was)})
         return True
 
     def members(name):
@@ -745,7 +757,8 @@ def merge(local, incoming, now=None, allow_deletions=(), allow_address=()):
                 report["pendingAddress"].append({
                     "system": system, "id": "group:" + name, "name": "group " + name,
                     "from": _describe_address((mine or {}).get("settings") or {}),
-                    "to": _describe_address(theirs_settings)})
+                    "to": _describe_address(theirs_settings) + (", with copied passwords" if any(
+                        c.get("clipboardPasswords") is True for c in members(name)) else "")})
                 continue
             mine = dict(mine or {})
             kept = {k: v for k, v in (mine.get("settings") or {}).items() if k in GROUP_LOCAL_SETTINGS}
@@ -3262,7 +3275,8 @@ def build_gliff_config(conn):
     lines += [f"host={check_host(conn['host'])}",
               f"headless={1 if conn.get('gliffScreen') == 'private' else 0}",
               f"video={'cpu' if conn.get('gliffVideo') == 'cpu' else 'auto'}",
-              f"clipboard={0 if conn.get('clipboard') is False else 1}"]
+              f"clipboard={0 if conn.get('clipboard') is False else 1}",
+              f"clipboardPasswords={1 if conn.get('clipboardPasswords') is True else 0}"]
     return check_lines(lines)
 
 

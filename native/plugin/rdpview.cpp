@@ -1041,7 +1041,7 @@ void RdpView::sendClipboard(bool force)
 		return;
 	}
 	m_clipReading = true;
-	oma::readClipboard(this, MaxClipBytes, ClipTimeoutMs, false, [this, force](bool ok, const QByteArray& data) {
+	const auto finish = [this, force](bool ok, const QByteArray& data) {
 		m_clipReading = false;
 		if (ok)
 			offerClipboard(QString::fromUtf8(data), force);
@@ -1050,7 +1050,27 @@ void RdpView::sendClipboard(bool force)
 			m_clipAgain = m_clipAgainForce = false;
 			sendClipboard(again);
 		}
-	});
+	};
+	const bool withhold = m_withholdPasswords;
+	const auto read = [this, finish, withhold] {
+		oma::readClipboard(this, MaxClipBytes, ClipTimeoutMs, false, [this, finish, withhold](bool ok, const QByteArray& data) {
+			if (!ok || !withhold) {
+				finish(ok, data);
+				return;
+			}
+			// Asked again after the read: the clipboard may have changed in between.
+			oma::clipboardMarked(this, ClipTimeoutMs, true, [finish, data](bool marked) { finish(!marked, data); });
+		});
+	};
+	if (withhold)
+		oma::clipboardMarked(this, ClipTimeoutMs, false, [finish, read](bool marked) {
+			if (marked)
+				finish(false, QByteArray());
+			else
+				read();
+		});
+	else
+		read();
 }
 
 // The text read, to the session: only while still attached, sharing and focused, as when asked.
@@ -1062,6 +1082,14 @@ void RdpView::offerClipboard(const QString& text, bool force)
 		return;
 	m_lastClip = text;
 	send("clip " + text.toUtf8().toBase64());
+}
+
+void RdpView::setWithholdPasswords(bool on)
+{
+	if (on == m_withholdPasswords)
+		return;
+	m_withholdPasswords = on;
+	emit withholdPasswordsChanged();
 }
 
 void RdpView::setShareClipboard(bool share)
