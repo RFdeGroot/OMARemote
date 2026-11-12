@@ -84,6 +84,8 @@ Singleton {
         { group: "In a session", context: "session", action: "cad", keys: ["ctrl+alt+end"], label: "Send Ctrl+Alt+Del", run: false },
         { group: "In a session", context: "session", action: "unlock", keys: ["ctrl+alt+r"], label: "RDP: reconnect (a locked desktop comes back signed in)", run: false },
         { group: "In a session", context: "session", action: "releaseSuper", keys: ["ctrl+alt+escape"], label: "Gliff: stop sending Super and Hyprland's shortcuts", run: false },
+        // Listed like alt+1…9: the sheet shows one row, SessionView.chord handles the eight keys.
+        { group: "In a session", context: "session", action: "gliffScreen", keys: ["ctrl+alt+1…8"], label: "Gliff: switch to screen 1–8", run: false },
         { group: "In a session", context: "session", action: "sessionQuick", keys: ["ctrl+alt+n"], label: "Quick connect (the session stays)", run: false },
         { group: "In a session", context: "session", action: "sshCopy", keys: ["ctrl+shift+c", "super+c"], label: "SSH: copy the selection (drag to select)", run: false },
         { group: "In a session", context: "session", action: "sshPaste", keys: ["ctrl+shift+v", "super+v"], label: "SSH: paste (shift+insert, middle click too)", run: false },

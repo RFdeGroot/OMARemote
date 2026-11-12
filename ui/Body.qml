@@ -244,6 +244,21 @@ FocusScope {
     readonly property bool windowActive: Window.active
     onWindowActiveChanged: if (windowActive) Sessions.refreshSelf()
 
+    function tabRow(s) {
+        var row = { id: s.id, title: s.name, state: s.state, monitors: [], monitor: -1 }
+        if (!s || s.protocol !== "gliff")
+            return row
+        var conn = Store.get(s.connection)
+        if (!conn || conn.gliffScreen === "private")
+            return row
+        var info = Sessions.monitors[s.id]
+        if (!info || !info.names || info.names.length < 1)
+            return row
+        row.monitors = info.names
+        row.monitor = info.monitor === undefined ? -1 : info.monitor
+        return row
+    }
+
     function showTab(id) {
         if (id !== "home" && openTabs.indexOf(id) < 0)
             openTabs = openTabs.concat([id])
@@ -805,6 +820,14 @@ FocusScope {
         return false
     }
 
+    // The keymap row is ctrl+alt+1…8. Shown only while this Gliff tab has screens to switch.
+    function gliffScreenHints() {
+        var info = Sessions.monitors[root.currentTab]
+        if (!root.currentIsGliff || root.currentEnded || !info || !info.names || info.names.length < 1)
+            return []
+        return [["ctrl+alt+1…8", "screen"]]
+    }
+
     // While an SSH session is shown, the window is tagged as a terminal for Hyprland, so Omarchy's
     // Super+V and Super+C paste and copy there (Shift+Insert, Ctrl+Insert) instead of sending Ctrl+V
     // and Ctrl+C, which a terminal reads as a character and an interrupt. RDP and VNC tabs get
@@ -1045,9 +1068,28 @@ FocusScope {
                     Layout.fillHeight: true
                     clip: true
                     current: root.currentTab
-                    tabs: root.tabSessions.map(function (s) { return { id: s.id, title: s.name, state: s.state } })
+                    tabs: {
+                        // Read these here, not only inside tabRow: the strip has to update when the
+                        // probe, a screen choice or a connection changes, even if the session list did not.
+                        var monitors = Sessions.monitors
+                        var connections = Store.connections
+                        var quick = Store.quickConnections
+                        var rows = root.tabSessions.map(function (s) { return root.tabRow(s) })
+                        return (monitors && connections && quick) ? rows : rows
+                    }
                     onPicked: function (id) { root.showTab(id) }
                     onClosed: function (id) { root.closeTab(id) }
+                    onMonitorPicked: function (id, index) {
+                        root.showTab(id)
+                        Qt.callLater(function () {
+                            var at = root.openTabs.indexOf(id)
+                            if (at < 0)
+                                return
+                            var loader = tabViews.itemAt(at)
+                            if (loader && loader.item && loader.item.selectMonitor)
+                                loader.item.selectMonitor(index)
+                        })
+                    }
                 }
                 Rectangle {
                     Layout.preferredWidth: Theme.chrome - 6
@@ -1369,6 +1411,7 @@ FocusScope {
                                                 .concat(root.currentIsSsh ? [["ctrl+shift+c/v", "copy/paste"]]
                                                         : root.currentIsGliff ? [Format.gliffKeyHint(Sessions.capturedSession === root.currentTab)]
                                                         : [["ctrl+alt+end", "ctrl+alt+del"]])
+                                                .concat(root.gliffScreenHints())
                                                 .concat([["ctrl+alt+⏎", "fullscreen"], ["ctrl+alt+o", "own window"], ["ctrl+alt+p", root.pinned ? "unpin" : "pin"], ["ctrl+alt+k", "keys"]])
                  : root.logSession ? [["w", "warnings only"], ["j k", "scroll"], ["G", "end"], ["esc", "close"]]
                  : root.busy ? [["tab", "next field"], ["←→", "choose"], ["space", "toggle"], ["ctrl+s", "save"], ["esc", "cancel"], ["f1", "keys"]]

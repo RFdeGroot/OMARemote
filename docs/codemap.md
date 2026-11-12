@@ -28,7 +28,7 @@ Sections, in order (`# ------- <name>` lines):
 | scaling | monitor scale, desktop scale |
 | hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `terminal_tag`, `find_window` (`_hyprctl_json` via `capped_output`), `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
 | files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
-| arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `build_gliff_command`, `gateway_element`, `check_host`, `check_lines` |
+| arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command`, `build_gliff_command`, `build_monitor_probe`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
 | import from other clients | `parse_rdp`, `parse_remmina`, `parse_1remote`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only); bounds `IMPORT_MAX_*`, `_Problems` |
 | kerberos | private krb5.conf, SRV lookup (Gio.Resolver) |
@@ -85,8 +85,9 @@ The manager window:
 | rdp/gfxguard.cpp | `oma::guard_gfx`: wraps FreeRDP's RDPGFX CreateSurface (8192 a side, 2 GiB for all surfaces with their progressive tiles) and SurfaceToCache (128 MiB of cache, read back from gdi's entries); gfxguard-test.cpp = rdp-gfx-test |
 | vnc/main.cpp | libvncclient client |
 | ssh/main.cpp | ssh in a pty + libvterm terminal: keys, selection/copy, scrollback; `start_ssh`/`run_ssh`, a lost connection tried again (`lost_words`, `transient_words`, `wait_serving`) |
-| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU; `kMaxStreamW/H` = what Hello asks for, `pick_format` refuses a picture larger than its StreamConfig before FFmpeg allocates), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency) |
+| gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU; `kMaxStreamW/H` = what Hello asks for, `pick_format` refuses a picture larger than its StreamConfig before FFmpeg allocates), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency). A mirrored screen probes monitors once and `output` restarts the server on another one (`switching`, the picture stays) |
 | gliff/msg.hpp, cbor.hpp | Gliff's protocol v1 by hand (gliff-proto's msg.rs/frame.rs, clipboard messages); test.cpp = gliff-proto-test, its fixtures |
+| gliff/monitors.hpp | A mirrored screen's monitor list: capped `hyprctl -j monitors` parse (one array, at most 8), the fixed probe script, `probe_prefix_ok`, `replace_output_arg` |
 | gliff/video.hpp | `convert420` / `convert444` (Dual420 recombined on the fly), BT.709 into BGRX, per damaged rectangle, OpenMP |
 | gliff/seat.cpp | the session process's own Wayland connection: keymap (wl_keyboard) and clipboard (ext-data-control, `OWN_MARK`) |
 | gliff/askpass.cpp | ssh's host-key question in the session view: omaremote-gliff is ssh's SSH_ASKPASS (`askpass_main`), the question goes to the session over `<socket>.askpass` (`answer_askpass` in main.cpp, `hostkey` prompt line), other questions to the system askpass; `hostkey_failure` words the failures |

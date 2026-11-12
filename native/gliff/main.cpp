@@ -13,11 +13,13 @@
 // "release".
 //
 // Settings arrive as key=value lines on stdin: arg (repeated: the whole ssh command line, built by
-// omaremote-session), host, and headless (1: the server draws the cursor into the picture).
+// omaremote-session), probe (the ssh prefix of a read-only monitor list; this process appends the
+// remote command), host, and headless (1: the server draws the cursor into the picture).
 
 #include "../common/link.hpp"
 #include "askpass.hpp"
 #include "clipboard.hpp"
+#include "monitors.hpp"
 #include "msg.hpp"
 #include "seat.hpp"
 #include "video.hpp"
@@ -100,6 +102,23 @@ struct Session
 	bool welcomed = false; // HelloAck arrived
 	bool connected = false; // the first picture is drawn
 	bool headless = false;
+
+	// A second ssh, once, listing the remote's monitors. The prefix arrives as probe= lines; the
+	// remote command is a constant in monitors.hpp. Names stay in the probed set and are never typed.
+	std::vector<std::string> probeArgs;
+	bool probeBad = false;
+	pid_t probeChild = -1;
+	int probeFd = -1;
+	std::string probeBuf;
+	uint64_t probeDeadline = 0;
+	bool probeStarted = false;
+	bool probeDone = false;
+	std::vector<std::string> monitors;
+	int monitorIndex = -1;
+	bool monitorsKnown = false;
+	std::string helloOutput;
+	bool switching = false; // restarting the stream on another output; the picture stays up
+	bool giveUp = false;
 	gliff::StreamConfig stream;
 	bool haveStream = false;
 
@@ -159,6 +178,15 @@ struct Session
 };
 
 static Session g;
+
+static void send_monitors_line();
+static void stop_probe();
+static void fail_probe(const char* why);
+static void start_probe();
+static void read_probe();
+static void note_monitor_index();
+static bool start_server();
+static void stop_server();
 
 // ---------------------------------------------------------------- the server pipe
 
@@ -882,10 +910,26 @@ static bool handle_message(const uint8_t* body, uint32_t bodyLen, const uint8_t*
 			if (!gliff::decode(r, n, m))
 				break;
 			g.welcomed = true;
+			g.switching = false;
 			g.headless = m.headless;
+			g.helloOutput = gliff::output_name_ok(m.output) ? m.output : std::string();
 			log("session on %s%s, protocol %u", m.output.c_str(), m.headless ? " (private screen)" : "", m.version);
 			if (g.headless)
+			{
 				g.cursorState = "cursor-hide";
+				g.monitors.clear();
+				g.monitorIndex = -1;
+				g.monitorsKnown = true;
+				stop_probe();
+				send_monitors_line();
+			}
+			else if (!g.probeStarted && (!g.probeArgs.empty() || g.probeBad))
+				start_probe();
+			else if (g.monitorsKnown)
+			{
+				note_monitor_index();
+				send_monitors_line();
+			}
 			flush_resize();
 			break;
 		}
@@ -1228,6 +1272,37 @@ static void handle_line(const std::string& line)
 			reset_surfaces();
 		redraw();
 	}
+	else if (cmd == "output")
+	{
+		// Switch the mirrored screen in this tab: replace --output and restart the stream. The last
+		// picture stays (no "state connecting"), and the saved connection is not touched.
+		if (w.size() != 2 || g.headless || g.switching || !g.welcomed || g.giveUp)
+			return;
+		const std::string& name = w[1];
+		if (!gliff::output_name_ok(name))
+			return;
+		int idx = -1;
+		for (size_t i = 0; i < g.monitors.size(); ++i)
+			if (g.monitors[i] == name)
+			{
+				idx = int(i);
+				break;
+			}
+		if (idx < 0 || idx == g.monitorIndex)
+			return;
+		if (!gliff::replace_output_arg(g.args, name))
+			return;
+		g.monitorIndex = idx;
+		g.helloOutput = name;
+		g.switching = true;
+		send_monitors_line();
+		stop_server();
+		if (!start_server())
+		{
+			g.switching = false;
+			g.giveUp = true;
+		}
+	}
 	else if (cmd == "release" && w.size() >= 2)
 	{
 		const auto it = g.held.find(uint64_t(strtoull(w[1].c_str(), nullptr, 10)));
@@ -1250,6 +1325,8 @@ static void on_signal(int)
 static void replay()
 {
 	g.link.send(g.connected ? "state connected" : "state connecting");
+	if (g.headless || g.monitorsKnown)
+		send_monitors_line();
 	if (!g.connected)
 		return;
 	if (g.shmStale)
@@ -1346,6 +1423,200 @@ static void stop_server()
 	g.child = -1;
 }
 
+static void note_monitor_index()
+{
+	g.monitorIndex = -1;
+	if (!gliff::output_name_ok(g.helloOutput))
+		return;
+	for (size_t i = 0; i < g.monitors.size(); ++i)
+		if (g.monitors[i] == g.helloOutput)
+		{
+			g.monitorIndex = int(i);
+			return;
+		}
+}
+
+static void send_monitors_line()
+{
+	if (g.headless)
+	{
+		g.link.send("monitors");
+		return;
+	}
+	if (!g.monitorsKnown)
+		return;
+	std::string line = "monitors " + std::to_string(g.monitorIndex);
+	for (const auto& name : g.monitors)
+	{
+		if (!gliff::output_name_ok(name))
+			return;
+		line.push_back(' ');
+		line += name;
+	}
+	g.link.send(line);
+}
+
+static void stop_probe()
+{
+	if (g.probeFd >= 0)
+	{
+		close(g.probeFd);
+		g.probeFd = -1;
+	}
+	if (g.probeChild > 0)
+	{
+		if (waitpid(g.probeChild, nullptr, WNOHANG) == 0)
+		{
+			kill(-g.probeChild, SIGTERM);
+			for (int i = 0; i < 10 && waitpid(g.probeChild, nullptr, WNOHANG) == 0; ++i)
+				usleep(20000);
+			if (waitpid(g.probeChild, nullptr, WNOHANG) == 0)
+			{
+				kill(-g.probeChild, SIGKILL);
+				waitpid(g.probeChild, nullptr, 0);
+			}
+		}
+		g.probeChild = -1;
+	}
+	g.probeDeadline = 0;
+	g.probeBuf.clear();
+}
+
+static void fail_probe(const char* why)
+{
+	if (g.probeDone)
+		return;
+	stop_probe();
+	g.probeDone = true;
+	log("monitor probe failed: %s", why);
+	if (g.headless)
+		return;
+	g.monitors.clear();
+	if (gliff::output_name_ok(g.helloOutput))
+		g.monitors.push_back(g.helloOutput);
+	g.monitorsKnown = true;
+	note_monitor_index();
+	send_monitors_line();
+	if (g.monitorIndex >= 0)
+		log("monitors: %zu, on %s", g.monitors.size(), g.monitors[size_t(g.monitorIndex)].c_str());
+	else
+		log("monitors: %zu", g.monitors.size());
+}
+
+static void start_probe()
+{
+	if (g.probeStarted || g.headless)
+		return;
+	if (g.probeArgs.empty() && !g.probeBad)
+		return;
+	g.probeStarted = true;
+	if (g.probeBad || !gliff::probe_prefix_ok(g.probeArgs))
+	{
+		fail_probe("refused");
+		return;
+	}
+	std::vector<std::string> args = g.probeArgs;
+	args.emplace_back(gliff::kMonitorProbeRemote);
+	int out[2];
+	if (pipe2(out, O_CLOEXEC) != 0)
+	{
+		fail_probe("pipe");
+		return;
+	}
+	const pid_t pid = fork();
+	if (pid < 0)
+	{
+		close(out[0]);
+		close(out[1]);
+		fail_probe("fork");
+		return;
+	}
+	if (pid == 0)
+	{
+		const int devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
+		if (devnull >= 0)
+		{
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDERR_FILENO);
+			if (devnull > 2)
+				close(devnull);
+		}
+		dup2(out[1], STDOUT_FILENO);
+		if (out[1] != STDOUT_FILENO)
+			close(out[1]);
+		close(out[0]);
+		setsid();
+		std::vector<char*> argv;
+		argv.reserve(args.size() + 1);
+		for (auto& a : args)
+			argv.push_back(a.data());
+		argv.push_back(nullptr);
+		execv("/usr/bin/ssh", argv.data());
+		_exit(127);
+	}
+	close(out[1]);
+	g.probeChild = pid;
+	g.probeFd = out[0];
+	if (fcntl(g.probeFd, F_SETFL, O_NONBLOCK) != 0)
+	{
+		fail_probe("pipe");
+		return;
+	}
+	g.probeDeadline = oma::now_ms() + 8000;
+}
+
+static void read_probe()
+{
+	char buf[4096];
+	while (g.probeFd >= 0)
+	{
+		const ssize_t n = read(g.probeFd, buf, sizeof(buf));
+		if (n > 0)
+		{
+			if (g.probeBuf.size() + size_t(n) > gliff::kMonitorProbeMaxBytes)
+			{
+				fail_probe("output too large");
+				return;
+			}
+			g.probeBuf.append(buf, size_t(n));
+			continue;
+		}
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return;
+		if (n < 0)
+		{
+			fail_probe("read");
+			return;
+		}
+		std::string raw = std::move(g.probeBuf);
+		stop_probe();
+		if (raw.find('\0') != std::string::npos)
+		{
+			fail_probe("rejected");
+			return;
+		}
+		const auto parsed = gliff::parse_monitors(raw);
+		raw.clear();
+		if (!parsed)
+		{
+			fail_probe("unreadable");
+			return;
+		}
+		g.monitors = *parsed;
+		g.monitorsKnown = true;
+		g.probeDone = true;
+		note_monitor_index();
+		send_monitors_line();
+		if (g.monitorIndex >= 0)
+			log("monitors: %zu, on %s", g.monitors.size(), g.monitors[size_t(g.monitorIndex)].c_str());
+		else
+			log("monitors: %zu", g.monitors.size());
+		return;
+	}
+}
+
 int main(int argc, char** argv)
 {
 	// Started by ssh as its askpass (askpass.hpp): answer its question, nothing else.
@@ -1362,6 +1633,18 @@ int main(int argc, char** argv)
 			g.args.push_back(line.substr(eq + 1));
 		else if (line.compare(0, eq, "selfkey") == 0)
 			g.selfKeys.push_back(line.substr(eq + 1));
+		else if (line.compare(0, eq, "probe") == 0)
+		{
+			const std::string v = line.substr(eq + 1);
+			bool control = v.empty() || v.size() > 1024;
+			for (unsigned char c : v)
+				if (c < 0x20 || c == 0x7f)
+					control = true;
+			if (control || g.probeArgs.size() >= 64)
+				g.probeBad = true;
+			else
+				g.probeArgs.push_back(v);
+		}
 		else
 			g.cfg[line.substr(0, eq)] = line.substr(eq + 1);
 	}
@@ -1428,11 +1711,22 @@ int main(int argc, char** argv)
 			                        { g.link.listenFd(), POLLIN, 0 },
 			                        { g.link.clientFd(), POLLIN, 0 },
 			                        { g.askpassFd, POLLIN, 0 } };
+		int probeSlot = -1;
+		if (g.probeFd >= 0)
+		{
+			probeSlot = int(fds.size());
+			fds.push_back({ g.probeFd, POLLIN, 0 });
+		}
 		const size_t fixed = fds.size();
 		g.clip->addFds(fds);
 		const int n = poll(fds.data(), fds.size(), 250);
 		if (n < 0 && errno != EINTR)
 			break;
+		if (g.probeChild > 0 && g.probeDeadline && oma::now_ms() >= g.probeDeadline)
+			fail_probe("timed out");
+		else if (probeSlot >= 0 && g.probeFd >= 0 &&
+		         (fds[size_t(probeSlot)].revents & (POLLIN | POLLHUP | POLLERR)))
+			read_probe();
 		if (fds[3].revents & (POLLIN | POLLHUP | POLLERR))
 			g.seat.dispatch();
 		if (fds[6].revents & POLLIN)
@@ -1470,7 +1764,9 @@ int main(int argc, char** argv)
 					g.retries++;
 					log("connection lost (%s): reconnecting in %d s", g.failure.c_str(), delay);
 					g.retryAt = oma::now_ms() + uint64_t(delay) * 1000;
-					if (g.connected)
+					// A monitor switch restarts the stream on purpose. The picture stays until the new one
+					// arrives; this is not a dropped link the UI should cover with "connecting".
+					if (g.connected && !g.switching)
 					{
 						g.connected = false;
 						g.link.send("state connecting");
@@ -1484,6 +1780,11 @@ int main(int argc, char** argv)
 		}
 		for (const auto& l : g.link.poll())
 			handle_line(l);
+		if (g.giveUp)
+		{
+			rc = 136;
+			break;
+		}
 		flush_resize();
 		if (!g.welcomed && !g.retryAt && oma::now_ms() - g.attemptAt > 30000)
 		{
@@ -1499,6 +1800,7 @@ int main(int argc, char** argv)
 		send_msg(gliff::bye());
 		flush_out();
 	}
+	stop_probe();
 	stop_server(); // ssh ends once its input closes
 	log("session ended");
 	rc = finish(rc);

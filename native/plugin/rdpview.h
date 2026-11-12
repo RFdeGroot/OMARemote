@@ -5,6 +5,7 @@
 #include <QQuickItem>
 #include <QSet>
 #include <QSocketNotifier>
+#include <QStringList>
 #include <QTimer>
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
@@ -46,6 +47,10 @@ class RdpView : public QQuickItem
 	Q_PROPERTY(bool captureShortcuts READ captureShortcuts WRITE setCaptureShortcuts NOTIFY captureShortcutsChanged)
 	// Whether the compositor's shortcuts are held right now.
 	Q_PROPERTY(bool shortcutsCaptured READ shortcutsCaptured NOTIFY shortcutsCapturedChanged)
+	// Mirrored Gliff screens, already checked against the screen-name grammar. Numbers in the tab
+	// are indexes into this list. monitor is the one being shown, or -1 when it is not in the list.
+	Q_PROPERTY(QStringList monitors READ monitors NOTIFY monitorsChanged)
+	Q_PROPERTY(int monitor READ monitor NOTIFY monitorsChanged)
 	// A key that gives them back besides the session keys + Esc: shift+escape, double-escape or none.
 	Q_PROPERTY(QString releaseKey MEMBER m_releaseKey NOTIFY releaseKeyChanged)
 	// Whether this view passes the clipboard between the desktop and the session (the connection's
@@ -98,7 +103,11 @@ public:
 	Q_INVOKABLE void cancelReconnect();
 	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
 	Q_INVOKABLE void releaseShortcuts();
+	Q_INVOKABLE void selectMonitor(int index);
 	Q_INVOKABLE int cachedCursors() const { return int(m_cursors.size()); } // for tests
+
+	QStringList monitors() const { return m_monitors; }
+	int monitor() const { return m_monitor; }
 
 signals:
 	void socketPathChanged();
@@ -120,6 +129,7 @@ signals:
 	// or "off" (back, or given up); attempt counts the tries since the drop.
 	void reconnectChanged(const QString& phase, int attempt, int seconds);
 	void shortcutsCapturedChanged();
+	void monitorsChanged();
 
 protected:
 	QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
@@ -221,4 +231,6 @@ private:
 	bool m_clipAgain = false;
 	bool m_clipAgainForce = false;
 	Qt::MouseButtons m_buttons;
+	QStringList m_monitors;
+	int m_monitor = -1;
 };

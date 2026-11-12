@@ -25,6 +25,14 @@ FocusScope {
     readonly property string title: session ? session.name : "OMARemote"
     readonly property string launcher: Sessions.bin.replace(/omaremote-session$/, "omaremote")
 
+    // The same row as the manager's status bar. Icons stay on the manager's tab; the key works here.
+    function gliffScreenHints() {
+        var info = root.session && Sessions.monitors[root.session.id]
+        if (!root.session || root.session.protocol !== "gliff" || !root.live || !info || !info.names || info.names.length < 1)
+            return []
+        return [["ctrl+alt+1…8", "screen"]]
+    }
+
     property bool movingToTab: false
     // Hyprland fullscreen (the bar hidden): the window covers its whole screen. Only the remote
     // desktop shows; the top edge slides in a bar to leave (connectionBar). Maximised keeps the
@@ -291,8 +299,9 @@ FocusScope {
             hints: (root.hotkey ? [["ctrl+alt+h", "hide"]] : []).concat([["ctrl+alt+t", "to a tab"], ["ctrl+alt+⏎", "fullscreen"],
                     root.session && root.session.protocol === "ssh" ? ["ctrl+shift+c/v", "copy/paste"]
                     : root.session && root.session.protocol === "gliff" ? Format.gliffKeyHint(Sessions.capturedSession === root.session.id)
-                    : ["ctrl+alt+end", "ctrl+alt+del"],
-                    ["ctrl+alt+home", "to connections"], [Sessions.closeKey, "disconnect"]])
+                    : ["ctrl+alt+end", "ctrl+alt+del"]])
+                    .concat(root.gliffScreenHints())
+                    .concat([["ctrl+alt+home", "to connections"], [Sessions.closeKey, "disconnect"]])
         }
     }
 
