@@ -22,6 +22,37 @@ Singleton {
         next[id] = text
         stats = next
     }
+    // Gliff mirror screens for a session tab: checked names, and which one is showing (-1 if none).
+    // A list longer than 8, or any name outside the screen grammar, is dropped whole.
+    property var monitors: ({})
+    function setMonitors(id, names, current) {
+        if (!id)
+            return
+        var list = names || []
+        if (list.length > 8)
+            return
+        var re = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
+        var clean = []
+        for (var i = 0; i < list.length; i++) {
+            var name = list[i]
+            if (typeof name !== "string" || !re.test(name))
+                return
+            clean.push(name)
+        }
+        var idx = Number(current)
+        if (!isFinite(idx) || Math.floor(idx) !== idx || idx < -1 || idx >= clean.length)
+            idx = -1
+        var next = Object.assign({}, monitors)
+        next[id] = { names: clean, monitor: idx }
+        monitors = next
+    }
+    function clearMonitors(id) {
+        if (!id || !monitors[id])
+            return
+        var next = Object.assign({}, monitors)
+        delete next[id]
+        monitors = next
+    }
     property string changesPath: ""
     // "connection:<id>" or "credential:<id>" -> true when the keyring holds that password.
     property var secrets: ({})

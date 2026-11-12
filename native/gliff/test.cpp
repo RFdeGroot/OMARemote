@@ -5,6 +5,7 @@
 #include "../common/link.hpp"
 #include "askpass.hpp"
 #include "clipboard.hpp"
+#include "monitors.hpp"
 #include "msg.hpp"
 #include "seat.hpp"
 #include "video.hpp"
@@ -437,6 +438,112 @@ static void video_tests()
 	expect(px[2] >= 253 && px[1] <= 2 && px[0] <= 2, "BT.709 red");
 }
 
+static void expect_names(const char* json, std::optional<std::vector<std::string>> want, const char* what)
+{
+	const auto got = gliff::parse_monitors(json);
+	if (!want)
+	{
+		expect(!got, what);
+		return;
+	}
+	if (!got)
+	{
+		expect(false, what);
+		return;
+	}
+	expect(*got == *want, what);
+}
+
+static void monitor_tests()
+{
+	expect_names(
+	    R"([{"name":"HDMI-A-1","description":"<img src=\"x\">","x":1920,"y":0,"disabled":false,"activeWorkspace":{"id":1,"name":"1"}},{"name":"eDP-1","x":0,"y":0,"disabled":false},{"name":"DP-2","x":1920,"y":1080,"disabled":false},{"name":"DP-9","x":5,"y":0,"disabled":true},{"name":"bad name","x":1,"y":0},{"name":"DP-1;rm","x":2,"y":0}])",
+	    std::vector<std::string>{ "eDP-1", "HDMI-A-1", "DP-2" }, "sorted, disabled and bad names skipped");
+	expect_names("[]", std::vector<std::string>{}, "empty array is a list");
+	expect_names(R"([{"name":"eDP-1","x":0,"disabled":true}])", std::vector<std::string>{}, "all disabled is a list");
+	expect_names(R"([{"name":"DP-1","x":10.6,"y":0},{"name":"eDP-1","x":10.2,"y":0}])",
+	             std::vector<std::string>{ "eDP-1", "DP-1" }, "coordinates round, then sort");
+	expect_names(R"([{"name":"DP-1","x":5},{"name":"DP-1","x":0},{"name":"eDP-1","x":0}])",
+	             std::vector<std::string>{ "eDP-1", "DP-1" }, "one copy of a repeated name");
+	{
+		std::string nine = "[";
+		for (int i = 0; i < 9; ++i)
+			nine += std::string(i ? "," : "") + R"({"name":"M)" + std::to_string(i) + R"(","x":0})";
+		nine += "]";
+		expect_names(nine.c_str(), std::nullopt, "more than 8 monitors rejects the document");
+	}
+	expect_names("{}", std::nullopt, "a document must be an array");
+	expect_names("[] junk", std::nullopt, "trailing junk is rejected");
+	expect_names("not json", std::nullopt, "non-json is rejected");
+	expect_names(R"([{"name":1,"x":0}])", std::nullopt, "a name that is not text rejects the document");
+	expect_names(R"([{"name":"eDP-1","disabled":0}])", std::nullopt, "disabled must be a boolean");
+	expect_names(R"([{"name":"eDP-1","x":"0"}])", std::nullopt, "x must be a number");
+	expect_names(R"([{"name":"eDP-1","x":1000000},{"name":"DP-1","x":1}])", std::vector<std::string>{ "DP-1" },
+	             "a coordinate out of range skips that monitor");
+	{
+		std::string longName(65, 'A');
+		const std::string doc = R"([{"name":")" + longName + R"(","x":0},{"name":"DP-1","x":1}])";
+		expect_names(doc.c_str(), std::vector<std::string>{ "DP-1" }, "a too-long name is skipped");
+	}
+	{
+		const std::string huge(4097, 'd');
+		const std::string doc = R"([{"name":"eDP-1","description":")" + huge + R"(","x":0}])";
+		expect_names(doc.c_str(), std::nullopt, "a huge string rejects the document");
+	}
+	expect_names(std::string(65537, '[').c_str(), std::nullopt, "oversize input is rejected");
+	{
+		std::string nul = "[]";
+		nul.push_back('\0');
+		expect(!gliff::parse_monitors(nul), "a NUL rejects the document");
+	}
+	expect_names(R"([{"name":"eDP-1","x":0,"nested":{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":1}}}}}}}}])",
+	             std::nullopt, "nesting past the depth cap is rejected");
+
+	std::vector<std::string> args = { "/usr/bin/ssh", "-T", "--", "pc.lan", "gliff-server", "--stdio", "--output", "auto",
+		                              "--full-chroma" };
+	expect(gliff::replace_output_arg(args, "DP-1"), "replace auto");
+	expect(args.size() == 9 && args[7] == "DP-1", "only the output word changes");
+	auto kept = args;
+	expect(!gliff::replace_output_arg(kept, "DP-1;rm"), "a shell-shaped name is refused");
+	expect(kept == args, "a refusal leaves the command alone");
+	std::vector<std::string> earlier = { "/usr/bin/ssh", "--output", "auto", "--", "pc.lan", "gliff-server", "--stdio",
+		                                 "--output", "HDMI-A-1" };
+	expect(gliff::replace_output_arg(earlier, "eDP-1") && earlier[2] == "auto" && earlier[8] == "eDP-1",
+	       "only the --output after -- is replaced");
+	std::vector<std::string> headless = { "/usr/bin/ssh", "--", "pc.lan", "gliff-server", "--stdio", "--headless" };
+	expect(!gliff::replace_output_arg(headless, "DP-1") && headless.size() == 6, "a missing --output is not appended");
+	std::vector<std::string> evil = { "/usr/bin/ssh", "--", "pc.lan", "--output", "DP-1;rm" };
+	expect(!gliff::replace_output_arg(evil, "eDP-1") && evil[4] == "DP-1;rm", "a bad current value is not replaced");
+
+	const std::vector<std::string> prefix = { "/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T", "--",
+		                                      "pc.lan" };
+	expect(gliff::probe_prefix_ok(prefix), "probe prefix");
+	auto withCmd = prefix;
+	withCmd.push_back("hyprctl");
+	expect(!gliff::probe_prefix_ok(withCmd), "nothing follows the host");
+	auto bare = prefix;
+	bare[0] = "ssh";
+	expect(!gliff::probe_prefix_ok(bare), "ssh is the absolute binary");
+	expect(!gliff::probe_prefix_ok({ "/usr/bin/ssh", "--", "-oProxyCommand=evil" }), "the host is not an option");
+	expect(!gliff::probe_prefix_ok({ "/usr/bin/ssh", "--", "pc.lan", "--", "other" }), "one separator");
+	expect(!gliff::probe_prefix_ok({ "/usr/bin/ssh", "", "--", "pc.lan" }), "no empty argument");
+	expect(!gliff::probe_prefix_ok({ "/usr/bin/ssh", "a\nb", "--", "pc.lan" }), "no control character");
+	expect(!gliff::probe_prefix_ok({ "/usr/bin/ssh", "--" }), "the host is present");
+	expect(gliff::output_name_ok("DP-1") && gliff::output_name_ok("HDMI-A-1") && !gliff::output_name_ok("-oFoo") &&
+	           !gliff::output_name_ok("a b") && !gliff::output_name_ok(""),
+	       "screen names match the existing grammar");
+
+	const std::string remote = gliff::kMonitorProbeRemote;
+	int quotes = 0;
+	for (char c : remote)
+		if (c == '\'')
+			++quotes;
+	expect(remote.find("/bin/sh -c '") == 0 && remote.back() == '\'' && quotes == 2, "the remote command is one quoted script");
+	expect(remote.find("exec /usr/bin/hyprctl -j monitors") != std::string::npos, "the script execs hyprctl");
+	expect(remote.find("/usr/bin/id") != std::string::npos && remote.find("HYPRLAND_INSTANCE_SIGNATURE") != std::string::npos,
+	       "the script discovers the compositor without connection data");
+}
+
 int main()
 {
 	// Client messages: gliff-proto's fixtures (Hello with keymap "k" and feature "f").
@@ -568,6 +675,8 @@ int main()
 		expect(gliff::hostkey_failure("Permission denied (publickey).\n", "pc.lan", false).empty(),
 		       "other failures are not about host keys");
 	}
+
+	monitor_tests();
 
 	if (failures == 0)
 		printf("ok\n");

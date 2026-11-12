@@ -217,6 +217,7 @@ chose. The status bar and the keymap sheet show the keys as they are.
 | `ctrl+alt+p` | pin or unpin the connections list |
 | `ctrl+alt+n` | quick connect, the session keeps running |
 | `ctrl+alt+k` | keymap sheet |
+| `ctrl+alt+1`–`8` | Gliff: switch to that screen (a mirrored session; the numbers in its tab) |
 
 **Pinning** (`p`, `ctrl+alt+p` or the pin in the tab strip) docks the connections on the left of
 every session tab, in the sidebar's style: running sessions under *Active*, the rest under their
@@ -497,7 +498,10 @@ as [Gliff's README](https://github.com/omacom/gliff#install) explains:
 accept ssh from yours, as for an SSH connection.
 
 - **Sign in** is ssh, as for SSH connections: your keys, ssh-agent and `~/.ssh/config`, a key per
-  connection, *Extra ssh options*. OMARemote runs `ssh … gliff-server --stdio` and nothing else.
+  connection, *Extra ssh options*. OMARemote runs `ssh … gliff-server --stdio` for the picture. On a
+  mirrored screen it also runs one read-only `ssh` of `hyprctl -j monitors`; the session tab then
+  shows those screens as numbers. Picking one, or `ctrl+alt+1` through `8`, restarts the picture on
+  that output without changing the saved connection. A private screen does not run that probe.
   The first time, ssh's question whether to trust the computer's host key shows in the tab with its
   fingerprint (*Trust* adds it to `~/.ssh/known_hosts`, as answering yes in a terminal does). A host
   key that has changed is refused, as ssh refuses it, with how to clear the old one if expected.

@@ -104,6 +104,45 @@ class Command(unittest.TestCase):
         self.assertIn("clipboard=1", lines)
         self.assertIn("clipboard=0", session.build_gliff_config(gliff(clipboard=False)))
 
+    def test_monitor_probe_stops_at_the_host(self):
+        """The probe is the gliff ssh prefix only. The remote command is added later, in C++."""
+        cmd = session.build_monitor_probe(gliff(
+            port=2222, username="me", sshKey="~/.ssh/id_x",
+            sshArgs="-o BatchMode=no -J jump.lan", gliffOutput="DP-1"))
+        self.assertEqual(cmd[0], "/usr/bin/ssh")
+        self.assertEqual(cmd[1:5], ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
+        self.assertLess(cmd.index("BatchMode=yes"), cmd.index("BatchMode=no"))
+        self.assertLess(cmd.index("ConnectTimeout=5"), cmd.index("-J"))
+        self.assertEqual(cmd[-2:], ["--", "pc.lan"])
+        for word in ("gliff-server", "--stdio", "--output", "DP-1", "auto", "hyprctl"):
+            self.assertNotIn(word, cmd)
+        self.assertLess(cmd.index("-p"), cmd.index("--"))
+        self.assertLess(cmd.index("-l"), cmd.index("--"))
+
+    def test_private_screen_is_not_probed(self):
+        self.assertEqual(session.build_monitor_probe(gliff(gliffScreen="private", gliffOutput="DP-1")), [])
+        lines = session.build_gliff_config(gliff(gliffScreen="private", gliffOutput="DP-1"))
+        self.assertFalse(any(line.startswith("probe=") for line in lines))
+        self.assertIn("headless=1", lines)
+
+    def test_mirror_config_carries_the_probe_prefix(self):
+        lines = session.build_gliff_config(gliff(gliffOutput="HDMI-A-1", sshArgs="-J jump.lan"))
+        probes = [line[len("probe="):] for line in lines if line.startswith("probe=")]
+        self.assertEqual(probes[0], "/usr/bin/ssh")
+        self.assertEqual(probes[1:5], ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
+        self.assertEqual(probes[-2:], ["--", "pc.lan"])
+        self.assertNotIn("HDMI-A-1", probes)
+        self.assertNotIn("gliff-server", probes)
+        self.assertNotIn("--stdio", probes)
+        self.assertLess(probes.index("BatchMode=yes"), probes.index("-J"))
+
+    def test_probe_refuses_a_bad_host_and_a_shell_screen(self):
+        with self.assertRaises(ValueError):
+            session.build_monitor_probe(gliff(host="-oProxyCommand=evil"))
+        for bad in ("DP-1; rm -rf ~", "$(id)", "`id`", "a b", "-oFoo", "x|y", "a\nb", "DP-1&"):
+            with self.assertRaises(ValueError, msg=bad):
+                session.build_monitor_probe(gliff(gliffOutput=bad))
+
     def test_default_port(self):
         data = {"credentials": [], "groups": {}, "connections": []}
         self.assertEqual(session.resolve(gliff(), data)["port"], 22)

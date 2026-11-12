@@ -26,6 +26,21 @@ Item {
     signal toggleFullscreen()
     signal togglePinned()
 
+    function selectMonitor(index) {
+        view.selectMonitor(index)
+    }
+    function syncMonitors() {
+        if (!session)
+            return
+        if (session.state === "ended" || session.state === "failed")
+            Sessions.clearMonitors(session.id)
+        else
+            Sessions.setMonitors(session.id, view.monitors, view.monitor)
+    }
+    readonly property string sessionState: session ? session.state : ""
+    onSessionChanged: syncMonitors()
+    onSessionStateChanged: syncMonitors()
+
     // The keyboard goes to what is on screen: a prompt, the remote desktop, or (once the session has
     // ended or failed) its panel, whose ⏎, l and w would otherwise never arrive.
     function focusDesktop() {
@@ -142,6 +157,7 @@ Item {
             if (root.session)
                 Sessions.setStats(root.session.id, text)
         }
+        onMonitorsChanged: root.syncMonitors()
         onReconnectChanged: function (phase, attempt, seconds) {
             root.reconnect = phase === "off" ? null : { phase: phase, attempt: attempt, seconds: seconds, at: Date.now() }
         }
@@ -254,6 +270,25 @@ Item {
         return true
     }
 
+    // Screen 1–8 on the number row. Qt's nativeScanCode is the evdev code plus 8, as for Right
+    // Ctrl, because Ctrl+Alt+Shift (a session-key choice) makes Qt report Shift+1 as Exclam.
+    function monitorPressed(event) {
+        var names = view.monitors || []
+        if (names.length < 1)
+            return false
+        var n = -1
+        var scan = event.nativeScanCode
+        if (scan >= 10 && scan <= 17)
+            n = scan - 10
+        else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_8)
+            n = event.key - Qt.Key_1
+        if (n < 0)
+            return false
+        if (n < names.length)
+            root.selectMonitor(n)
+        return true
+    }
+
     // The session-key chords (Ctrl+Alt unless Settings › Keyboard says otherwise), for the desktop
     // and for the panel of an ended session alike. True when the key was one of them; with Right
     // Ctrl held every key is OMARemote's, a chord or not.
@@ -275,6 +310,7 @@ Item {
         else if (event.key === Qt.Key_B && root.isSsh) Sessions.browse(root.session.connection)
         else if (event.key === Qt.Key_R && live && root.session.protocol === "rdp") root.reconnectRequested()
         else if (event.key === Qt.Key_W) root.closeRequested()
+        else if (root.monitorPressed(event)) return true
         else return Keymap.sessionKeys === "rctrl"
         return true
     }

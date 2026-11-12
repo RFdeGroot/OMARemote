@@ -8,6 +8,7 @@
 #include <QGuiApplication>
 #include <QPixmap>
 #include <QQuickWindow>
+#include <QRegularExpression>
 #include <QSGImageNode>
 #include <QSGTexture>
 
@@ -235,6 +236,24 @@ void RdpView::onReadable()
 	}
 }
 
+static bool monitorNameOk(const QByteArray& raw)
+{
+	static const QRegularExpression re(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"));
+	if (raw.size() < 1 || raw.size() > 64)
+		return false;
+	return re.match(QString::fromLatin1(raw)).hasMatch();
+}
+
+void RdpView::selectMonitor(int index)
+{
+	if (index < 0 || index >= m_monitors.size() || index == m_monitor)
+		return;
+	const QString name = m_monitors.at(index);
+	if (!monitorNameOk(name.toLatin1()))
+		return;
+	send(QByteArrayLiteral("output ") + name.toLatin1());
+}
+
 static QString unb64(const QByteArray& s)
 {
 	return s == "-" ? QString() : QString::fromUtf8(QByteArray::fromBase64(s));
@@ -320,6 +339,40 @@ void RdpView::handleLine(const QByteArray& line)
 		emit pasteDone(int(num(1)));
 	else if (cmd == "stats" && w.size() >= 2)
 		emit statsChanged(unb64(w[1]));
+	else if (cmd == "monitors")
+	{
+		if (w.size() == 1)
+		{
+			if (!m_monitors.isEmpty() || m_monitor != -1)
+			{
+				m_monitors.clear();
+				m_monitor = -1;
+				emit monitorsChanged();
+			}
+			return;
+		}
+		// index, then at most 8 names. One bad token drops the whole line.
+		if (w.size() > 10)
+			return;
+		bool ok = false;
+		const int idx = QString::fromLatin1(w[1]).toInt(&ok);
+		if (!ok)
+			return;
+		QStringList names;
+		for (int i = 2; i < w.size(); ++i)
+		{
+			if (!monitorNameOk(w[i]))
+				return;
+			names.push_back(QString::fromLatin1(w[i]));
+		}
+		if (idx < -1 || idx >= names.size())
+			return;
+		if (m_monitors == names && m_monitor == idx)
+			return;
+		m_monitors = names;
+		m_monitor = idx;
+		emit monitorsChanged();
+	}
 	else if (cmd == "reconnect" && w.size() >= 2 && (w[1] == "wait" || w[1] == "trying" || w[1] == "off"))
 		emit reconnectChanged(QString::fromLatin1(w[1]), int(num(2)), int(num(3)));
 	else if (cmd == "clip" && w.size() >= 2)

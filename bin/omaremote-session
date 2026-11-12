@@ -3058,6 +3058,25 @@ def build_gliff_command(conn):
     return [args[0], *GLIFF_SSH_OPTIONS, *args[1:], "--", host, server, "--stdio", *gliff_server_args(conn)]
 
 
+def build_monitor_probe(conn):
+    """ssh argv through the host for a read-only monitor list. Empty for a private screen.
+
+    The remote command is not here. omaremote-gliff appends one fixed script after this prefix.
+    BatchMode and ConnectTimeout are first, so they win over the connection's own ssh options
+    (OpenSSH keeps the first value of each)."""
+    if conn.get("gliffScreen") == "private":
+        return []
+    args = build_gliff_command(conn)
+    if args.count("--") != 1 or not args or args[0] != "ssh":
+        raise ValueError("monitor probe is not an ssh command")
+    dash = args.index("--")
+    if dash + 1 >= len(args):
+        raise ValueError("monitor probe has no host")
+    host = check_host(args[dash + 1])
+    prefix = ["/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", *args[1:dash]]
+    return check_lines(prefix + ["--", host])
+
+
 # ---- this computer: Gliff to itself streams its own screen into itself (a picture in a picture,
 # and its keymap echoing back and forth), so it is refused, and its connection greyed in the list.
 # Decided from local facts, in this process: no host goes on a command line (other accounts can
@@ -3215,6 +3234,7 @@ def build_gliff_config(conn):
               f"headless={1 if conn.get('gliffScreen') == 'private' else 0}",
               f"video={'cpu' if conn.get('gliffVideo') == 'cpu' else 'auto'}",
               f"clipboard={0 if conn.get('clipboard') is False else 1}"]
+    lines += [f"probe={a}" for a in build_monitor_probe(conn)]
     return check_lines(lines)
 
 
