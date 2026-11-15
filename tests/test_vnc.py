@@ -34,7 +34,15 @@ def fake_server(listener, stall, size=(64, 48), pixels=False, got=None, cuts=(),
         pixel = struct.pack(">BBBBHHHBBB3x", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
         conn.sendall(struct.pack(">HH", *size) + pixel + struct.pack(">I", 4) + b"fake")
         time.sleep(0.3)  # SetPixelFormat, SetEncodings, the first update request
-        if pixels:
+        hello = conn.recv(4096, socket.MSG_PEEK)
+        bpp = hello[4] if len(hello) > 4 and hello[0] == 0 else 32  # SetPixelFormat comes first
+        if pixels and bpp == 16:
+            # RGB565, little-endian as the client asked: red everywhere, a cyan patch.
+            red, cyan = struct.pack("<H", 31 << 11), struct.pack("<H", 63 << 5 | 31)
+            conn.sendall(struct.pack(">BxH", 0, 2)
+                         + struct.pack(">HHHHi", 0, 0, 64, 48, 0) + red * (64 * 48)
+                         + struct.pack(">HHHHi", 3, 4, 2, 3, 0) + cyan * 6)
+        elif pixels:
             # Padding is deliberately not alpha, including both zero and nonzero values.
             full = b"".join(bytes((17, 34, 51, i % 256)) for i in range(64 * 48))
             patch = bytes((68, 85, 102, 7)) * 6
@@ -72,7 +80,7 @@ def fake_server(listener, stall, size=(64, 48), pixels=False, got=None, cuts=(),
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build (ninja -C native/build)")
 class VncSession(unittest.TestCase):
-    def start(self, stall, size=(64, 48), pixels=False, got=None, cuts=(), burst=0):
+    def start(self, stall, size=(64, 48), pixels=False, got=None, cuts=(), burst=0, config=""):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
         listener = socket.socket()
@@ -85,13 +93,43 @@ class VncSession(unittest.TestCase):
                              env=dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s")), text=True)
         self.addCleanup(p.stdout.close)
         self.addCleanup(lambda: p.poll() is None and p.kill())
-        p.stdin.write(f"host=127.0.0.1\nport={port}\nreadTimeout=2\n")
+        p.stdin.write(f"host=127.0.0.1\nport={port}\nreadTimeout=2\n{config}")
         p.stdin.close()
         self.socket_path = os.path.join(d, "s")
         return p
 
     def test_framebuffer_padding_is_opaque_without_changing_rgb(self):
         p = self.start(stall=False, pixels=True)
+        actual = self.first_frame(p)
+        expected = bytearray(bytes((17, 34, 51, 255)) * (64 * 48))
+        for y in range(4, 7):
+            offset = (y * 64 + 3) * 4
+            expected[offset:offset + 8] = bytes((68, 85, 102, 255)) * 2
+        self.assertEqual(actual, expected)
+        p.terminate()
+        self.assertEqual(p.wait(5), 11)
+
+    def test_low_quality_asks_for_16_bit_colour_and_widens_it(self):
+        # plans/vnc-speed.md: a third less data from any server, Apple's included.
+        p = self.start(stall=False, pixels=True, config="quality=low\n")
+        actual = self.first_frame(p)
+        expected = bytearray(bytes((0, 0, 255, 255)) * (64 * 48))  # B G R X: red
+        for y in range(4, 7):
+            offset = (y * 64 + 3) * 4
+            expected[offset:offset + 8] = bytes((255, 255, 0, 255)) * 2  # cyan, full strength
+        self.assertEqual(actual, expected)
+        p.terminate()
+        self.assertEqual(p.wait(5), 11)
+
+    def test_other_qualities_keep_full_colour(self):
+        for quality in ("auto", "high"):
+            p = self.start(stall=False, pixels=True, config=f"quality={quality}\n")
+            self.assertEqual(self.first_frame(p)[:4], bytes((17, 34, 51, 255)), quality)
+            p.terminate()
+            p.wait(5)
+
+    def first_frame(self, p):
+        """The session's frame once it has drawn the first update, as the view would map it."""
         ui = socket.socket(socket.AF_UNIX)
         self.addCleanup(ui.close)
         ui.settimeout(5)
@@ -118,14 +156,7 @@ class VncSession(unittest.TestCase):
                         self.addCleanup(os.close, fd)
                         frame_fd = fd
         self.assertIn(b"frame 64 48 256\n", received)
-        actual = os.pread(frame_fd, 64 * 48 * 4, 0)
-        expected = bytearray(bytes((17, 34, 51, 255)) * (64 * 48))
-        for y in range(4, 7):
-            offset = (y * 64 + 3) * 4
-            expected[offset:offset + 8] = bytes((68, 85, 102, 255)) * 2
-        self.assertEqual(actual, expected)
-        p.terminate()
-        self.assertEqual(p.wait(5), 11)
+        return os.pread(frame_fd, 64 * 48 * 4, 0)
 
     def test_a_server_stalling_mid_message_ends_the_session(self):
         p = self.start(stall=True)

@@ -430,7 +430,9 @@ They sign in with a VNC password, or a user name and password for servers that a
 - **Scaling**: *Fit window* scales the remote screen to the tab, *Native pixels* shows it pixel for
   pixel, *Resize remote* asks the server to match the tab's size (servers with ExtendedDesktopSize,
   such as TigerVNC, wayvnc and libvncserver-based ones).
-- **Quality**: *Auto* (Tight with JPEG), *High* (lossless ZRLE), *Low* (strong compression).
+- **Quality**: *Auto* (Tight with JPEG), *High* (lossless ZRLE), *Low* (16-bit colour and strong
+  compression: the least data, and the one that makes a difference to a Mac, whose server has no Tight
+  or JPEG). A Retina Mac sends many pixels; its *Larger Text* display setting cuts them by four.
 - **View only** watches without sending keyboard or mouse input.
 - Clipboard text goes both ways (UTF-8 where the server supports it), and the server's cursor is
   drawn locally. As with Gliff, nothing moves at connect: each side keeps its own clipboard until something

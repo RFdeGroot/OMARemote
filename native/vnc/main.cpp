@@ -25,6 +25,7 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <vector>
 
 using oma::b64;
 using oma::log;
@@ -52,6 +53,11 @@ struct Session
 	std::string localClip;
 	std::string pendingClip; // copied before the connection was up
 	bool serverClipped = false; // the server has sent its clipboard once
+	// Quality Low: the server sends 16-bit colour (RGB565), a third less data than 24-bit on any
+	// server, Apple's included (it has no Tight or JPEG). libvncclient decodes into pixels16, and
+	// got_update widens what changed into the shared 32-bit frame.
+	bool colour16 = false;
+	std::vector<uint16_t> pixels16;
 
 	// Once a second, while the picture changes: what it costs (see log_stats).
 	uint64_t statAt = 0, statUpdates = 0, statPixels = 0, statBox = 0, statHandleUs = 0, statBytesAt = 0;
@@ -139,8 +145,25 @@ static rfbBool malloc_framebuffer(rfbClient* client)
 	if (!fb.data)
 		return FALSE;
 	g.frame = fb;
-	client->frameBuffer = fb.data;
-	log("desktop is %dx%d", client->width, client->height);
+	if (g.colour16)
+	{
+		// Called before libvncclient tells the server the pixel format (SetFormatAndEncodings).
+		client->format.bitsPerPixel = 16;
+		client->format.depth = 16;
+		client->format.trueColour = TRUE;
+		client->format.bigEndian = FALSE;
+		client->format.redMax = 31;
+		client->format.greenMax = 63;
+		client->format.blueMax = 31;
+		client->format.redShift = 11;
+		client->format.greenShift = 5;
+		client->format.blueShift = 0;
+		g.pixels16.assign(size_t(client->width) * size_t(client->height), 0);
+		client->frameBuffer = reinterpret_cast<uint8_t*>(g.pixels16.data());
+	}
+	else
+		client->frameBuffer = fb.data;
+	log("desktop is %dx%d%s", client->width, client->height, g.colour16 ? ", 16-bit colour" : "");
 	if (g.connected)
 		g.link.sendFrame(g.frame);
 	// The UI keeps its own mapping of the old one until it maps the new.
@@ -152,10 +175,28 @@ static rfbBool malloc_framebuffer(rfbClient* client)
 static void got_update(rfbClient*, int x, int y, int w, int h)
 {
 	g.statPixels += uint64_t(w) * uint64_t(h);
-	// RFB's fourth byte is padding, not alpha. Qt RGB32 requires opaque alpha.
-	for (int row = y; row < y + h; ++row)
-		for (int col = x; col < x + w; ++col)
-			g.frame.data[size_t(row) * g.frame.stride + size_t(col) * 4 + 3] = 0xff;
+	if (g.colour16)
+	{
+		// RGB565 to the frame's B G R X, the low bits filled from the high ones (31 -> 255).
+		for (int row = y; row < y + h; ++row)
+		{
+			const uint16_t* src = &g.pixels16[size_t(row) * size_t(g.frame.width) + size_t(x)];
+			uint8_t* dst = g.frame.data + size_t(row) * g.frame.stride + size_t(x) * 4;
+			for (int col = 0; col < w; ++col, dst += 4)
+			{
+				const unsigned p = src[col], r = p >> 11, gr = (p >> 5) & 63, b = p & 31;
+				dst[0] = uint8_t(b << 3 | b >> 2);
+				dst[1] = uint8_t(gr << 2 | gr >> 4);
+				dst[2] = uint8_t(r << 3 | r >> 2);
+				dst[3] = 0xff;
+			}
+		}
+	}
+	else
+		// RFB's fourth byte is padding, not alpha. Qt RGB32 requires opaque alpha.
+		for (int row = y; row < y + h; ++row)
+			for (int col = x; col < x + w; ++col)
+				g.frame.data[size_t(row) * g.frame.stride + size_t(col) * 4 + 3] = 0xff;
 	if (!g.dirty)
 	{
 		g.dx0 = x;
@@ -188,16 +229,26 @@ static void finished_update(rfbClient*)
 static void got_cursor(rfbClient* client, int xhot, int yhot, int width, int height, int bytesPerPixel)
 {
 	if (width <= 0 || height <= 0 || width > oma::kMaxCursorSide || height > oma::kMaxCursorSide ||
-	    !client->rcSource || bytesPerPixel != 4)
+	    !client->rcSource || bytesPerPixel != (g.colour16 ? 2 : 4))
 		return;
 	std::string pixels(size_t(width) * size_t(height) * 4, '\0');
 	for (size_t i = 0; i < size_t(width) * size_t(height); i++)
 	{
-		const uint8_t* src = client->rcSource + i * 4; // our pixel format: B G R X
+		uint8_t bgr[3];
+		if (g.colour16)
+		{
+			const unsigned p = unsigned(client->rcSource[i * 2]) | unsigned(client->rcSource[i * 2 + 1]) << 8;
+			const unsigned r = p >> 11, gr = (p >> 5) & 63, b = p & 31;
+			bgr[0] = uint8_t(b << 3 | b >> 2);
+			bgr[1] = uint8_t(gr << 2 | gr >> 4);
+			bgr[2] = uint8_t(r << 3 | r >> 2);
+		}
+		else
+			memcpy(bgr, client->rcSource + i * 4, 3); // our pixel format: B G R X
 		const bool shown = client->rcMask ? client->rcMask[i] != 0 : true;
-		pixels[size_t(i) * 4 + 0] = char(src[0]);
-		pixels[size_t(i) * 4 + 1] = char(src[1]);
-		pixels[size_t(i) * 4 + 2] = char(src[2]);
+		pixels[size_t(i) * 4 + 0] = char(bgr[0]);
+		pixels[size_t(i) * 4 + 1] = char(bgr[1]);
+		pixels[size_t(i) * 4 + 2] = char(bgr[2]);
 		pixels[size_t(i) * 4 + 3] = char(shown ? 0xFF : 0x00);
 	}
 	g.cursorId++;
@@ -601,6 +652,7 @@ int main()
 	}
 	else if (quality == "low")
 	{
+		g.colour16 = true;
 		client->appData.encodingsString = "tight zrle copyrect hextile zlib raw";
 		client->appData.compressLevel = 9;
 		client->appData.qualityLevel = 3;

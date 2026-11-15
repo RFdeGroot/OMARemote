@@ -485,7 +485,7 @@ Rectangle {
                 FormRow {
                     inherited: root.fromGroup("vncQuality")
                     label: "Quality"
-                    help: "Low saves bandwidth"
+                    help: "Low: 16-bit colour and strong compression, the least data (best for a Mac)"
                     visible: root.isVnc
                     Segment {
                         value: root.d.vncQuality || "auto"
