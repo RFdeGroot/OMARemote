@@ -110,6 +110,34 @@ uint64_t now_ms()
 	return uint64_t(ts.tv_sec) * 1000 + uint64_t(ts.tv_nsec) / 1000000;
 }
 
+uint64_t now_us()
+{
+	timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return uint64_t(ts.tv_sec) * 1000000 + uint64_t(ts.tv_nsec) / 1000;
+}
+
+void log_view_stats(const std::vector<std::string>& words)
+{
+	if (words.size() != 5)
+		return;
+	unsigned long long n[4];
+	for (size_t i = 0; i < 4; i++)
+	{
+		const std::string& s = words[i + 1];
+		if (s.empty() || s.size() > 12 || s.find_first_not_of("0123456789") != std::string::npos)
+			return;
+		n[i] = strtoull(s.c_str(), nullptr, 10);
+	}
+	if (n[0] < 100)
+		return;
+	const double secs = double(n[0]) / 1000.0;
+	if (!stats_busy(double(n[2]) / secs, 0))
+		return;
+	log("view: damage=%.0f/s drawn=%.0f/s upload=%.1fMB/s", double(n[1]) / secs, double(n[2]) / secs,
+	    double(n[3]) / 1024.0 / secs);
+}
+
 // One line each, whatever a server's text holds: the supervisor reads the log line by line
 // ("[omaremote] connected to …", "connection failed: …"), so control characters become spaces.
 void log(const char* fmt, ...)

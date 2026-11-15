@@ -89,6 +89,9 @@ struct State
 	std::string cursorState = "cursor-default";
 
 	bool quit = false;
+	// Once a second, while the picture changes (log_stats). Painting may come from a channel thread.
+	std::atomic<uint64_t> statUpdates = 0, statBox = 0;
+	uint64_t statAt = 0, statHandleUs = 0, statBytesAt = 0;
 	std::atomic<bool> refused = false; // the server asked for more memory than a session gets (gfxguard.hpp); set on the channel thread
 };
 
@@ -441,6 +444,11 @@ static void handle_line(rdpContext* ctx, const std::string& line)
 		return;
 	const std::string& cmd = w[0];
 	auto num = [&](size_t i) -> long { return i < w.size() ? strtol(w[i].c_str(), nullptr, 10) : 0; };
+	if (cmd == "view-stats")
+	{
+		oma::log_view_stats(w);
+		return;
+	}
 	rdpInput* input = ctx->input;
 	const bool live = st->connected && input;
 
@@ -527,6 +535,44 @@ static std::string ask(rdpContext* ctx, const std::string& question, const std::
 
 // ---------------------------------------------------------------- callbacks
 
+static uint64_t bytes_received(rdpContext* ctx)
+{
+	UINT64 in = 0, out = 0, inPackets = 0, outPackets = 0;
+	return ctx->rdp && freerdp_get_stats(ctx->rdp, &in, &out, &inPackets, &outPackets) ? in : 0;
+}
+
+// One log line for each busy second, to see where a slow session's time goes (plans/vnc-speed.md):
+// screen updates, the box around each that the UI redraws, what came over the network, the time
+// this thread spent on the connection (main: reading, and the old drawing orders), and the time the
+// channel thread spent decoding the graphics pipeline's surfaces (gfx). A blinking cursor or a
+// slow clock writes nothing (oma::stats_busy): the session log has a size cap.
+static void log_stats(rdpContext* ctx)
+{
+	State* st = state_of(ctx);
+	const uint64_t now = now_ms();
+	if (!st->statAt)
+	{
+		st->statAt = now;
+		st->statBytesAt = bytes_received(ctx);
+		return;
+	}
+	if (now - st->statAt < 1000)
+		return;
+	const uint64_t bytes = bytes_received(ctx);
+	const uint64_t got = bytes >= st->statBytesAt ? bytes - st->statBytesAt : 0;
+	const uint64_t updates = st->statUpdates.exchange(0);
+	const uint64_t box = st->statBox.exchange(0);
+	const uint64_t gfxUs = oma::gfx_decode_us().exchange(0);
+	const double secs = double(now - st->statAt) / 1000.0;
+	if (oma::stats_busy(double(updates) / secs, double(st->statHandleUs + gfxUs) / 1000.0 / secs))
+		oma::log("stats: updates=%.0f/s box=%.1fM kbyte=%.0f/s main=%.0fms/s gfx=%.0fms/s", double(updates) / secs,
+		         double(box) / 1e6 / secs, double(got) / 1024.0 / secs, double(st->statHandleUs) / 1000.0 / secs,
+		         double(gfxUs) / 1000.0 / secs);
+	st->statAt = now;
+	st->statBytesAt = bytes;
+	st->statHandleUs = 0;
+}
+
 static BOOL begin_paint(rdpContext* ctx)
 {
 	ctx->gdi->primary->hdc->hwnd->invalid->null = TRUE;
@@ -539,6 +585,8 @@ static BOOL end_paint(rdpContext* ctx)
 	HGDI_RGN invalid = ctx->gdi->primary->hdc->hwnd->invalid;
 	if (invalid->null)
 		return TRUE;
+	st->statUpdates++;
+	st->statBox += uint64_t(invalid->w) * uint64_t(invalid->h);
 	send_line(st, "damage " + std::to_string(invalid->x) + " " + std::to_string(invalid->y) + " " +
 	                  std::to_string(invalid->w) + " " + std::to_string(invalid->h));
 	return TRUE;
@@ -859,7 +907,11 @@ int main(int argc, char** argv)
 				handles[n++] = st->clientEvent;
 			if (WaitForMultipleObjects(n, handles, FALSE, 250) == WAIT_FAILED)
 				break;
-			if (!freerdp_check_event_handles(ctx))
+			const uint64_t start = oma::now_us();
+			const BOOL ok = freerdp_check_event_handles(ctx);
+			st->statHandleUs += oma::now_us() - start;
+			log_stats(ctx);
+			if (!ok)
 			{
 				if (client_auto_reconnect_ex(instance, nullptr))
 					continue;

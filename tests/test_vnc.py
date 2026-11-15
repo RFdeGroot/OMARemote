@@ -1,6 +1,7 @@
 import array
 import base64
 import os
+import re
 import shutil
 import socket
 import struct
@@ -18,9 +19,10 @@ HELPER = os.path.join(HERE, "..", "native", "build", "omaremote-vnc")
 # up after readTimeout seconds, and an idle session is still not cut.
 
 
-def fake_server(listener, stall, size=(64, 48), pixels=False, got=None, cuts=()):
+def fake_server(listener, stall, size=(64, 48), pixels=False, got=None, cuts=(), burst=0):
     """RFB 3.8 without a password; then a partial, empty, or synthetic pixel update. Whatever the
-    client sends after that lands in got; cuts are ServerCutTexts as (seconds after the update, text)."""
+    client sends after that lands in got; cuts are ServerCutTexts as (seconds after the update, text);
+    burst: that many more small updates over the first second, as a busy screen sends."""
     conn, _ = listener.accept()
     with conn:
         conn.sendall(b"RFB 003.008\n")
@@ -46,8 +48,13 @@ def fake_server(listener, stall, size=(64, 48), pixels=False, got=None, cuts=())
         conn.settimeout(0.05)
         start = time.monotonic()
         cuts = list(cuts)
+        updates = [(i / max(1, burst), 2 + i % 50) for i in range(burst)]
         end = start + 30
         while time.monotonic() < end:
+            while updates and time.monotonic() - start >= updates[0][0]:
+                x = updates.pop(0)[1]
+                conn.sendall(struct.pack(">BxH", 0, 1) + struct.pack(">HHHHi", x % 60, 4, 2, 3, 0)
+                             + bytes((68, 85, 102, 7)) * 6)
             while cuts and time.monotonic() - start >= cuts[0][0]:
                 text = cuts.pop(0)[1]
                 conn.sendall(struct.pack(">B3xI", 3, len(text)) + text)
@@ -65,14 +72,14 @@ def fake_server(listener, stall, size=(64, 48), pixels=False, got=None, cuts=())
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build (ninja -C native/build)")
 class VncSession(unittest.TestCase):
-    def start(self, stall, size=(64, 48), pixels=False, got=None, cuts=()):
+    def start(self, stall, size=(64, 48), pixels=False, got=None, cuts=(), burst=0):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         self.addCleanup(listener.close)
-        threading.Thread(target=fake_server, args=(listener, stall, size, pixels, got, cuts), daemon=True).start()
+        threading.Thread(target=fake_server, args=(listener, stall, size, pixels, got, cuts, burst), daemon=True).start()
         port = listener.getsockname()[1]
         p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s")), text=True)
@@ -144,12 +151,12 @@ class VncSession(unittest.TestCase):
         self.assertNotIn("connected to fake", log)
         self.assertNotEqual(rc, 0)
 
-    def clip_session(self, lines=(), cuts=(), until=1.0):
+    def clip_session(self, lines=(), cuts=(), until=1.0, pixels=True, burst=0):
         """Attaches as the view does. lines: (seconds after connecting, line) sent to the session;
         cuts: what the server sends, see fake_server. Returns what the server got, and the
         clipboard texts the session passed to the view ("-" for empty)."""
         got = bytearray()
-        p = self.start(stall=False, pixels=True, got=got, cuts=cuts)
+        p = self.start(stall=False, pixels=pixels, got=got, cuts=cuts, burst=burst)
         view = socket.socket(socket.AF_UNIX)
         for _ in range(50):
             try:
@@ -180,6 +187,7 @@ class VncSession(unittest.TestCase):
         view.close()
         p.terminate()
         p.wait(5)
+        self.session_log = p.stdout.read()
         clips = [l[5:] for l in said.split(b"\n") if l.startswith(b"clip ")]
         return bytes(got), [c.decode() if c == b"-" else base64.b64decode(c).decode() for c in clips]
 
@@ -244,6 +252,37 @@ class VncSession(unittest.TestCase):
         _, said = self.clip_session([(0.9, self.SECRET)], cuts=[(0.1, b"at connect"), (0.5, b"copied"), (2.2, b"")],
                                     until=2.6)
         self.assertEqual(said, ["copied"])
+
+    # Measuring a slow session (plans/vnc-speed.md): one line for each busy second.
+    def test_a_busy_picture_logs_its_cost(self):
+        self.clip_session(until=2.2, burst=20)
+        found = re.search(r"stats: updates=(\d+)/s pixels=([\d.]+)M box=([\d.]+)M kbyte=(\d+)/s decode=(\d+)ms/s",
+                          self.session_log)
+        self.assertTrue(found, self.session_log)
+        self.assertGreaterEqual(int(found.group(1)), 5)
+        self.assertGreater(int(found.group(4)), 0)  # 12 KiB of pixels came over the network
+
+    def test_a_still_picture_logs_nothing(self):
+        self.clip_session(until=2.2, pixels=False)
+        self.assertNotIn("stats:", self.session_log)
+
+    def test_a_slowly_changing_picture_logs_nothing(self):
+        # A blinking cursor or a clock: a change or two a second, all day. The log has a size cap.
+        self.clip_session(until=2.2, burst=2)
+        self.assertNotIn("stats:", self.session_log)
+
+    def test_the_views_numbers_are_logged(self):
+        self.clip_session([(0.2, b"view-stats 2000 24 12 8192")])
+        self.assertIn("view: damage=12/s drawn=6/s upload=4.0MB/s", self.session_log)
+
+    def test_a_slow_view_is_not_logged(self):
+        self.clip_session([(0.2, b"view-stats 2000 10 6 4096")])
+        self.assertNotIn("view:", self.session_log)
+
+    def test_the_views_numbers_are_numbers_only(self):
+        self.clip_session([(0.2, b"view-stats 2000 10 x 4096"), (0.3, b"view-stats 2000 10 6 4096 7"),
+                           (0.4, b"view-stats 2000 -1 6 4096"), (0.5, b"view-stats 50 10 6 4096")])
+        self.assertNotIn("view:", self.session_log)
 
     def test_an_idle_session_is_not_cut(self):
         p = self.start(stall=False)

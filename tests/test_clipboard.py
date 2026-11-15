@@ -104,7 +104,7 @@ fi
         with open(self.calls) as f:
             return len(f.read().splitlines())
 
-    def run_view(self, share, ms=1500, send=(), lines=(), frames=(), mode="focused"):
+    def run_view(self, share, ms=1500, send=(), lines=(), frames=(), mode="focused", timed=()):
         """Runs the view; the fake session sends `send` 800 ms after the view attaches. Returns the
         RESULT, the clipboard texts the view offered the session, and Qt's log. `lines` are sent
         as they are, after `send`; `frames` are (memfd size, "frame w h stride") sent with the fd."""
@@ -124,11 +124,14 @@ fi
                 conn.settimeout(0.1)
                 start = time.monotonic()
                 pending = [b"clip " + base64.b64encode(t) for t in send] + list(lines)
+                later = sorted(timed)
                 fds = list(frames)
                 while True:
                     if pending and time.monotonic() - start > 0.8:
                         conn.sendall(b"".join(l + b"\n" for l in pending))
                         pending = []
+                    while later and time.monotonic() - start > later[0][0]:
+                        conn.sendall(later.pop(0)[1] + b"\n")
                     if fds and time.monotonic() - start > 0.8:
                         for size, line in fds:
                             fd = os.memfd_create("frame")
@@ -164,6 +167,7 @@ fi
         # In order: the text offered, "-" where what was offered is taken back.
         self.sent = ["-" if c == "-" else base64.b64decode(c).decode() for c in clips]
         offered = [c for c in self.sent if c != "-"]
+        self.received_lines = received.decode().splitlines()
         return result, offered, p.stderr
 
     def test_shared_clipboard_is_read_with_wl_paste_and_offered(self):
@@ -474,6 +478,30 @@ fi
         result, _, err = self.run_view(False, frames=frames)
         self.assertEqual(result["remote"], [64, 48], err)
         self.assertEqual(err.count("from the session was not shown"), 3, err)
+
+    def test_the_view_reports_what_it_drew(self):
+        # A picture, then changes for well over a second: one report, with every number in it.
+        frames = [(64 * 4 * 48, b"frame 64 48 256")]
+        timed = [(1.0 + i * 0.15, b"damage 0 0 64 48") for i in range(10)]
+        self.run_view(False, ms=2800, frames=frames, timed=timed)
+        reports = [l.split() for l in self.received_lines if l.startswith("view-stats ")]
+        self.assertTrue(reports, self.received_lines)
+        ms, damage, drawn, kbyte = (int(x) for x in reports[0][1:])
+        self.assertGreaterEqual(ms, 1000)
+        self.assertGreaterEqual(damage, 1)
+        self.assertGreaterEqual(drawn, 2)
+        self.assertEqual(kbyte, drawn * 64 * 48 * 4 // 1024)
+
+    def test_a_pause_starts_a_new_count(self):
+        # One change long after the last: not a report over the pause.
+        frames = [(64 * 4 * 48, b"frame 64 48 256")]
+        self.run_view(False, ms=3800, frames=frames, timed=[(3.2, b"damage 0 0 64 48")])
+        self.assertFalse([l for l in self.received_lines if l.startswith("view-stats ")])
+
+    def test_a_still_view_reports_nothing(self):
+        frames = [(64 * 4 * 48, b"frame 64 48 256")]
+        self.run_view(False, ms=2500, frames=frames)
+        self.assertFalse([l for l in self.received_lines if l.startswith("view-stats ")])
 
     def test_cursors_are_kept_to_a_number(self):
         self.stub(b"")

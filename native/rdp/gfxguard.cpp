@@ -16,6 +16,8 @@ namespace
 // One session per process, one graphics channel per session.
 pcRdpgfxCreateSurface createSurface = nullptr;
 pcRdpgfxSurfaceToCache surfaceToCache = nullptr;
+pcRdpgfxSurfaceCommand surfaceCommand = nullptr;
+std::atomic<uint64_t> decodeUs = 0;
 std::set<UINT16> cacheSlots; // slots this session filled; what they hold is read back from gdi
 std::function<void(const std::string&)> refuse;
 bool refused = false;
@@ -107,7 +109,20 @@ UINT create_surface(RdpgfxClientContext* gfx, const RDPGFX_CREATE_SURFACE_PDU* p
 	return ERROR_INVALID_DATA;
 }
 
+UINT surface_command(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* cmd)
+{
+	const uint64_t start = now_us();
+	const UINT rc = surfaceCommand(gfx, cmd);
+	decodeUs += now_us() - start;
+	return rc;
+}
+
 } // namespace
+
+std::atomic<uint64_t>& gfx_decode_us()
+{
+	return decodeUs;
+}
 
 void guard_gfx(RdpgfxClientContext* gfx, std::function<void(const std::string&)> onRefuse)
 {
@@ -118,6 +133,9 @@ void guard_gfx(RdpgfxClientContext* gfx, std::function<void(const std::string&)>
 	surfaceToCache = gfx->SurfaceToCache;
 	if (surfaceToCache)
 		gfx->SurfaceToCache = surface_to_cache;
+	surfaceCommand = gfx->SurfaceCommand;
+	if (surfaceCommand)
+		gfx->SurfaceCommand = surface_command;
 	cacheSlots.clear(); // a new channel starts with an empty cache
 	refuse = std::move(onRefuse);
 }

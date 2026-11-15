@@ -11,6 +11,8 @@
 
 #include <rfb/rfbclient.h>
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 
 #include <algorithm>
@@ -50,6 +52,9 @@ struct Session
 	std::string localClip;
 	std::string pendingClip; // copied before the connection was up
 	bool serverClipped = false; // the server has sent its clipboard once
+
+	// Once a second, while the picture changes: what it costs (see log_stats).
+	uint64_t statAt = 0, statUpdates = 0, statPixels = 0, statBox = 0, statHandleUs = 0, statBytesAt = 0;
 	uint64_t pictureAt = 0;     // the first picture; 0 before it
 	uint64_t offeredAt = 0;     // when localClip last went to the server
 
@@ -146,6 +151,7 @@ static rfbBool malloc_framebuffer(rfbClient* client)
 
 static void got_update(rfbClient*, int x, int y, int w, int h)
 {
+	g.statPixels += uint64_t(w) * uint64_t(h);
 	// RFB's fourth byte is padding, not alpha. Qt RGB32 requires opaque alpha.
 	for (int row = y; row < y + h; ++row)
 		for (int col = x; col < x + w; ++col)
@@ -172,6 +178,8 @@ static void finished_update(rfbClient*)
 	if (!g.dirty)
 		return;
 	g.dirty = false;
+	g.statUpdates++;
+	g.statBox += uint64_t(g.dx1 - g.dx0) * uint64_t(g.dy1 - g.dy0);
 	g.link.send("damage " + std::to_string(g.dx0) + " " + std::to_string(g.dy0) + " " + std::to_string(g.dx1 - g.dx0) +
 	            " " + std::to_string(g.dy1 - g.dy0));
 }
@@ -323,6 +331,48 @@ static void send_clipboard(const std::string& text)
 	}
 }
 
+// ---------------------------------------------------------------- stats
+
+static uint64_t bytes_received(int sock)
+{
+	tcp_info info = {};
+	socklen_t len = sizeof(info);
+	if (sock < 0 || getsockopt(sock, IPPROTO_TCP, TCP_INFO, &info, &len) != 0 ||
+	    len < offsetof(tcp_info, tcpi_bytes_received) + sizeof(info.tcpi_bytes_received))
+		return 0;
+	return info.tcpi_bytes_received;
+}
+
+// One log line for each busy second, to see where a slow session's time goes (plans/vnc-speed.md):
+// updates shown, pixels the server sent, the box around them that the UI redraws, what came over
+// the network, and the time spent reading and decoding the server's messages (which includes
+// waiting for the rest of a message). A blinking cursor or a slow clock writes nothing
+// (oma::stats_busy): the session log has a size cap.
+static void log_stats()
+{
+	const uint64_t now = oma::now_ms();
+	if (!g.statAt)
+	{
+		g.statAt = now;
+		g.statBytesAt = bytes_received(g.client ? g.client->sock : -1);
+		return;
+	}
+	if (now - g.statAt < 1000)
+		return;
+	const uint64_t bytes = bytes_received(g.client ? g.client->sock : -1);
+	const uint64_t got = bytes >= g.statBytesAt ? bytes - g.statBytesAt : 0;
+	const double secs = double(now - g.statAt) / 1000.0;
+	if (oma::stats_busy(double(g.statUpdates) / secs, double(g.statHandleUs) / 1000.0 / secs))
+	{
+		log("stats: updates=%.0f/s pixels=%.1fM box=%.1fM kbyte=%.0f/s decode=%.0fms/s", double(g.statUpdates) / secs,
+		    double(g.statPixels) / 1e6 / secs, double(g.statBox) / 1e6 / secs, double(got) / 1024.0 / secs,
+		    double(g.statHandleUs) / 1000.0 / secs);
+	}
+	g.statAt = now;
+	g.statBytesAt = bytes;
+	g.statUpdates = g.statPixels = g.statBox = g.statHandleUs = 0;
+}
+
 // ---------------------------------------------------------------- resize
 
 // With scaling=resize, asks the server to make its desktop the tab's size (ExtendedDesktopSize).
@@ -362,6 +412,11 @@ static void handle_line(const std::string& line)
 		return;
 	const std::string& cmd = w[0];
 	auto num = [&](size_t i) -> long { return i < w.size() ? strtol(w[i].c_str(), nullptr, 10) : 0; };
+	if (cmd == "view-stats")
+	{
+		oma::log_view_stats(w);
+		return;
+	}
 	const bool input = g.connected && g.client && !g.flag("viewOnly");
 
 	if (cmd == "size" && w.size() >= 3)
@@ -594,12 +649,16 @@ int main()
 			break;
 		if (client->buffered > 0 || (fds[0].revents & (POLLIN | POLLHUP | POLLERR)))
 		{
-			if (!HandleRFBServerMessage(client))
+			const uint64_t start = oma::now_us();
+			const bool ok = HandleRFBServerMessage(client);
+			g.statHandleUs += oma::now_us() - start;
+			if (!ok)
 			{
 				rc = g.quit ? 11 : 147;
 				break;
 			}
 		}
+		log_stats();
 		for (const auto& l : g.link.poll())
 			handle_line(l);
 		flush_resize();

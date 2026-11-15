@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QCursor>
 #include <QImage>
 #include <QQuickItem>
@@ -190,6 +191,11 @@ private:
 
 	QImage m_image;
 	bool m_dirty = false;
+	// Once a second to the session's log (plans/vnc-speed.md): changes told of, pictures drawn, and
+	// bytes handed to the GPU. Counted where the item's thread is blocked or is the one running.
+	void countUpload(qsizetype bytes);
+	QElapsedTimer m_statClock;
+	quint64 m_statDamage = 0, m_statDrawn = 0, m_statBytes = 0;
 
 	// Gliff pictures as dmabufs (yuvnode.h): the surfaces the session handed over, the newest
 	// "show" and whether the render thread took it, and the one it draws (released to the

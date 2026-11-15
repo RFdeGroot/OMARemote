@@ -78,6 +78,24 @@ static void* gdi_slot(RdpgfxClientContext*, UINT16 slot)
 	return it == cache.end() ? nullptr : &it->second;
 }
 
+// gdi's decoder: counts its calls, takes a while, and answers what it is told to.
+static int decoded = 0;
+static UINT decodeRc = CHANNEL_RC_OK;
+static RdpgfxClientContext* decodedGfx = nullptr;
+static const RDPGFX_SURFACE_COMMAND* decodedCmd = nullptr;
+
+static UINT gdi_decode(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* cmd)
+{
+	decoded++;
+	decodedGfx = gfx;
+	decodedCmd = cmd;
+	const uint64_t until = oma::now_us() + 3000;
+	while (oma::now_us() < until)
+	{
+	}
+	return decodeRc;
+}
+
 static UINT to_cache(RdpgfxClientContext* gfx, UINT16 slot, UINT16 w, UINT16 h)
 {
 	RDPGFX_SURFACE_TO_CACHE_PDU pdu = {};
@@ -112,6 +130,7 @@ int main(int argc, char** argv)
 	gfx.GetSurfaceData = gdi_data;
 	gfx.SurfaceToCache = gdi_to_cache;
 	gfx.GetCacheSlotData = gdi_slot;
+	gfx.SurfaceCommand = gdi_decode;
 	int ended = 0;
 	oma::guard_gfx(&gfx, [&](const std::string&) { ended++; });
 	oma::guard_gfx(&gfx, [&](const std::string&) { ended += 100; }); // a second call wraps nothing
@@ -159,6 +178,17 @@ int main(int argc, char** argv)
 	for (const auto& [slot, e] : cache)
 		held += uint64_t(e.scanline) * e.height;
 	expect(held <= oma::kMaxGfxCacheBytes, "gdi never holds more than kMaxGfxCacheBytes of cache");
+
+	// Decoding is timed (plans/vnc-speed.md), and still done: by gdi, once, with what it was given.
+	oma::gfx_decode_us() = 0;
+	RDPGFX_SURFACE_COMMAND cmd = {};
+	expect(gfx.SurfaceCommand != gdi_decode, "decoding goes through the guard");
+	expect(gfx.SurfaceCommand(&gfx, &cmd) == CHANNEL_RC_OK && decoded == 1, "gdi decodes, once, not twice");
+	expect(decodedGfx == &gfx && decodedCmd == &cmd, "gdi gets the same channel and command");
+	expect(oma::gfx_decode_us().load() >= 3000, "the time gdi took is counted");
+	decodeRc = ERROR_INVALID_DATA;
+	expect(gfx.SurfaceCommand(&gfx, &cmd) == ERROR_INVALID_DATA && decoded == 2, "gdi's answer is passed on");
+	expect(oma::gfx_decode_us().exchange(0) >= 6000, "every decode is counted");
 
 	if (failures == 0)
 		printf("ok\n");

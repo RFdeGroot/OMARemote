@@ -10,6 +10,7 @@
 
 #include <freerdp/client/rdpgfx.h>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -26,5 +27,10 @@ constexpr uint64_t kGfxTileBytes = 66 * 1024;
 constexpr uint64_t kMaxGfxCacheBytes = 128ull << 20;
 
 void guard_gfx(RdpgfxClientContext* gfx, std::function<void(const std::string&)> onRefuse);
+
+// Microseconds spent decoding the server's surface commands (AVC, progressive, planar...) since
+// the last read: guard_gfx times SurfaceCommand too. It runs on the channel thread, so the session's
+// own loop never sees this time (plans/vnc-speed.md).
+std::atomic<uint64_t>& gfx_decode_us();
 
 } // namespace oma

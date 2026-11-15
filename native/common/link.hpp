@@ -18,6 +18,18 @@ std::string b64(const std::string& s); // "-" for empty, so a field is never mis
 std::string unb64(const std::string& s);
 std::vector<std::string> split(const std::string& line);
 uint64_t now_ms();
+uint64_t now_us();
+// Logs what the view reports once a second ("view-stats <ms> <damage> <drawn> <kbyte>", see
+// RdpView::countUpload): how many changes it was told of, how many pictures it drew, and how much
+// it handed the GPU. Numbers only; anything else is ignored.
+void log_view_stats(const std::vector<std::string>& words);
+// Whether a second is worth a stats line: at least kStatsBusyUpdates updates, or kStatsBusyMs of
+// decoding. Below that (a blinking cursor, a clock) nothing is logged: the log has a size cap.
+constexpr double kStatsBusyUpdates = 5, kStatsBusyMs = 50;
+inline bool stats_busy(double updatesPerSecond, double msPerSecond)
+{
+	return updatesPerSecond >= kStatsBusyUpdates || msPerSecond >= kStatsBusyMs;
+}
 
 // The most clipboard text passed between a session and the UI, in bytes of UTF-8; longer text from
 // the remote side is dropped, not cut (the UI holds to the same, RdpView::MaxClipBytes).

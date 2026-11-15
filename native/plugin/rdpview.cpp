@@ -257,6 +257,7 @@ void RdpView::handleLine(const QByteArray& line)
 
 	if (cmd == "damage")
 	{
+		m_statDamage++;
 		m_gpu = false; // the session draws into the framebuffer (again)
 		if (!m_dirty)
 		{
@@ -559,6 +560,35 @@ void RdpView::showSurfaces(const QList<QByteArray>& w)
 }
 
 // From the render thread: the line goes out on the item's own thread.
+// The whole picture goes to the GPU on every change today; the numbers show whether that is what
+// makes a session slow. Qt does the copy itself later in the frame, so its time is not measured here.
+void RdpView::countUpload(qsizetype bytes)
+{
+	m_statDrawn++;
+	m_statBytes += quint64(bytes);
+	if (!m_statClock.isValid())
+	{
+		m_statClock.start();
+		return;
+	}
+	const qint64 ms = m_statClock.elapsed();
+	if (ms > 2000)
+	{
+		// After a pause: a new count from this picture on, not one report over the pause.
+		m_statClock.restart();
+		m_statDamage = m_statDamage ? 1 : 0;
+		m_statDrawn = 1;
+		m_statBytes = quint64(bytes);
+		return;
+	}
+	if (ms < 1000)
+		return;
+	sendLater("view-stats " + QByteArray::number(ms) + " " + QByteArray::number(m_statDamage) + " " +
+	          QByteArray::number(m_statDrawn) + " " + QByteArray::number(m_statBytes / 1024));
+	m_statClock.restart();
+	m_statDamage = m_statDrawn = m_statBytes = 0;
+}
+
 void RdpView::sendLater(const QByteArray& line)
 {
 	QMetaObject::invokeMethod(this, [this, line] { send(line); }, Qt::QueuedConnection);
@@ -633,6 +663,7 @@ QSGNode* RdpView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 		QSGTexture* texture = window()->createTextureFromImage(m_image);
 		node->setTexture(texture);
 		m_dirty = false;
+		countUpload(m_image.sizeInBytes());
 	}
 	const QRectF r = imageRect();
 	node->setRect(r);
