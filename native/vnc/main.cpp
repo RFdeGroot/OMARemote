@@ -48,7 +48,10 @@ struct Session
 	std::map<uint32_t, uint32_t> pressed; // evdev code -> keysym sent at press, released the same
 	std::string remoteClip;
 	std::string localClip;
-	std::string pendingClip; // offered before the connection was up
+	std::string pendingClip; // copied before the connection was up
+	bool serverClipped = false; // the server has sent its clipboard once
+	uint64_t pictureAt = 0;     // the first picture; 0 before it
+	uint64_t offeredAt = 0;     // when localClip last went to the server
 
 	uint32_t cursorId = 0;
 	std::string cursorDef;
@@ -164,6 +167,8 @@ static void got_update(rfbClient*, int x, int y, int w, int h)
 
 static void finished_update(rfbClient*)
 {
+	if (!g.pictureAt)
+		g.pictureAt = oma::now_ms();
 	if (!g.dirty)
 		return;
 	g.dirty = false;
@@ -211,13 +216,42 @@ static bool clip_fits(size_t len)
 	return false;
 }
 
+// The server's clipboard, as Gliff's offers (native/gliff/clipboard.cpp, onOffer):
+// - Text sent within a second of ours crossed it: the server took ours after it. Ours stands.
+// - Its first text, before the first picture or just after it, is what it held when the session
+//   began, not a copy (nobody could through a session not yet on screen). It stays there, as what
+//   this machine held stays here. A server need not send one, so a later first text is a real copy.
+// - Empty text only takes away what came from the server: a copy made here is not wiped.
+static constexpr uint64_t kClipCrossedMs = 1000;
+static constexpr uint64_t kClipFirstMs = 2000;
+
+static void server_clipboard(const std::string& text)
+{
+	const uint64_t now = oma::now_ms();
+	const bool first = !g.serverClipped;
+	g.serverClipped = true;
+	if (!g.localClip.empty() && now - g.offeredAt < kClipCrossedMs)
+	{
+		log("clipboard: the server's text crossed ours; ours stands");
+		return;
+	}
+	if (first && (!g.pictureAt || now - g.pictureAt < kClipFirstMs))
+	{
+		log("clipboard: the server's clipboard at connect stays there");
+		return;
+	}
+	if (text.empty() && g.remoteClip.empty())
+		return;
+	g.remoteClip = text;
+	g.localClip.clear(); // the remote holds the clipboard now: the last local text may be sent again
+	g.link.send("clip " + b64(text));
+}
+
 static void got_cut_text_utf8(rfbClient*, const char* text, int len)
 {
 	if (!clipboard_on() || len < 0 || !clip_fits(size_t(len)))
 		return;
-	g.remoteClip.assign(text, size_t(len));
-	g.localClip.clear(); // the remote holds the clipboard now: the last local text may be sent again
-	g.link.send("clip " + b64(g.remoteClip));
+	server_clipboard(std::string(text, size_t(len)));
 }
 
 static void got_cut_text(rfbClient*, const char* text, int len)
@@ -237,23 +271,36 @@ static void got_cut_text(rfbClient*, const char* text, int len)
 			utf8 += char(0x80 | (c & 0x3F));
 		}
 	}
-	g.remoteClip = utf8;
-	g.localClip.clear();
-	g.link.send("clip " + b64(utf8));
+	server_clipboard(utf8);
 }
 
 static void send_clipboard(const std::string& text)
 {
-	if (!clipboard_on() || g.flag("viewOnly") || text.size() > oma::kMaxClipBytes || text == g.remoteClip ||
-	    text == g.localClip)
+	if (!clipboard_on() || g.flag("viewOnly") || text.size() > oma::kMaxClipBytes)
+		return;
+	if (text.empty())
+	{
+		// Taken back: only what came from here, a copy made on the server stays.
+		g.pendingClip.clear();
+		g.remoteClip.clear(); // what it gave is gone here: an empty text from it has nothing to take
+		if (g.localClip.empty() || !g.client)
+			return;
+		g.localClip.clear();
+		std::string none;
+		if (!SendClientCutTextUTF8(g.client, none.data(), 0))
+			SendClientCutText(g.client, none.data(), 0);
+		return;
+	}
+	if (text == g.remoteClip || text == g.localClip)
 		return;
 	if (!g.client)
 	{
-		g.pendingClip = text; // the clipboard the UI had at the start: sent once connected
+		g.pendingClip = text; // copied while still connecting: sent once connected
 		return;
 	}
 	g.localClip = text;
 	g.remoteClip.clear();
+	g.offeredAt = oma::now_ms();
 	std::string copy = text;
 	if (!SendClientCutTextUTF8(g.client, copy.data(), int(copy.size())))
 	{

@@ -497,8 +497,8 @@ static void handle_line(rdpContext* ctx, const std::string& line)
 	else if (cmd == "clip" && w.size() >= 2)
 	{
 		std::string text = unb64(w[1]);
-		if (text == st->localClip || text == st->remoteClip)
-			return; // our own echo, or nothing new
+		if (text.empty() ? st->localClip.empty() : (text == st->localClip || text == st->remoteClip))
+			return; // our own echo, nothing new, or nothing of ours to take back (a copy on the host stays)
 		st->localClip = text;
 		st->remoteClip.clear();
 		if (st->clip && st->clipReady)

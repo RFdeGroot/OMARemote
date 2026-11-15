@@ -112,6 +112,8 @@ Item {
         // the clipboard itself, so its view never touches it.
         shareClipboard: !!root.connection && root.connection.protocol !== "gliff"
                         && (root.connection.protocol === "ssh" || root.connection.clipboard !== false)
+        // VNC, as Gliff: nothing moves until something is copied during the session.
+        offerAtConnect: !!root.connection && root.connection.protocol !== "vnc"
         // VNC sends the text itself at once; Gliff's session process applies its own switch.
         withholdPasswords: !root.connection || (root.connection.protocol === "vnc"
                                                  && root.connection.clipboardPasswords !== true)

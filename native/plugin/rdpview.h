@@ -22,6 +22,8 @@ class QSGTexture;
 // The session process owns the connection; this item attaches to its Unix socket, maps the
 // framebuffer it is handed, and redraws the damage it reports. Detaching (closing the tab view,
 // quitting the app) leaves the session running, and attaching again picks it up where it was.
+class QProcess;
+
 class RdpView : public QQuickItem
 {
 	Q_OBJECT
@@ -54,6 +56,9 @@ class RdpView : public QQuickItem
 	Q_PROPERTY(bool shareClipboard READ shareClipboard WRITE setShareClipboard NOTIFY shareClipboardChanged)
 	// A password manager's selection is not offered (VNC, without the connection's Copied passwords).
 	Q_PROPERTY(bool withholdPasswords READ withholdPasswords WRITE setWithholdPasswords NOTIFY withholdPasswordsChanged)
+	// Whether the desktop's clipboard goes to the session when it attaches (RDP, as mstsc; SSH).
+	// Without it (VNC) nothing moves until something is copied during the session.
+	Q_PROPERTY(bool offerAtConnect READ offerAtConnect WRITE setOfferAtConnect NOTIFY offerAtConnectChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -76,6 +81,8 @@ public:
 	bool shareClipboard() const { return m_shareClipboard; }
 	bool withholdPasswords() const { return m_withholdPasswords; }
 	void setWithholdPasswords(bool on);
+	bool offerAtConnect() const { return m_offerAtConnect; }
+	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
 
 	// The most clipboard text passed either way, in bytes of UTF-8 (as native/common/link.hpp's
@@ -117,6 +124,7 @@ signals:
 	void releaseKeyChanged();
 	void shareClipboardChanged();
 	void withholdPasswordsChanged();
+	void offerAtConnectChanged();
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
 	void pasteDone(int job);
@@ -160,6 +168,10 @@ private:
 	void sendSize();
 	void sendClipboard(bool force = false);
 	void offerClipboard(const QString& text, bool force);
+	void withdrawClipboard();
+	void startClipboardWatch();
+	void stopWatchingClipboard();
+	void clipboardChanged(bool empty);
 	void updateCapture();
 	QRectF imageRect() const;
 	QPoint toRemote(const QPointF& p) const;
@@ -227,5 +239,11 @@ private:
 	bool m_clipReading = false; // a read is under way; one more follows it when asked meanwhile
 	bool m_clipAgain = false;
 	bool m_clipAgainForce = false;
+	bool m_clipStale = false; // the clipboard changed during the read: what it gives is not sent
+	QProcess* m_clipWatch = nullptr; // wl-paste --watch, while attached and sharing
+	// Copied or cleared since this view began watching. Kept over a later session in the same view:
+	// a clipboard already shared there is offered again, as Gliff's across a reconnect.
+	bool m_clipChanged = false;
+	bool m_offerAtConnect = false; // until told otherwise: bindings run in any order
 	Qt::MouseButtons m_buttons;
 };

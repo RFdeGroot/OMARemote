@@ -146,6 +146,14 @@ an audit after two sync findings in a row found six more), and add the class her
   still asks (wl-paste reads before it runs the watch command) and only skips storing it. So nothing is offered until the user copied
   something during the session, and a pending read that an offer waits for ends when the selection
   changes or the tab loses focus. (Gliff, 0.9.17)
+- **What was offered can be taken back, and only that.** A clear, or a copy elsewhere while the view
+  lacks the focus, withdraws from the host without reading the clipboard; the session process decides,
+  so a copy made on the host is never wiped and a new view (tab to window) needs no memory of its own.
+  A read under way when the clipboard changes is thrown away: it may hold what was just cleared.
+  Switching sharing off withdraws too, and a view attaching to an empty clipboard: the session outlives it.
+  VNC's server side follows Gliff's onOffer: first text at connect stays there, crossing text loses,
+  empty text only takes back what the server gave.
+  `wl-paste --watch` still makes the owner write to a pipe, unread: state only reaches the UI. (RDP, VNC, 0.9.17)
 - **Text that reaches a systemd unit's command line is expanded by systemd first.** Since systemd
   262, `uwsm-app` and `omarchy launch … terminal` expand `${…}` anywhere in the command line, also
   inside shell quotes, and blank names they cannot read. No `${` in a command we hand them, and

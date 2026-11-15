@@ -417,7 +417,9 @@ They come from the keyring and go over NLA as at every sign-in. OMARemote can do
   server set to always ask for the password, shows its lock or logon screen again after a reconnect.
 
 Clipboard text goes both ways, as with Windows' own client: what you copy is announced to the server and
-sent when it asks. That includes what a password manager copies, which Gliff and VNC hold back.
+sent when it asks. That includes what a password manager copies, which Gliff and VNC hold back. When the
+clipboard here is cleared, or you copy something else while the session is not focused, the server loses
+what it was offered, and so when you switch Clipboard off; a copy made on the server itself stays there.
 
 ## VNC
 
@@ -431,9 +433,17 @@ They sign in with a VNC password, or a user name and password for servers that a
 - **Quality**: *Auto* (Tight with JPEG), *High* (lossless ZRLE), *Low* (strong compression).
 - **View only** watches without sending keyboard or mouse input.
 - Clipboard text goes both ways (UTF-8 where the server supports it), and the server's cursor is
-  drawn locally. VNC sends the text itself at once, so what a password manager copies normally stays here
+  drawn locally. As with Gliff, nothing moves at connect: each side keeps its own clipboard until something
+  is copied during the session, so a copy on the server in the first two seconds or so can stay there (on a
+  desktop without wl-paste's watch mode, Qt's own signal decides for this side, and it can fire as the
+  keyboard arrives). VNC sends the text itself at once, so what a password manager copies normally stays here
   unless you switch on *Copied passwords* for the connection (on each computer: it does not sync); the
-  server may then keep it. Keys are sent as X keysyms, so the server's own keyboard layout applies.
+  server may then keep it. When the clipboard here is cleared, or you copy something else while the tab is
+  not focused, an empty clipboard is sent in its place; whether a server honours that is up to the server.
+  A clear while no view is attached takes effect when one attaches; a copy made then waits for the next change.
+  To notice all this each session runs `wl-paste --watch`, which, like any clipboard history, asks the
+  clipboard's owner for the content (unread here) and so uses up a `wl-copy --paste-once`.
+  Keys are sent as X keysyms, so the server's own keyboard layout applies.
 
 ## SSH
 

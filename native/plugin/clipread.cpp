@@ -6,6 +6,9 @@
 
 #include <memory>
 
+#include <signal.h>
+#include <sys/prctl.h>
+
 namespace oma
 {
 
@@ -90,6 +93,52 @@ void clipboardMarked(QObject* owner, int timeoutMs, bool emptyIsMarked, std::fun
 	proc->setStandardErrorFile(QProcess::nullDevice());
 	proc->start(QStringLiteral("wl-paste"), {QStringLiteral("--list-types")});
 	timer->start(timeoutMs);
+}
+
+QProcess* watchClipboard(QObject* owner, std::function<void(bool first, bool empty)> changed,
+                         std::function<void()> ended)
+{
+	auto* proc = new QProcess;
+	auto first = std::make_shared<bool>(true);
+	QPointer<QObject> target(owner);
+	QObject::connect(proc, &QProcess::readyReadStandardOutput, proc, [proc, first, target, changed] {
+		// One short word per change; a longer line is cut into pieces, each counting as a change.
+		while (target && proc->canReadLine()) {
+			const QByteArray state = proc->readLine(64).trimmed();
+			const bool isFirst = *first;
+			*first = false;
+			changed(isFirst, state == "nil" || state == "clear");
+		}
+	});
+	const auto over = [proc, target, ended] {
+		proc->deleteLater();
+		if (target)
+			ended();
+	};
+	QObject::connect(proc, &QProcess::finished, proc, over);
+	QObject::connect(proc, &QProcess::errorOccurred, proc, [over](QProcess::ProcessError err) {
+		if (err == QProcess::FailedToStart)
+			over();
+	});
+	proc->setStandardInputFile(QProcess::nullDevice());
+	proc->setStandardErrorFile(QProcess::nullDevice());
+	// It would outlive a window that crashed, watching for nobody.
+	proc->setChildProcessModifier([] { prctl(PR_SET_PDEATHSIG, SIGTERM); });
+	proc->start(QStringLiteral("wl-paste"),
+	            {QStringLiteral("--watch"), QStringLiteral("printenv"), QStringLiteral("CLIPBOARD_STATE")});
+	return proc;
+}
+
+void stopClipboardWatch(QProcess* watch)
+{
+	if (!watch)
+		return;
+	watch->disconnect();
+	QObject::connect(watch, &QProcess::finished, watch, &QObject::deleteLater);
+	if (watch->state() == QProcess::NotRunning)
+		watch->deleteLater();
+	else
+		watch->kill();
 }
 
 } // namespace oma

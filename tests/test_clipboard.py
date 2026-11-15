@@ -41,6 +41,11 @@ class Static(unittest.TestCase):
             text = code(f.read())
         self.assertRegex(text, r"shareClipboard:[^\n]*\n[^\n]*clipboard !== false")
 
+    def test_only_vnc_keeps_the_clipboard_back_at_connect(self):
+        with open(os.path.join(HERE, "..", "ui", "SessionView.qml"), encoding="utf-8") as f:
+            text = code(f.read())
+        self.assertIn('offerAtConnect: !!root.connection && root.connection.protocol !== "vnc"', text)
+
 
 @unittest.skipUnless(QML and os.path.isdir(os.path.join(PLUGIN, "OMARemote")),
                      "needs qml6 and the native build (ninja -C native/build)")
@@ -53,6 +58,14 @@ class Runtime(unittest.TestCase):
         self.bin = os.path.join(self.dir, "bin")
         os.makedirs(self.bin)
         self.calls = os.path.join(self.dir, "calls")
+        self.watch_script = os.path.join(self.dir, "watch")
+        self.watch("")
+
+    def watch(self, events, baseline="data"):
+        """What wl-paste --watch reports: the state at the start, then events (shell lines)."""
+        with open(self.watch_script, "w") as f:
+            f.write(f'#!/bin/sh\necho $$ >> "{self.watch_script}.ran"\necho {baseline}\n{events}\nexec sleep 60\n')
+        os.chmod(self.watch_script, 0o755)
 
     def stub(self, content, sleep=0):
         data = os.path.join(self.dir, "content")
@@ -60,7 +73,8 @@ class Runtime(unittest.TestCase):
             f.write(content)
         path = os.path.join(self.bin, "wl-paste")
         with open(path, "w") as f:
-            f.write(f'#!/bin/sh\necho "$@" >> "{self.calls}"\nsleep {sleep}\nexec cat "{data}"\n')
+            f.write(f'#!/bin/sh\n[ "$1" = "--watch" ] && exec "{self.watch_script}"\n'
+                    f'echo "$@" >> "{self.calls}"\nsleep {sleep}\nexec cat "{data}"\n')
         os.chmod(path, 0o755)
 
     def stub_types(self, content, *types):
@@ -146,7 +160,10 @@ fi
         result = json.loads(found.group(1))
         self.assertTrue(result["attached"], p.stderr)
         self.assertTrue(result["focused"], p.stderr)
-        offered = [base64.b64decode(l[5:]).decode() for l in received.decode().splitlines() if l.startswith("clip ")]
+        clips = [l[5:] for l in received.decode().splitlines() if l.startswith("clip ")]
+        # In order: the text offered, "-" where what was offered is taken back.
+        self.sent = ["-" if c == "-" else base64.b64decode(c).decode() for c in clips]
+        offered = [c for c in self.sent if c != "-"]
         return result, offered, p.stderr
 
     def test_shared_clipboard_is_read_with_wl_paste_and_offered(self):
@@ -192,7 +209,216 @@ fi
         result, offered, _ = self.run_view(False, send=[b"from the session"])
         self.assertEqual(self.wl_paste_calls(), 0)
         self.assertEqual(offered, [])
+        self.assertEqual(self.sent, [])
         self.assertEqual(result["clipboard"], "copied")
+        self.assertFalse(os.path.exists(self.watch_script + ".ran"))
+
+    # A cleared clipboard reaches the session, focused or not; a copy elsewhere while the view lacks
+    # the keyboard takes back what the session was offered.
+    def test_a_clear_takes_back_what_was_offered(self):
+        self.stub(b"from the desktop")
+        self.watch("sleep 1\necho nil")
+        self.run_view(True, ms=2000, mode="quiet")
+        self.assertEqual(self.sent, ["from the desktop", "-"])
+
+    def test_a_clear_reaches_the_session_without_the_keyboard(self):
+        self.stub(b"from the desktop")
+        self.watch("sleep 1\necho nil")
+        self.run_view(True, ms=2000, mode="quiet-away")
+        self.assertEqual(self.sent[:2], ["from the desktop", "-"])
+
+    def test_a_copy_elsewhere_without_the_keyboard_takes_it_back_unread(self):
+        self.stub(b"from the desktop")
+        self.watch("sleep 1\necho data")
+        self.run_view(True, ms=1900, mode="quiet-away")
+        self.assertEqual(self.sent[:2], ["from the desktop", "-"])
+        # Back on the keyboard the clipboard is offered again; read for that, and at attaching only.
+        self.assertEqual(self.sent[2:], ["from the desktop"])
+        self.assertEqual(self.wl_paste_calls(), 2)
+
+    def test_the_state_at_the_start_is_no_change(self):
+        self.stub(b"from the desktop")
+        self.run_view(True, ms=1200, mode="quiet-vnc")
+        self.assertEqual(self.sent, [])
+
+    def test_cleared_with_no_view_attached_is_taken_back_on_attaching(self):
+        # The session outlives its view and may still hold a password cleared here meanwhile.
+        self.stub(b"")
+        self.watch("", baseline="nil")
+        self.run_view(True, ms=1200, mode="quiet-vnc")
+        self.assertEqual(self.sent, ["-"])
+
+    def test_turning_sharing_off_takes_it_back(self):
+        self.stub(b"from the desktop")
+        self.run_view(True, ms=1500, mode="quiet-shareoff")
+        self.assertEqual(self.sent, ["from the desktop", "-"])
+
+    def watch_alive_at(self, seconds):
+        """Whether the first watch process runs, seconds from now, as a one-item list filled by then."""
+        found = []
+
+        def check():
+            with open(self.watch_script + ".ran") as f:
+                pid = int(f.readline())
+            try:
+                os.kill(pid, 0)
+                found.append(True)
+            except ProcessLookupError:
+                found.append(False)
+
+        timer = threading.Timer(seconds, check)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        return found
+
+    def test_the_watch_runs_while_attached_and_sharing(self):
+        self.stub(b"from the desktop")
+        alive = self.watch_alive_at(1.0)
+        self.run_view(True, ms=1500, mode="quiet")
+        self.assertEqual(alive, [True])
+
+    def test_the_watch_stops_when_sharing_is_turned_off(self):
+        self.stub(b"from the desktop")
+        alive = self.watch_alive_at(1.3)
+        self.run_view(True, ms=1800, mode="quiet-shareoff")
+        self.assertEqual(alive, [False])
+
+    def test_the_watch_stops_on_detaching(self):
+        self.stub(b"from the desktop")
+        alive = self.watch_alive_at(1.3)
+        self.run_view(True, ms=2200, mode="quiet-detach")
+        self.assertEqual(alive, [False])
+
+    def test_the_watch_dies_with_the_window(self):
+        self.stub(b"from the desktop")
+        path = os.path.join(self.dir, "s")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(path)
+        server.listen(1)
+        self.addCleanup(server.close)
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QML_IMPORT_PATH=PLUGIN,
+                   PATH=os.pathsep.join([self.bin, os.environ.get("PATH", "")]))
+        p = subprocess.Popen([QML, os.path.join(HERE, "qml", "clipboard.qml"), "--", path, "1", "20000", "quiet"],
+                             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        ran = self.watch_script + ".ran"
+        end = time.monotonic() + 10
+        while not os.path.exists(ran) and time.monotonic() < end:
+            time.sleep(0.05)
+        time.sleep(0.2)
+        with open(ran) as f:
+            pid = int(f.readline())
+        os.kill(pid, 0)  # running now
+        p.kill()  # a crash: nothing gets the chance to stop it
+        p.wait(5)
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(pid, 9)
+        self.fail("the watch outlived the window")
+
+    def test_a_change_drops_text_held_from_the_session(self):
+        # Sent while the view lacks the keyboard, then cleared here: the clear changed last.
+        self.stub(b"from the desktop")
+        self.watch("sleep 1.3\necho nil")
+        result, _, _ = self.run_view(True, ms=2300, send=[b"from the session"], mode="quiet-away")
+        self.assertEqual(result["clipboard"], "")
+
+    def test_held_text_is_set_when_nothing_changed(self):
+        self.stub(b"from the desktop")
+        result, _, _ = self.run_view(True, ms=2300, send=[b"from the session"], mode="quiet-away")
+        self.assertEqual(result["clipboard"], "from the session")
+
+    def test_a_clear_during_a_read_drops_what_the_read_gives(self):
+        self.stub(b"secret", sleep=1)
+        self.watch("sleep 0.5\necho nil")
+        self.run_view(True, ms=2500, mode="quiet")
+        self.assertEqual(self.sent, ["-"])
+
+    def test_an_empty_clipboard_read_takes_it_back(self):
+        self.stub(b"")
+        self.run_view(True)
+        self.assertEqual(set(self.sent), {"-"})
+
+    def test_a_password_copied_while_focused_takes_back_the_text_before_it(self):
+        self.stub_types(b"secret", "x-other", "x-other", "x-kde-passwordManagerHint")
+        self.watch("sleep 1\necho sensitive")
+        self.run_view(True, ms=2200, mode="withhold-quiet")
+        self.assertEqual(self.sent, ["secret", "-"])
+
+    # VNC, as Gliff: nothing moves until something is copied during the session.
+    def test_vnc_offers_nothing_at_connect(self):
+        self.stub(b"from the desktop")
+        result, _, _ = self.run_view(True, ms=1500, mode="vnc")  # with Qt's change signal at 400 ms
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.wl_paste_calls(), 0)
+
+    def test_vnc_offers_nothing_when_focus_returns_either(self):
+        self.stub(b"from the desktop")
+        self.run_view(True, ms=1500, mode="quiet-vnc-away")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.wl_paste_calls(), 0)
+
+    def test_vnc_offers_nothing_for_a_change_before_attaching(self):
+        # Qt's signal at the keyboard's arrival in a new window looks like this one.
+        self.stub(b"from the desktop")
+        self.run_view(True, ms=1500, mode="quiet-early-vnc")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.wl_paste_calls(), 0)
+
+    def test_vnc_offers_nothing_for_a_change_before_attaching_without_a_watch(self):
+        self.stub(b"from the desktop")
+        with open(self.watch_script, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        self.run_view(True, ms=1500, mode="quiet-early-vnc")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.wl_paste_calls(), 0)
+
+    def test_vnc_offers_a_copy_made_during_the_session(self):
+        self.stub(b"from the desktop")
+        self.watch("sleep 0.8\necho data")
+        self.run_view(True, ms=1600, mode="quiet-vnc")
+        self.assertEqual(self.sent, ["from the desktop"])
+
+    def test_vnc_offers_a_copy_made_away_when_focus_returns(self):
+        self.stub(b"from the desktop")
+        self.watch("sleep 1\necho data")
+        self.run_view(True, ms=1900, mode="quiet-vnc-away")
+        self.assertEqual(self.sent, ["-", "from the desktop"])
+
+    def test_without_a_watch_qts_signal_still_shares(self):
+        # A compositor without data-control: wl-paste --watch gives up at once.
+        self.stub(b"from the desktop")
+        with open(self.watch_script, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        _, offered, log = self.run_view(True, ms=1500, mode="vnc")
+        self.assertEqual(offered, ["from the desktop"])
+        self.assertIn("--watch stopped", log)
+
+    def test_without_a_watch_vnc_offers_nothing_on_focus_with_no_copy_made(self):
+        self.stub(b"from the desktop")
+        with open(self.watch_script, "w") as f:
+            f.write("#!/bin/sh\nexit 1\n")
+        self.run_view(True, ms=1500, mode="quiet-vnc-away")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.wl_paste_calls(), 0)
+
+    def test_offer_at_connect_arriving_late_still_offers(self):
+        # Bindings run in any order; RDP must not depend on it.
+        self.stub(b"from the desktop")
+        self.run_view(True, ms=1500, mode="quiet-vnc-late")
+        self.assertEqual(self.sent, ["from the desktop"])
+
+    def test_a_copy_with_a_watch_is_read_once(self):
+        self.stub(b"from the desktop")
+        self.watch("sleep 0.8\necho data")
+        self.run_view(True, ms=1600, mode="vnc")  # Qt's change signal at 400 ms too
+        self.assertEqual(self.sent, ["from the desktop"])
+        self.assertEqual(self.wl_paste_calls(), 1)
 
     # A server never rewrites the clipboard while the user works elsewhere: what it sends while the
     # view lacks the keyboard is set when the view gets it back, unless the desktop copied since.

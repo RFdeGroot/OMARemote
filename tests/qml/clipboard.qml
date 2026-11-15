@@ -5,7 +5,10 @@ import OMARemote
 // mode "away": the view loses the keyboard at 600 ms and gets it back 300 ms before the end;
 // "copy-away": the same, with a copy elsewhere on the desktop at 1200 ms; "copy-return-away": the
 // copy elsewhere arrives just after the view gets the keyboard back (Wayland sends the selection
-// around the keyboard's arrival); anything else: focused.
+// around the keyboard's arrival); anything else: focused. A mode with "vnc" in it attaches as VNC
+// does (offerAtConnect off), "quiet" has no copy on the desktop at 400 ms, "late" turns offerAtConnect
+// on at 800 ms, "shareoff" turns sharing off at 800 ms, "detach" leaves the session at 800 ms and
+// comes back 300 ms before the end, "early" has a copy on the desktop 250 ms before attaching.
 // An RdpView attached to the test's fake session, focused, while the desktop clipboard changes;
 // prints one "RESULT {json}" line after <ms> and quits.
 Window {
@@ -24,7 +27,8 @@ Window {
         id: view
         anchors.fill: parent
         shareClipboard: root.args[root.args.length - 3] === "1"
-        withholdPasswords: root.args[root.args.length - 1] === "withhold"
+        withholdPasswords: root.args[root.args.length - 1].startsWith("withhold")
+        offerAtConnect: root.args[root.args.length - 1].indexOf("vnc") < 0
     }
 
     function done() {
@@ -46,10 +50,19 @@ Window {
         onTriggered: {
             root.requestActivate()
             view.forceActiveFocus()
-            view.socketPath = root.args[root.args.length - 4]
-            change.start()
+            if (root.mode.indexOf("early") >= 0) {
+                source.text = "copied before attaching"
+                source.selectAll()
+                source.copy()
+                attachLater.start()
+            } else {
+                view.socketPath = root.args[root.args.length - 4]
+            }
+            if (root.mode.indexOf("quiet") < 0)
+                change.start()
         }
     }
+    Timer { id: attachLater; interval: 250; onTriggered: view.socketPath = root.args[root.args.length - 4] }
     // A copy elsewhere on the desktop while the session has the keyboard.
     Timer { id: change; interval: 400; onTriggered: { source.text = "copied"; source.selectAll(); source.copy() } }
     readonly property string mode: root.args[root.args.length - 1]
@@ -76,6 +89,14 @@ Window {
                 view.forceActiveFocus()
             }
         }
+    }
+    Timer { running: root.mode.indexOf("late") >= 0; interval: 800; onTriggered: view.offerAtConnect = true }
+    Timer { running: root.mode.indexOf("shareoff") >= 0; interval: 800; onTriggered: view.shareClipboard = false }
+    Timer { running: root.mode.indexOf("detach") >= 0; interval: 800; onTriggered: view.socketPath = "" }
+    Timer {
+        running: root.mode.indexOf("detach") >= 0
+        interval: root.ms - 300
+        onTriggered: view.socketPath = root.args[root.args.length - 4]
     }
     Timer { running: true; interval: root.ms; onTriggered: root.done() }
 }

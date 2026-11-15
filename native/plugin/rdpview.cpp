@@ -42,6 +42,12 @@ RdpView::RdpView(QQuickItem* parent) : QQuickItem(parent)
 		// Copied elsewhere since: that wins over what the session sent.
 		m_hasHeldClip = false;
 		m_heldClip.clear();
+		// The watch reports a change itself. Without one (a compositor without data-control) this
+		// signal is all there is, though at the keyboard's arrival it cannot be told from a copy.
+		// Before attaching or while not sharing it says nothing: that is what the clipboard held.
+		if (m_clipWatch || m_fd < 0 || !m_shareClipboard)
+			return;
+		m_clipChanged = true;
 		if (hasActiveFocus())
 			sendClipboard();
 	});
@@ -117,13 +123,16 @@ void RdpView::tryAttach()
 	if (!m_gpuFailed && QQuickWindow::graphicsApi() == QSGRendererInterface::OpenGL &&
 	    qEnvironmentVariableIsEmpty("OMAREMOTE_NO_DMABUF"))
 		send("gpu 1");
-	if (hasActiveFocus())
+	if (m_fd >= 0 && m_shareClipboard) // a failed send above has detached
+		startClipboardWatch();
+	if (hasActiveFocus() && (m_offerAtConnect || m_clipChanged))
 		sendClipboard(true);
 }
 
 void RdpView::detach()
 {
 	m_attachTimer.stop();
+	stopWatchingClipboard();
 	if (m_fd < 0)
 		return;
 	// A failed send detaches on its own: then there is nothing left to do here.
@@ -989,7 +998,7 @@ void RdpView::focusInEvent(QFocusEvent* e)
 			if (hasActiveFocus())
 				applyHeldClip();
 		});
-	else
+	else if (m_offerAtConnect || m_clipChanged)
 		sendClipboard();
 }
 
@@ -1041,9 +1050,13 @@ void RdpView::sendClipboard(bool force)
 		return;
 	}
 	m_clipReading = true;
+	m_clipStale = false;
 	const auto finish = [this, force](bool ok, const QByteArray& data) {
 		m_clipReading = false;
-		if (ok)
+		// Nothing to share (empty, withheld, not text, not readable): what the host was offered goes.
+		if (!m_clipStale && (!ok || data.isEmpty()) && hasActiveFocus())
+			withdrawClipboard();
+		else if (!m_clipStale && ok)
 			offerClipboard(QString::fromUtf8(data), force);
 		if (m_clipAgain) {
 			const bool again = m_clipAgainForce;
@@ -1078,10 +1091,71 @@ void RdpView::offerClipboard(const QString& text, bool force)
 {
 	if (m_fd < 0 || !m_shareClipboard || !hasActiveFocus())
 		return;
-	if (text.isEmpty() || (text == m_lastClip && !force))
+	if (text == m_lastClip && !force)
 		return;
 	m_lastClip = text;
 	send("clip " + text.toUtf8().toBase64());
+}
+
+// What the session offered its host goes. The session decides whether there is anything to take
+// back: only what came from here, never a copy made on the host (a new view does not know).
+void RdpView::withdrawClipboard()
+{
+	if (m_fd < 0 || !m_shareClipboard)
+		return;
+	m_lastClip.clear();
+	send("clip -");
+}
+
+void RdpView::startClipboardWatch()
+{
+	if (m_clipWatch)
+		return;
+	m_clipWatch = oma::watchClipboard(this,
+		[this](bool first, bool empty) {
+			if (!first)
+				clipboardChanged(empty);
+			// Cleared while no view was attached: the session may still hold what it was offered.
+			// A copy made meanwhile cannot be told from what was there, and waits for a change.
+			else if (empty)
+				withdrawClipboard();
+		},
+		[this] {
+			m_clipWatch = nullptr;
+			qWarning("omaremote: wl-paste --watch stopped; a cleared clipboard no longer reaches the host");
+		});
+}
+
+void RdpView::stopWatchingClipboard()
+{
+	oma::stopClipboardWatch(m_clipWatch);
+	m_clipWatch = nullptr;
+}
+
+// A clear, or a copy while the view lacks the focus, takes back at once what the host was offered:
+// nothing is read for that. Either also wins over text the session sent while the view lacked the
+// focus (whichever changed last); while focused nothing is held, so this is never our own write.
+void RdpView::clipboardChanged(bool empty)
+{
+	m_clipChanged = true;
+	m_clipStale = m_clipReading;
+	m_hasHeldClip = false;
+	m_heldClip.clear();
+	if (hasActiveFocus() && !empty)
+		sendClipboard();
+	else
+		withdrawClipboard();
+}
+
+void RdpView::setOfferAtConnect(bool on)
+{
+	if (on == m_offerAtConnect)
+		return;
+	m_offerAtConnect = on;
+	emit offerAtConnectChanged();
+	// Bindings run in any order: this may come after attaching and the focus.
+	if (on && hasActiveFocus())
+		sendClipboard(true);
 }
 
 void RdpView::setWithholdPasswords(bool on)
@@ -1096,11 +1170,18 @@ void RdpView::setShareClipboard(bool share)
 {
 	if (share == m_shareClipboard)
 		return;
+	// Off means the host gets nothing more: a session would go on answering from what it holds.
+	if (!share)
+		withdrawClipboard();
 	m_shareClipboard = share;
 	m_hasHeldClip = false;
 	m_heldClip.clear();
 	emit shareClipboardChanged();
-	if (share && hasActiveFocus())
+	if (!share)
+		stopWatchingClipboard();
+	else if (m_fd >= 0)
+		startClipboardWatch();
+	if (share && hasActiveFocus() && (m_offerAtConnect || m_clipChanged))
 		sendClipboard(true);
 }
 
