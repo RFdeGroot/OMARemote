@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QRegion>
 #include <QCursor>
 #include <QImage>
 #include <QQuickItem>
@@ -191,6 +192,10 @@ private:
 
 	QImage m_image;
 	bool m_dirty = false;
+	// What changed since the last picture drawn, from the session's damage lines; a new frame (or a
+	// region too scattered to be worth it) uploads whole (FrameTexture in rdpview.cpp).
+	QRegion m_damage;
+	bool m_damageAll = true;
 	// Once a second to the session's log (plans/vnc-speed.md): changes told of, pictures drawn, and
 	// bytes handed to the GPU. Counted where the item's thread is blocked or is the one running.
 	void countUpload(qsizetype bytes);

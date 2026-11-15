@@ -460,8 +460,11 @@ static void flush()
 	else
 	{
 		draw_rows(g.dr0, g.dr1, g.dc0, g.dc1);
-		g.link.send("damage " + std::to_string(g.pad + g.dc0 * g.cellW) + " " + std::to_string(g.pad + g.dr0 * g.cellH) + " " +
-		            std::to_string((g.dc1 - g.dc0) * g.cellW) + " " + std::to_string((g.dr1 - g.dr0) * g.cellH));
+		// A cell paints past its own edges: a wide character's right half, and a glyph's overhang.
+		// The view uploads only what this line names (plans/vnc-speed.md), so it names a cell more.
+		const int c0 = std::max(0, g.dc0 - 1), c1 = std::min(g.cols, g.dc1 + 1);
+		g.link.send("damage " + std::to_string(g.pad + c0 * g.cellW) + " " + std::to_string(g.pad + g.dr0 * g.cellH) + " " +
+		            std::to_string((c1 - c0) * g.cellW) + " " + std::to_string((g.dr1 - g.dr0) * g.cellH));
 	}
 	g.dirty = g.full = false;
 }

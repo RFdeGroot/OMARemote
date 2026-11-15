@@ -104,7 +104,7 @@ fi
         with open(self.calls) as f:
             return len(f.read().splitlines())
 
-    def run_view(self, share, ms=1500, send=(), lines=(), frames=(), mode="focused", timed=()):
+    def run_view(self, share, ms=1500, send=(), lines=(), frames=(), mode="focused", timed=(), env=None):
         """Runs the view; the fake session sends `send` 800 ms after the view attaches. Returns the
         RESULT, the clipboard texts the view offered the session, and Qt's log. `lines` are sent
         as they are, after `send`; `frames` are (memfd size, "frame w h stride") sent with the fd."""
@@ -152,7 +152,7 @@ fi
         thread = threading.Thread(target=session, daemon=True)
         thread.start()
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1",
-                   QML_IMPORT_PATH=PLUGIN, PATH=os.pathsep.join([self.bin, os.environ.get("PATH", "")]))
+                   QML_IMPORT_PATH=PLUGIN, PATH=os.pathsep.join([self.bin, os.environ.get("PATH", "")]), **(env or {}))
         p = subprocess.run([QML, os.path.join(HERE, "qml", "clipboard.qml"), "--", path, "1" if share else "0", str(ms), mode],
                            env=env, capture_output=True, text=True, timeout=30)
         server.close()
@@ -491,6 +491,20 @@ fi
         self.assertGreaterEqual(damage, 1)
         self.assertGreaterEqual(drawn, 2)
         self.assertEqual(kbyte, drawn * 64 * 48 * 4 // 1024)
+
+    def test_only_what_changed_is_uploaded(self):
+        # plans/vnc-speed.md: a blinking cursor on a Retina screen took the whole picture each time.
+        frames = [(640 * 4 * 480, b"frame 640 480 2560")]
+        timed = [(1.0 + i * 0.15, b"damage 10 20 4 40") for i in range(10)]
+        _, _, err = self.run_view(False, ms=2800, frames=frames, timed=timed,
+                                  env={"QT_QUICK_BACKEND": "rhi", "QSG_RHI_BACKEND": "opengl"})
+        reports = [l.split() for l in self.received_lines if l.startswith("view-stats ")]
+        self.assertTrue(reports, err)
+        ms, damage, drawn, kbyte = (int(x) for x in reports[0][1:])
+        full = 640 * 480 * 4 // 1024
+        if kbyte >= drawn * full:
+            self.skipTest("this scene graph has no GPU (software): whole pictures, as before")
+        self.assertLess(kbyte, full + drawn)  # the first picture whole, then 640 bytes a time
 
     def test_a_pause_starts_a_new_count(self):
         # One change long after the last: not a report over the pause.

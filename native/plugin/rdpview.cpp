@@ -10,6 +10,8 @@
 #include <QQuickWindow>
 #include <QSGImageNode>
 #include <QSGTexture>
+#include <QVarLengthArray>
+#include <rhi/qrhi.h>
 
 #include <cerrno>
 #include <cstring>
@@ -258,6 +260,15 @@ void RdpView::handleLine(const QByteArray& line)
 	if (cmd == "damage")
 	{
 		m_statDamage++;
+		if (w.size() >= 5 && num(3) > 0 && num(4) > 0)
+			m_damage += QRect(num(1), num(2), num(3), num(4)) & QRect(0, 0, MaxFrameSide, MaxFrameSide);
+		else
+			m_damageAll = true;
+		if (m_damage.rectCount() > 64) // while nothing is drawn (hidden), the region stays small
+		{
+			m_damage = QRegion();
+			m_damageAll = true;
+		}
 		m_gpu = false; // the session draws into the framebuffer (again)
 		if (!m_dirty)
 		{
@@ -442,6 +453,7 @@ void RdpView::mapFrame(int fd, int w, int h, int stride)
 	m_image = QImage(static_cast<const uchar*>(p), w, h, stride, QImage::Format_RGB32, releaseMapping,
 	                 new Mapping { p, size });
 	m_dirty = true;
+	m_damageAll = true;
 	emit remoteSizeChanged();
 	update();
 }
@@ -560,8 +572,105 @@ void RdpView::showSurfaces(const QList<QByteArray>& w)
 }
 
 // From the render thread: the line goes out on the item's own thread.
-// The whole picture goes to the GPU on every change today; the numbers show whether that is what
-// makes a session slow. Qt does the copy itself later in the frame, so its time is not measured here.
+namespace
+{
+
+// The session's frame as one texture kept on the GPU, updated where it changed. Qt's own image
+// texture takes the whole image every time. Everything here runs on the render thread: setImage
+// from updatePaintNode, commitTextureOperations while the frame is drawn.
+class FrameTexture : public QSGTexture
+{
+public:
+	~FrameTexture() override { delete m_texture; }
+
+	// The next upload: changed (in frame pixels), or the whole image. Returns the bytes it will take.
+	qsizetype setImage(const QImage& image, const QRegion& changed, bool all)
+	{
+		if (image.size() != m_image.size())
+			all = true;
+		m_image = image;
+		if (all)
+			m_all = true;
+		else
+			m_pending += changed & image.rect(); // with what was not drawn yet (a frame skipped)
+		qint64 area = 0;
+		for (const QRect& r : m_pending)
+			area += qint64(r.width()) * r.height();
+		// Scattered or most of it: one upload of the whole is cheaper than many small ones.
+		if (m_pending.rectCount() > 32 || area * 2 > qint64(image.width()) * image.height())
+			m_all = true;
+		if (m_all)
+		{
+			m_pending = QRegion();
+			return image.sizeInBytes();
+		}
+		return qsizetype(area * 4);
+	}
+
+	qint64 comparisonKey() const override { return qint64(quintptr(this)); }
+	QRhiTexture* rhiTexture() const override { return m_texture; }
+	QSize textureSize() const override { return m_image.size(); }
+	bool hasAlphaChannel() const override { return false; }
+	bool hasMipmaps() const override { return false; }
+
+	void commitTextureOperations(QRhi* rhi, QRhiResourceUpdateBatch* updates) override
+	{
+		if (m_image.isNull())
+			return;
+		if (!m_texture || m_texture->pixelSize() != m_image.size())
+		{
+			delete m_texture;
+			// RGB32 is B G R X in memory: BGRA8 takes it as it is; without it, each part is converted.
+			m_bgra = rhi->isTextureFormatSupported(QRhiTexture::BGRA8);
+			m_texture = rhi->newTexture(m_bgra ? QRhiTexture::BGRA8 : QRhiTexture::RGBA8, m_image.size());
+			if (!m_texture->create())
+			{
+				delete m_texture;
+				m_texture = nullptr;
+				return;
+			}
+			m_all = true;
+		}
+		if (!m_all && m_pending.isEmpty())
+			return;
+		QVarLengthArray<QRhiTextureUploadEntry, 33> entries;
+		const auto add = [&](const QRect& r) {
+			QRhiTextureSubresourceUploadDescription part;
+			if (m_bgra)
+			{
+				part = QRhiTextureSubresourceUploadDescription(m_image);
+				part.setSourceTopLeft(r.topLeft());
+			}
+			else
+				part = QRhiTextureSubresourceUploadDescription(m_image.copy(r).convertToFormat(QImage::Format_RGBA8888));
+			part.setSourceSize(r.size());
+			part.setDestinationTopLeft(r.topLeft());
+			entries.append(QRhiTextureUploadEntry(0, 0, part));
+		};
+		if (m_all)
+			add(m_image.rect());
+		else
+			for (const QRect& r : m_pending)
+				add(r);
+		QRhiTextureUploadDescription description;
+		description.setEntries(entries.cbegin(), entries.cend());
+		updates->uploadTexture(m_texture, description);
+		m_all = false;
+		m_pending = QRegion();
+	}
+
+private:
+	QImage m_image; // shares the session's mapping (releaseMapping), as Qt's own texture did
+	QRegion m_pending;
+	bool m_all = true;
+	bool m_bgra = false;
+	QRhiTexture* m_texture = nullptr;
+};
+
+} // namespace
+
+// What goes to the GPU, and how often: the numbers show whether drawing is what makes a session
+// slow. Qt does the copy itself later in the frame, so its time is not measured here.
 void RdpView::countUpload(qsizetype bytes)
 {
 	m_statDrawn++;
@@ -659,11 +768,29 @@ QSGNode* RdpView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 	}
 	if (m_dirty)
 	{
-		// The image wraps the shared mapping; the upload is the copy.
-		QSGTexture* texture = window()->createTextureFromImage(m_image);
-		node->setTexture(texture);
+		auto* frame = dynamic_cast<FrameTexture*>(node->texture());
+		if (window()->rhi())
+		{
+			// Only what changed goes to the GPU: a blinking cursor on a Retina screen was 30 MB a time.
+			if (!frame)
+			{
+				frame = new FrameTexture;
+				node->setTexture(frame);
+				m_damageAll = true;
+			}
+			const qsizetype bytes = frame->setImage(m_image, m_damage, m_damageAll);
+			node->markDirty(QSGNode::DirtyMaterial);
+			countUpload(bytes);
+		}
+		else
+		{
+			// The software scene graph: no GPU to keep a texture on. The image wraps the shared mapping.
+			node->setTexture(window()->createTextureFromImage(m_image));
+			countUpload(m_image.sizeInBytes());
+		}
+		m_damage = QRegion();
+		m_damageAll = false;
 		m_dirty = false;
-		countUpload(m_image.sizeInBytes());
 	}
 	const QRectF r = imageRect();
 	node->setRect(r);

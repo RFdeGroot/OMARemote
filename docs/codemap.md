@@ -76,7 +76,7 @@ The manager window:
 
 | Path | What |
 | --- | --- |
-| plugin/rdpview.cpp | the QML item drawing a session: frame, keys (`keyPressEvent`, chords for sent shortcuts), mouse, clipboard (`shareClipboard`, `sendClipboard` through clipread, `MaxClipBytes` both ways), cursor; `countUpload` (a `view-stats` line a second to the session, logged as `view:`) |
+| plugin/rdpview.cpp | the QML item drawing a session: frame, keys (`keyPressEvent`, chords for sent shortcuts), mouse, clipboard (`shareClipboard`, `sendClipboard` through clipread, `MaxClipBytes` both ways), cursor; `countUpload` (a `view-stats` line a second to the session, logged as `view:`); `FrameTexture` (one GPU texture per frame, updated only where `damage` lines say it changed; the software scene graph keeps Qt's whole-image texture) |
 | plugin/yuvnode.cpp, plugin/shaders/yuv.* | Gliff pictures drawn from the decoder's dmabufs: EGL import, the shader converts (BT.709, Dual420 recombined); RdpView `addSurface`, `showSurfaces`, `updatePaintNode` |
 | plugin/shortcutinhibit.cpp | keyboard-shortcuts-inhibit for Gliff tabs (`captureShortcuts`, release key in rdpview.cpp `keyPressEvent`) |
 | plugin/clipread.cpp | `oma::watchClipboard`: wl-paste --watch, state only (a clear, or a copy while unfocused, takes back what the host was offered: `RdpView::clipboardChanged`, `withdrawClipboard`). `oma::readClipboard`: the only way the UI reads the clipboard (wl-paste in its own process, size and time limits); never `QClipboard::text()` (tests/test_clipboard.py checks) |
