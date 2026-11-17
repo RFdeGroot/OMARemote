@@ -39,7 +39,7 @@ def read_ppm(path):
 @unittest.skipUnless(QML and os.path.isdir(os.path.join(PLUGIN, "OMARemote")),
                      "needs qml6 and the native build (ninja -C native/build)")
 class OnlyWhatChanged(unittest.TestCase):
-    def show(self, env, again=False):
+    def show(self, env, again=False, damage=b"damage 8 8 16 8"):
         """A frame of OLD; 0.6 s later a NEW patch, damaged, and a HIDDEN pixel that is not. With
         again, a second frame of the same size instead, all HIDDEN, and no damage line."""
         folder = tempfile.mkdtemp()
@@ -80,7 +80,7 @@ class OnlyWhatChanged(unittest.TestCase):
                         put(m, x, y, NEW)
                 if not again:
                     put(m, 50, 40, HIDDEN)
-                    conn.sendall(b"damage 8 8 16 8\n")
+                    conn.sendall(damage + b"\n")
                 conn.settimeout(0.2)
                 end = time.monotonic() + 15
                 while time.monotonic() < end:
@@ -114,6 +114,15 @@ class OnlyWhatChanged(unittest.TestCase):
         self.assertEqual(at(8, 16), OLD)
         # Changed in the frame but never damaged: the GPU still has the old pixel. Proves the part.
         self.assertEqual(at(50, 40), OLD)
+
+    def test_a_large_change_heals_what_was_not_reported(self):
+        # A quarter of the picture changed: once it settles, the whole picture goes up again, so a
+        # change the session failed to report does not stay on screen (a window dragged over RDP).
+        at = self.show({"QT_QUICK_BACKEND": "rhi", "QSG_RHI_BACKEND": "opengl"}, damage=b"damage 8 8 32 24")
+        if at(0, 0) == (0, 0, 0):
+            self.skipTest("no OpenGL offscreen here")
+        self.assertEqual(at(8, 8), NEW)
+        self.assertEqual(at(50, 40), HIDDEN)
 
     def test_a_new_frame_of_the_same_size_is_uploaded_whole(self):
         at = self.show({"QT_QUICK_BACKEND": "rhi", "QSG_RHI_BACKEND": "opengl"}, again=True)

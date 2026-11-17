@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -100,6 +101,13 @@ class Link
   private:
 	void attach(int fd);
 	void drop();
+	// One line at a time: RDP draws (and sends damage) on its graphics channel's thread while the
+	// main thread sends cursors, and a cursor line takes several writes. Interleaved, the damage
+	// line lands inside the cursor's and is lost, and the view keeps that part of the old picture.
+	std::recursive_mutex sending_;
+	// A send failed: the socket is shut down and later sends return at once. Only poll(), on the
+	// main thread, drops it (close, onClientChanged), never the thread that happened to be sending.
+	bool broken_ = false;
 
 	std::string path_;
 	int listenFd_ = -1;

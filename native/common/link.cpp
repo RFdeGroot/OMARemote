@@ -250,10 +250,12 @@ void Link::close()
 
 void Link::drop()
 {
+	std::lock_guard<std::recursive_mutex> lock(sending_);
 	if (clientFd_ < 0)
 		return;
 	::close(clientFd_);
 	clientFd_ = -1;
+	broken_ = false;
 	inbuf_.clear();
 	if (onClientChanged)
 		onClientChanged();
@@ -261,6 +263,7 @@ void Link::drop()
 
 void Link::attach(int fd)
 {
+	std::lock_guard<std::recursive_mutex> lock(sending_);
 	if (clientFd_ >= 0)
 	{
 		log("a new UI attached; detaching the previous one");
@@ -285,7 +288,8 @@ void Link::send(const std::string& text, int fd)
 
 void Link::send(const std::string& text, const std::vector<int>& fds)
 {
-	if (clientFd_ < 0 || fds.size() > 4)
+	std::lock_guard<std::recursive_mutex> lock(sending_);
+	if (clientFd_ < 0 || broken_ || fds.size() > 4)
 		return;
 	const std::string line = text + "\n";
 	size_t off = 0;
@@ -311,8 +315,11 @@ void Link::send(const std::string& text, const std::vector<int>& fds)
 		{
 			if (errno == EINTR)
 				continue;
+			// Not drop(): this may be RDP's graphics thread, while the main thread waits on the
+			// client's descriptor and event. Shut down, the main thread's poll() sees the end.
 			log("UI stopped reading (%s); detaching it", strerror(errno));
-			drop();
+			::shutdown(clientFd_, SHUT_RDWR);
+			broken_ = true;
 			return;
 		}
 		off += size_t(n);

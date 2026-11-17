@@ -196,6 +196,11 @@ private:
 	// region too scattered to be worth it) uploads whole (FrameTexture in rdpview.cpp).
 	QRegion m_damage;
 	bool m_damageAll = true;
+	// After a burst that changed a fair part of the picture (a window dragged, a page scrolled), the
+	// whole picture goes up once more when it settles: a change the session did not report heals
+	// within half a second instead of staying until something is drawn over it.
+	QTimer m_settleTimer;
+	qint64 m_settleArea = 0;
 	// Once a second to the session's log (plans/vnc-speed.md): changes told of, pictures drawn, and
 	// bytes handed to the GPU. Counted where the item's thread is blocked or is the one running.
 	void countUpload(qsizetype bytes);

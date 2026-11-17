@@ -14,6 +14,10 @@ pkg_check_modules(FREERDP REQUIRED IMPORTED_TARGET freerdp3 freerdp-client3 winp
 # The link to the UI every session process shares: socket, prompts, shared-memory framebuffer.
 add_library(omaremote-link STATIC common/link.cpp)
 target_compile_options(omaremote-link PRIVATE -Wall -Wextra)
+# Two threads sending at once (RDP's graphics channel and its main thread), run by tests/test_memory.py.
+add_executable(link-test common/link-test.cpp)
+target_link_libraries(link-test PRIVATE omaremote-link)
+target_compile_options(link-test PRIVATE -Wall -Wextra)
 
 add_executable(omaremote-rdp rdp/main.cpp rdp/gfxguard.cpp)
 target_link_libraries(omaremote-rdp PRIVATE omaremote-link PkgConfig::FREERDP)

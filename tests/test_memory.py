@@ -18,6 +18,14 @@ class RdpGraphics(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
 
 
+class SessionLink(unittest.TestCase):
+    @unittest.skipUnless(os.access(os.path.join(BUILD, "link-test"), os.X_OK), "native build missing: ninja -C native/build")
+    def test_lines_from_two_threads_never_mix(self):
+        # A damage line inside a cursor's is lost, and the view keeps that part of the old picture.
+        out = subprocess.run([os.path.join(BUILD, "link-test")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+
 class SessionCeiling(unittest.TestCase):
     @unittest.skipUnless(os.access(os.path.join(BUILD, "rdp-gfx-test"), os.X_OK), "native build missing: ninja -C native/build")
     def test_reaching_it_ends_the_session_without_a_crash(self):

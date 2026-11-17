@@ -39,6 +39,20 @@ RdpView::RdpView(QQuickItem* parent) : QQuickItem(parent)
 	m_sizeTimer.setSingleShot(true);
 	m_sizeTimer.setInterval(400);
 	connect(&m_sizeTimer, &QTimer::timeout, this, &RdpView::sendSize);
+	m_settleTimer.setSingleShot(true);
+	m_settleTimer.setInterval(400);
+	connect(&m_settleTimer, &QTimer::timeout, this, [this] {
+		m_settleArea = 0;
+		if (m_image.isNull() || m_gpu)
+			return;
+		m_damageAll = true;
+		if (!m_dirty)
+		{
+			m_dirty = true;
+			if (isVisible())
+				update();
+		}
+	});
 
 	connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, [this] {
 		// Copied elsewhere since: that wins over what the session sent.
@@ -261,7 +275,13 @@ void RdpView::handleLine(const QByteArray& line)
 	{
 		m_statDamage++;
 		if (w.size() >= 5 && num(3) > 0 && num(4) > 0)
-			m_damage += QRect(num(1), num(2), num(3), num(4)) & QRect(0, 0, MaxFrameSide, MaxFrameSide);
+		{
+			const QRect r = QRect(num(1), num(2), num(3), num(4)) & QRect(0, 0, MaxFrameSide, MaxFrameSide);
+			m_damage += r;
+			m_settleArea += qint64(r.width()) * r.height();
+			if (m_settleArea * 20 > qint64(m_image.width()) * m_image.height())
+				m_settleTimer.start(); // again: it fires once the changes stop
+		}
 		else
 			m_damageAll = true;
 		if (m_damage.rectCount() > 64) // while nothing is drawn (hidden), the region stays small
