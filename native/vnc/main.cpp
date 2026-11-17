@@ -48,6 +48,7 @@ struct Session
 	bool dirty = false;
 
 	int buttons = 0;                      // RFB button mask
+	long wheelY = 0, wheelX = 0;          // scrolled, not yet a whole notch (a trackpad moves in small steps)
 	std::map<uint32_t, uint32_t> pressed; // evdev code -> keysym sent at press, released the same
 	std::string remoteClip;
 	std::string localClip;
@@ -495,12 +496,21 @@ static void handle_line(const std::string& line)
 	else if (cmd == "wheel" && input && w.size() >= 5)
 	{
 		const int x = int(num(3)), y = int(num(4));
-		// One button press per notch (120): 4 up, 5 down, 6 left, 7 right.
-		for (long dy = num(1); dy >= 120 || dy <= -120; dy += dy > 0 ? -120 : 120)
-			click(dy > 0 ? 8 : 16, x, y);
-		for (long dx = num(2); dx >= 120 || dx <= -120; dx += dx > 0 ? -120 : 120)
-			click(dx > 0 ? 32 : 64, x, y);
+		// One button press per notch (120): 4 up, 5 down, 6 left, 7 right. What is left over waits for
+		// the next event in the same direction, so a trackpad's small steps add up instead of vanishing.
+		auto carry = [](long& left, long d) {
+			if (d)
+				left = (d > 0) == (left > 0) ? left + d : d;
+		};
+		carry(g.wheelY, num(1));
+		carry(g.wheelX, num(2));
+		for (; g.wheelY >= 120 || g.wheelY <= -120; g.wheelY += g.wheelY > 0 ? -120 : 120)
+			click(g.wheelY > 0 ? 8 : 16, x, y);
+		for (; g.wheelX >= 120 || g.wheelX <= -120; g.wheelX += g.wheelX > 0 ? -120 : 120)
+			click(g.wheelX > 0 ? 32 : 64, x, y);
 	}
+	else if (cmd == "wheel-end")
+		g.wheelY = g.wheelX = 0;
 	else if (cmd == "key" && input && w.size() >= 3)
 	{
 		const bool down = num(1) != 0;

@@ -745,6 +745,8 @@ int main()
 	// Not in the fixtures; the same rules: f32 as four bytes, negative integers as major type 1.
 	encodes(gliff::resize(1920, 1080, 1.5f), "820183190780190438fa3fc00000", "Resize");
 	encodes(gliff::pointerAxis(0, -15.0, -1), "82058400fbc02e00000000000020f4", "PointerAxis");
+	encodes(gliff::pointerAxis(1, -3.0, std::nullopt), "82058401fbc008000000000000f6f4", "PointerAxis, a trackpad");
+	encodes(gliff::pointerAxis(0, 0.0, std::nullopt, true), "82058400fb0000000000000000f6f5", "PointerAxis, stop");
 	encodes(gliff::pong(7), "82108107", "Pong");
 	encodes(gliff::ping(7), "820b8107", "Ping (ClientMsg 11)");
 	offered_file_tests();

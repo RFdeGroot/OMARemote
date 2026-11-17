@@ -9,6 +9,7 @@
 #include "cbor.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -91,13 +92,18 @@ inline std::string pointerButton(uint32_t button, bool pressed)
 }
 
 // axis 0: vertical, 1: horizontal; value in Wayland's units (positive: down or right).
-inline std::string pointerAxis(unsigned axis, double value, int discrete)
+// discrete: wheel notches, or none for a trackpad (the server then scrolls as a finger would);
+// stop: the scroll on this axis ended.
+inline std::string pointerAxis(unsigned axis, double value, std::optional<int> discrete, bool stop = false)
 {
 	std::string out = variant(5, 4);
 	cbor::uint(out, axis);
 	cbor::f64(out, value);
-	cbor::sint(out, discrete);
-	cbor::boolean(out, false);
+	if (discrete)
+		cbor::sint(out, *discrete);
+	else
+		cbor::null(out);
+	cbor::boolean(out, stop);
 	return out;
 }
 

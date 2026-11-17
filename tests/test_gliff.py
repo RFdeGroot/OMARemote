@@ -174,7 +174,7 @@ class Exit(unittest.TestCase):
 # A fake gliff-server on the helper's stdin/stdout: HelloAck, one StreamConfig of the given size,
 # then one keyframe (an Annex B H.264 picture made by ffmpeg) of its own size.
 FAKE_SERVER = r'''
-import struct, sys, time
+import json, struct, sys, time
 
 def head(major, n):
     if n < 24:
@@ -205,8 +205,49 @@ width, height, picture = int(sys.argv[1]), int(sys.argv[2]), open(sys.argv[3], "
 send(0, [1, [False, "DP-1"], [["DP-1", width, height, 1000]], []])
 send(1, [1, 2, None, width, height, 1000, b"", None, width, height, 60])
 send(2, [1, 0, True, [[0, 0, width, height]], len(picture), 0], picture)
-while sys.stdin.buffer.read(4096):
-    pass
+
+# The client's scroll messages (PointerAxis), one line each into argv[4] when it is given.
+def item(b, i):
+    major, n = b[i] >> 5, b[i] & 31
+    i += 1
+    if major == 7:
+        if n == 27:
+            return struct.unpack(">d", b[i:i + 8])[0], i + 8
+        if n == 26:
+            return struct.unpack(">f", b[i:i + 4])[0], i + 4
+        return {20: False, 21: True, 22: None}.get(n), i
+    if n >= 24:
+        size = 1 << (n - 24)
+        n, i = int.from_bytes(b[i:i + size], "big"), i + size
+    if major == 0:
+        return n, i
+    if major == 1:
+        return -1 - n, i
+    if major in (2, 3):
+        return b[i:i + n], i + n
+    out = []
+    for _ in range(n * (2 if major == 5 else 1)):
+        v, i = item(b, i)
+        out.append(v)
+    return out, i
+
+def exact(n):
+    data = b""
+    while len(data) < n:
+        more = sys.stdin.buffer.read(n - len(data))
+        if not more:
+            sys.exit(0)
+        data += more
+    return data
+
+axes = open(sys.argv[4], "w", buffering=1) if len(sys.argv) > 4 else None
+while True:
+    blen, plen = struct.unpack("<II", exact(8))
+    body = exact(blen)
+    exact(plen)
+    msg, _ = item(body, 0)
+    if axes and msg[0] == 5:
+        axes.write(json.dumps(msg[1]) + "\n")
 '''
 
 GLIFF = os.path.join(HERE, "..", "native", "build", "omaremote-gliff")
@@ -225,14 +266,15 @@ class Decoder(unittest.TestCase):
                         "-frames:v", "1", "-c:v", "libx264", "-preset", "ultrafast", "-f", "h264", path], check=True)
         return path
 
-    def run_session(self, stream, picture):
+    def run_session(self, stream, picture, extra=()):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d)
+        self.dir = d
         server = os.path.join(d, "server.py")
         with open(server, "w") as f:
             f.write(FAKE_SERVER)
         w, h = stream
-        args = [sys.executable, "-I", server, str(w), str(h), self.picture(d, picture)]
+        args = [sys.executable, "-I", server, str(w), str(h), self.picture(d, picture), *extra]
         p = subprocess.Popen([GLIFF], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s")), text=True)
         self.addCleanup(p.stdout.close)
@@ -254,6 +296,33 @@ class Decoder(unittest.TestCase):
         reader.join(5)
         self.assertIn("desktop is 64x40", "".join(lines))
         self.assertEqual(rc, 11, "".join(lines))
+
+    def test_a_trackpad_scrolls_smoothly_and_a_wheel_in_notches(self):
+        """A trackpad's pixels go as they are with no notch (gliff#70: a notch per tiny event scrolled
+        many times too far); a wheel keeps its notches; the end of a swipe stops both axes."""
+        axes = os.path.join(tempfile.mkdtemp(), "axes")
+        self.addCleanup(shutil.rmtree, os.path.dirname(axes))
+        p = self.run_session((64, 40), "64x40", (axes,))
+        lines = []
+        threading.Thread(target=lambda: lines.extend(p.stdout), daemon=True).start()
+        deadline = time.monotonic() + 10
+        while not any("desktop is 64x40" in l for l in lines):
+            self.assertTrue(time.monotonic() < deadline and p.poll() is None, "".join(lines))
+            time.sleep(0.02)
+        ui = socket.socket(socket.AF_UNIX)
+        self.addCleanup(ui.close)
+        ui.connect(os.path.join(self.dir, "s"))
+        ui.sendall(b"wheel 120 0 10 10\nwheel 16 0 10 10 2 0\nwheel 0 -8 10 10 0 -1\nwheel-end\n")
+        want = [[0, -15.0, -1, False], [0, -2.0, None, False], [1, 1.0, None, False],
+                [0, 0.0, None, True], [1, 0.0, None, True]]
+        got = []
+        while len(got) < len(want) and time.monotonic() < deadline:
+            time.sleep(0.02)
+            with open(axes) as f:
+                got = [json.loads(l) for l in f]
+        p.terminate()
+        p.wait(5)
+        self.assertEqual(got, want)
 
     def test_a_stream_larger_than_asked_for_ends_the_session(self):
         p = self.run_session((12000, 12000), "64x40")

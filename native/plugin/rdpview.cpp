@@ -997,9 +997,20 @@ void RdpView::wheelEvent(QWheelEvent* e)
 {
 	const QPoint p = toRemote(e->position());
 	const QPoint d = e->angleDelta();
-	if (!d.isNull())
-		send("wheel " + QByteArray::number(d.y()) + ' ' + QByteArray::number(d.x()) + ' ' + QByteArray::number(p.x()) +
-		     ' ' + QByteArray::number(p.y()));
+	// A trackpad also says how far it moved in pixels: two more numbers, which a Gliff session
+	// sends as a smooth scroll rather than as wheel notches (RDP and VNC read only the first four).
+	const QPoint px = e->pixelDelta();
+	if (!d.isNull() || !px.isNull())
+	{
+		QByteArray line = "wheel " + QByteArray::number(d.y()) + ' ' + QByteArray::number(d.x()) + ' ' +
+		                  QByteArray::number(p.x()) + ' ' + QByteArray::number(p.y());
+		if (!px.isNull())
+			line += ' ' + QByteArray::number(px.y()) + ' ' + QByteArray::number(px.x());
+		send(line);
+	}
+	// The fingers left the trackpad: the remote can end the scroll (kinetic scrolling starts there).
+	if (e->phase() == Qt::ScrollEnd)
+		send("wheel-end");
 	e->accept();
 }
 

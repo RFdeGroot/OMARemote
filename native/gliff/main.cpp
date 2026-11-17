@@ -1181,12 +1181,30 @@ static void handle_line(const std::string& line)
 	else if (cmd == "wheel" && input && w.size() >= 5)
 	{
 		// The UI: 120 per notch, positive up or left. Wayland: positive down or right, 15 per notch.
+		// A trackpad adds its pixels (words 5 and 6): sent as they are with no notch, as Gliff's own
+		// client does (gliff#70); a notch per tiny event would scroll many times too far.
 		pointer_to(num(3), num(4));
-		const long dy = num(1), dx = num(2);
-		if (dy)
-			send_msg(gliff::pointerAxis(0, -dy / 120.0 * 15.0, dy > 0 ? -1 : 1));
-		if (dx)
-			send_msg(gliff::pointerAxis(1, -dx / 120.0 * 15.0, dx > 0 ? -1 : 1));
+		const long py = num(5), px = num(6);
+		if (py || px)
+		{
+			if (py)
+				send_msg(gliff::pointerAxis(0, double(-py), std::nullopt));
+			if (px)
+				send_msg(gliff::pointerAxis(1, double(-px), std::nullopt));
+		}
+		else
+		{
+			const long dy = num(1), dx = num(2);
+			if (dy)
+				send_msg(gliff::pointerAxis(0, -dy / 120.0 * 15.0, dy > 0 ? -1 : 1));
+			if (dx)
+				send_msg(gliff::pointerAxis(1, -dx / 120.0 * 15.0, dx > 0 ? -1 : 1));
+		}
+	}
+	else if (cmd == "wheel-end" && input)
+	{
+		send_msg(gliff::pointerAxis(0, 0.0, std::nullopt, true));
+		send_msg(gliff::pointerAxis(1, 0.0, std::nullopt, true));
 	}
 	else if (cmd == "key" && input && w.size() >= 3)
 	{

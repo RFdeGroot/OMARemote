@@ -315,6 +315,15 @@ class VncSession(unittest.TestCase):
                            (0.4, b"view-stats 2000 -1 6 4096"), (0.5, b"view-stats 50 10 6 4096")])
         self.assertNotIn("view:", self.session_log)
 
+    def test_a_trackpads_small_steps_add_up_to_notches(self):
+        """VNC scrolls in whole notches (120): smaller steps carry over to the next event in the same
+        direction instead of vanishing; the end of a swipe or a turn starts again from nothing."""
+        steps = [b"wheel 40 0 10 10 3 0"] * 6 + [b"wheel-end", b"wheel 60 0 10 10 4 0", b"wheel-end",
+                                                 b"wheel 100 0 10 10", b"wheel -100 0 10 10"]
+        got, _ = self.clip_session([(0.2 + i * 0.05, line) for i, line in enumerate(steps)], until=0.8)
+        up, down = struct.pack(">BBHH", 5, 8, 10, 10), struct.pack(">BBHH", 5, 16, 10, 10)
+        self.assertEqual((got.count(up), got.count(down)), (2, 0))
+
     def test_an_idle_session_is_not_cut(self):
         p = self.start(stall=False)
         time.sleep(5)  # more than twice readTimeout
