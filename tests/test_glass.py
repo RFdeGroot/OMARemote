@@ -64,6 +64,33 @@ def worst(ink, planes, alpha, washes=(), white=BLUR, fade=1.0):
     return low
 
 
+def q(v):
+    return round(v * 255) / 255
+
+
+def worst_rounded(ink, planes, alpha, washes=(), white=BLUR, fade=0.96):
+    """worst() the way the screen gets there: rounded to 8 bits in the window's buffer
+    (premultiplied: the ground, then a wash over it), then faded by Hyprland and composited over the
+    backdrop in its shader (floating point), rounded again in the framebuffer. An exact 4.5 in
+    worst() can come out below it here."""
+    drops = [(q(white),) * 3, (0, 0, 0)]
+
+    def seen(premul, a, d):  # a window pixel (premultiplied colour, alpha) faded and composited
+        return tuple(q(c * fade + bd * (1 - a * fade)) for c, bd in zip(premul, d))
+
+    low = float("inf")
+    for p in planes:
+        a = q(alpha / 255)
+        ground = [q(c * a) for c in p]
+        pixels = [(ground, a)]
+        for c, wa in washes:  # a wash over the ground, in the window's buffer
+            pixels.append(([q(wc * wa + g * (1 - wa)) for wc, g in zip(c, ground)], q(wa + a * (1 - wa))))
+        for d in drops:
+            text = seen([q(c) for c in ink], 1.0, d)
+            low = min([low] + [ratio(text, seen(px, pa, d)) for px, pa in pixels])
+    return low
+
+
 def installed():
     found = {}
     if not os.path.isdir(THEMES):
@@ -80,12 +107,28 @@ def installed():
     return found
 
 
+def theme_numbers():
+    """Theme.qml's own: the contrast text and accent aim for through Hyprland's fade, the fade it
+    lifts for, and the selection and hover washes, read from the file so the harness runs what
+    ships."""
+    with open(os.path.join(REPO, "ui", "Theme.qml")) as f:
+        text = f.read()
+    find = lambda pattern: float(re.search(pattern, text).group(1))
+    return (find(r"readonly property real fadedNeed: ([\d.]+)"),
+            find(r"readonly property real fadedAccentNeed: ([\d.]+)"),
+            find(r"var faded = Contrast\.material\([^)]*, white, ([\d.]+)\)"),
+            find(r"readonly property color selection: Util\.alpha\(Commons\.Color\.accent, ([\d.]+)\)"),
+            find(r"readonly property color hover: Util\.alpha\(Commons\.Color\.foreground, ([\d.]+)\)"))
+
+
 @unittest.skipUnless(QML, "needs qml6")
 class Maths(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         palettes = cls.palettes = dict(FIXED, **installed())
-        p = subprocess.run([QML, os.path.join(HERE, "qml", "glass.qml"), "--"]
+        cls.theme = theme_numbers()
+        p = subprocess.run([QML, os.path.join(HERE, "qml", "glass.qml"), "--",
+                            "theme=" + ",".join(str(v) for v in cls.theme)]
                            + [f"{k}={','.join(v)}" for k, v in palettes.items()],
                            env=dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1"), capture_output=True, text=True, timeout=60)
         found = re.search(r"RESULT (\{.*\})", p.stderr + p.stdout)
@@ -101,7 +144,7 @@ class Maths(unittest.TestCase):
                 planes = [rgb(r["background"]), rgb(r["surface"])]
                 _, fg, accent = self.palettes[name]
                 # Theme.selection and Theme.hover, from the theme's own colours.
-                washes = [(rgb(accent), 0.16), (rgb(fg), 0.05)]
+                washes = [(rgb(accent), self.theme[3]), (rgb(fg), self.theme[4])]
                 # Unfaded, and seen through Hyprland's fade while an SSH tab is shown (0.985, 0.96).
                 for fade in (1.0, 0.985, 0.96):
                     self.assertGreaterEqual(worst(rgb(r["foreground"]), planes, r["alpha"], washes, BLUR, fade), 4.5)
@@ -111,13 +154,29 @@ class Maths(unittest.TestCase):
                 # Secondary text still reads as quieter than primary text.
                 self.assertGreaterEqual(ratio(rgb(r["foreground"]), rgb(r["muted"])), 1.25)
 
+    def test_text_holds_through_the_fade_rounded_as_the_screen_rounds(self):
+        # Theme.fadedNeed's margin: through Hyprland's fade, rounded at every step, still 4.5 and 3.
+        for name, r in self.result["palettes"].items():
+            _, fg, accent = self.palettes[name]
+            washes = [(rgb(accent), self.theme[3]), (rgb(fg), self.theme[4])]
+            cases = [(r, r["alpha"], BLUR), (r["transparent"], 245, 1)]
+            for inks, alpha, white in cases:
+                if alpha >= 255:
+                    continue
+                planes = [rgb(r["background"]), rgb(r["surface"])]
+                for fade in (0.985, 0.96):
+                    with self.subTest(theme=name, white=white, fade=fade):
+                        self.assertGreaterEqual(worst_rounded(rgb(inks["foreground"]), planes, alpha, washes, white, fade), 4.5)
+                        self.assertGreaterEqual(worst_rounded(rgb(inks["accent"]), planes, alpha, washes, white, fade), 3)
+                        self.assertGreaterEqual(worst_rounded(rgb(inks["muted"]), planes, alpha, (), white, fade), 4.5)
+
     def test_transparent_text_holds_over_the_bare_desktop(self):
         for name, r in self.result["palettes"].items():
             with self.subTest(theme=name):
                 t = r["transparent"]
                 planes = [rgb(r["background"]), rgb(r["surface"])]
                 _, fg, accent = self.palettes[name]
-                washes = [(rgb(accent), 0.16), (rgb(fg), 0.05)]
+                washes = [(rgb(accent), self.theme[3]), (rgb(fg), self.theme[4])]
                 for fade in (1.0, 0.96):
                     self.assertGreaterEqual(worst(rgb(t["foreground"]), planes, 245, washes, 1, fade), 4.5)
                     self.assertGreaterEqual(worst(rgb(t["accent"]), planes, 245, washes, 1, fade), 3)

@@ -38,6 +38,13 @@ Singleton {
     // window carries the `terminal` tag (omaremote-session terminal_tag, for Omarchy's clipboard keys)
     // and Omarchy's rule fades it, text included, as it fades foot. Always, so text does not change
     // colour with the tab; the ground's alpha is worked out without it.
+    // Through the fade, text aims above 4.5:1 and the accent above 3:1: the screen rounds in the
+    // window's buffer and again in the framebuffer, which takes an exact 4.5 down to 4.43 on some
+    // themes. 4.65 and 3.1 are the least that hold on every Omarchy theme (tests/test_glass.py,
+    // worst_rounded, which reads these numbers from here).
+    readonly property real fadedNeed: 4.65
+    readonly property real fadedAccentNeed: 3.1
+
     readonly property var glass: {
         if (!Glass.glassy && !Glass.transparent)
             return { on: false, alpha: 1, terminal: 255 }
@@ -48,8 +55,8 @@ Singleton {
         if (a >= 255)
             return { on: false, alpha: 1, terminal: 255 }
         var faded = Contrast.material(background, surface, Commons.Color.foreground, opaqueMuted, washes, white, 0.96)
-        var k = Contrast.inks(faded, a, 4.5)
-        var accent = Contrast.lift(faded, Commons.Color.accent, a, 3, true)
+        var k = Contrast.inks(faded, a, fadedNeed)
+        var accent = Contrast.lift(faded, Commons.Color.accent, a, fadedAccentNeed, true)
         var rgb = function (c) { return Qt.rgba(c.r, c.g, c.b, 1) }
         return { on: true, alpha: a / 255,
                  // A terminal's own background: the default terminal's, from its theme file (Glass.qml;
