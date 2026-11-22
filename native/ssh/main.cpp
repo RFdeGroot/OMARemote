@@ -1310,11 +1310,19 @@ int main(int argc, char** argv)
 	{
 		const uint64_t began = oma::now_ms();
 		rc = run_ssh();
-		if (rc != 255 || !reconnect || g.cancelReconnect)
+		// A server shutting down (a reboot) may stop the shell before it cuts the connection: ssh
+		// then ends with the shell's hang-up or terminate signal, not 255. A drop too, once it was up.
+		const bool shellStopped = rc == 128 + SIGHUP || rc == 128 + SIGTERM;
+		if ((rc != 255 && !shellStopped) || !reconnect || g.cancelReconnect)
 			break;
-		const std::string said = said_last();
+		std::string said = said_last();
 		const uint64_t now = oma::now_ms();
-		if (now - began >= kUpMs * g_pace / 1000 && lost_words(said))
+		const bool wasUp = now - began >= kUpMs * g_pace / 1000;
+		if (shellStopped && !wasUp)
+			break;
+		if (shellStopped)
+			said = "the remote shell was stopped (" + std::to_string(rc) + ")";
+		if (wasUp && (shellStopped || lost_words(said)))
 		{
 			quietDrops = g.typed ? 1 : quietDrops + 1;
 			g.typed = false;

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HELPER = os.path.join(HERE, "..", "native", "build", "omaremote-ssh")
+HELPER = os.path.join(HERE, "..", "native", "build", os.environ.get("OMAREMOTE_SSH_HELPER", "omaremote-ssh"))
 
 # Stands in for ssh: each run takes the next line of $FAKE_SSH_PLAN ("up", or a failure line to
 # print and exit 255 with, or "exit" for a shell that ends) and counts its runs in $FAKE_SSH_DIR/n.
@@ -17,6 +17,8 @@ case $step in
   full:*) seq 1 200; printf '\033[5;1H'; sleep 0.2; echo "${step#full:}"; exit 255 ;;
   slow:*) sleep 0.05; echo "${step#slow:}"; exit 255 ;;
   silent:*) sleep 0.6; echo "${step#silent:}"; exit 255 ;;
+  stopped:*) echo "Welcome"; sleep 0.4; exit "${step#stopped:}" ;;
+  stopnow:*) exit "${step#stopnow:}" ;;
   wait) sleep 30; exit 0 ;;
   exit) echo "bye"; exit 0 ;;
   *) echo "$step"; exit 255 ;;
@@ -51,6 +53,24 @@ class Reconnect(unittest.TestCase):
         self.assertEqual((rc, runs), (0, 4))
         self.assertIn("connection lost: client_loop: send disconnect: Broken pipe; trying again", log)
         self.assertIn("session ended (0)", log)
+
+    def test_a_shell_stopped_by_a_shutdown_is_tried_again(self):
+        # A reboot that stops the shell (hang-up, terminate) before it cuts the connection.
+        for code in (129, 143):
+            rc, log, runs = self.run_plan([f"stopped:{code}",
+                                           "ssh: connect to host pc.lan port 22: Connection refused", "exit"])
+            self.assertEqual((rc, runs), (0, 3), code)
+            self.assertIn(f"connection lost: the remote shell was stopped ({code}); trying again", log)
+
+    def test_a_shell_ending_otherwise_is_no_drop(self):
+        rc, _, runs = self.run_plan(["stopped:1"])
+        self.assertEqual((rc, runs), (1, 1))
+        rc, _, runs = self.run_plan(["stopped:143"], reconnect=False)
+        self.assertEqual((rc, runs), (143, 1))
+
+    def test_a_shell_stopped_at_once_is_not_retried(self):
+        rc, _, runs = self.run_plan(["stopnow:143"], pace=1000)
+        self.assertEqual((rc, runs), (143, 1))
 
     def test_a_connection_that_never_came_up_is_not_retried(self):
         rc, log, runs = self.run_plan(["ssh: connect to host pc.lan port 22: Connection refused"])
