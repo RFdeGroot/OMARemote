@@ -6,6 +6,8 @@ import qs.Commons
 Flow {
     id: root
     property var options: []
+    // Bound by the caller and changed only through it (onPicked): assigning it here would break that
+    // binding, and the row would keep showing an old choice when the caller loads something else.
     property string value: ""
     signal picked(string value)
 
@@ -25,10 +27,8 @@ Flow {
             return
         var at = indexOfValue()
         var next = at < 0 ? 0 : Math.max(0, Math.min(options.length - 1, at + delta))
-        if (next !== at) {
-            root.value = String(options[next].value)
-            root.picked(root.value)
-        }
+        if (next !== at)
+            root.picked(String(options[next].value))
     }
 
     Keys.onPressed: function (event) {
@@ -76,8 +76,7 @@ Flow {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                     root.forceActiveFocus(Qt.MouseFocusReason)
-                    root.value = String(modelData.value)
-                    root.picked(root.value)
+                    root.picked(String(modelData.value))
                 }
             }
         }
