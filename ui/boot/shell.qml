@@ -13,7 +13,9 @@ ShellRoot {
         title: "OMARemote"
         implicitWidth: 1040
         implicitHeight: 640
-        color: "#101315"
+        // See-through from the start: a surface's format is fixed when it is made, and Omarchy's
+        // Glassy windows can be switched on later (Glass.qml). Off glass the body paints every pixel.
+        color: "transparent"
         // Shown once the body has the theme, so it never shows the default colours first; after a
         // second it shows whatever the theme files do (missing, unreadable, never ending). Until it
         // shows, a second `omaremote` does not find it (running_pid asks hyprctl for mapped windows).
@@ -45,11 +47,24 @@ ShellRoot {
             }
         }
 
-        Loader {
-            id: body
+        // Test hook: OMAREMOTE_SNAP_BACKDROP=<colour> stands in for the desktop behind the window, so
+        // a snapshot over two backdrops shows each pixel's alpha (tests/test_glass.py).
+        Item {
+            id: snapRoot
             anchors.fill: parent
             focus: true
-            Component.onCompleted: setSource("file://" + Quickshell.shellDir + "/../Body.qml", { host: window })
+            Rectangle {
+                anchors.fill: parent
+                visible: !!Quickshell.env("OMAREMOTE_SNAP_BACKDROP")
+                color: Quickshell.env("OMAREMOTE_SNAP_BACKDROP") || "transparent"
+            }
+
+            Loader {
+                id: body
+                anchors.fill: parent
+                focus: true
+                Component.onCompleted: setSource("file://" + Quickshell.shellDir + "/../Body.qml", { host: window })
+            }
         }
 
         // Test hook: OMAREMOTE_SNAPSHOT=<png> renders the window, saves it and quits;
@@ -68,7 +83,7 @@ ShellRoot {
         Timer {
             id: snap
             interval: parseInt(Quickshell.env("OMAREMOTE_SNAP_DELAY") || "600")
-            onTriggered: body.grabToImage(function (result) {
+            onTriggered: (Quickshell.env("OMAREMOTE_SNAP_BACKDROP") ? snapRoot : body).grabToImage(function (result) {
                 result.saveToFile(Quickshell.env("OMAREMOTE_SNAPSHOT"))
                 window.quit()
             })

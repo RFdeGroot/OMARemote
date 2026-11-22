@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -324,3 +325,127 @@ class GlyphRules(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class SeeThrough(unittest.TestCase):
+    """Omarchy's see-through terminals: the view's `opacity` line sets the alpha of the terminal's
+    default background in the shared frame (premultiplied B G R A); a cell with a colour of its
+    own stays solid, and 255 is solid again."""
+
+    def test_the_default_background_takes_the_alpha_and_coloured_cells_do_not(self):
+        import mmap, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "s")
+            config = "\n".join(["arg=/bin/sh", "arg=-c", "arg=printf '\\033[41m    \\033[0m'; sleep 30",
+                                "reconnect=0", "font=monospace", "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            try:
+                c = socket.socket(socket.AF_UNIX)
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\nopacity 128\n")
+                c.settimeout(1)
+                frame, end = None, time.time() + 10
+                while frame is None and time.time() < end:
+                    try:
+                        data, fds, _, _ = socket.recv_fds(c, 65536, 4)
+                    except socket.timeout:
+                        continue
+                    for line in data.split(b"\n"):
+                        # The first frame has the default size; the one asked for follows.
+                        if line.startswith(b"frame") and fds:
+                            w, h, stride = (int(v) for v in line.split()[1:4])
+                            fd = fds.pop(0)
+                            if (w, h) == (400, 300):
+                                frame = (mmap.mmap(fd, stride * h, mmap.MAP_SHARED, mmap.PROT_READ), stride)
+                            os.close(fd)
+                self.assertIsNotNone(frame, "no frame")
+                fb, stride = frame
+
+                def pixel(x, y):
+                    b, g, r, a = fb[y * stride + x * 4:y * stride + x * 4 + 4]
+                    return r, g, b, a
+
+                def settle(x, y, alpha):
+                    deadline = time.time() + 5
+                    while time.time() < deadline and pixel(x, y)[3] != alpha:
+                        time.sleep(0.05)
+                    return pixel(x, y)
+
+                corner = settle(1, 1, 128)
+                self.assertEqual(corner[3], 128, corner)
+                self.assertTrue(all(v <= corner[3] for v in corner[:3]), corner)  # premultiplied
+                self.assertEqual(settle(250, 200, 128)[3], 128)  # an empty cell
+                # Inside the first red cell (padding 6), once the program's output is drawn.
+                deadline = time.time() + 5
+                while time.time() < deadline and not pixel(8, 10)[0] > pixel(8, 10)[1] + 60:
+                    time.sleep(0.05)
+                red = pixel(8, 10)
+                self.assertEqual(red[3], 255, red)
+                self.assertGreater(red[0], red[1] + 60, red)
+                c.sendall(b"opacity 255\n")
+                self.assertEqual(settle(1, 1, 255)[3], 255)
+                self.assertEqual(settle(250, 200, 255)[3], 255)
+                # And back down: the background replaces what was there, never blends over it.
+                c.sendall(b"opacity 100\n")
+                self.assertEqual(settle(1, 1, 100)[3], 100)
+                self.assertEqual(settle(250, 200, 100)[3], 100)
+                c.close()
+            finally:
+                p.kill()
+                p.wait()
+
+
+@unittest.skipUnless(os.path.exists(HELPER) and shutil.which("qml6") and shutil.which("magick"),
+                     "needs the native build, qml6 and ImageMagick")
+class SeeThroughInTheView(unittest.TestCase):
+    """The whole way: omaremote-ssh's see-through background through RdpView onto the screen. Shown
+    over magenta and over green, each pixel's alpha follows from the two (c = p*a + m*(1 - a))."""
+
+    def shown(self, alpha, backdrop, d, late=False):
+        sock = os.path.join(d, f"s{backdrop[1:]}")
+        config = "\n".join(["arg=/bin/sh", "arg=-c", "arg=sleep 30", "reconnect=0", "font=monospace",
+                            "fontSize=10"]) + "\n"
+        env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+        p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, text=True, env=env)
+        p.stdin.write(config)
+        p.stdin.close()
+        png = os.path.join(d, f"{alpha}-{backdrop[1:]}.png")
+        try:
+            plugin = os.path.join(HERE, "..", "native", "build", "qml")
+            subprocess.run([shutil.which("qml6"), os.path.join(HERE, "qml", "terminal.qml"), "--", sock, str(alpha),
+                            backdrop, png] + (["late"] if late else []), env=dict(os.environ, QT_QPA_PLATFORM="offscreen", QML_IMPORT_PATH=plugin),
+                           capture_output=True, timeout=30)
+        finally:
+            p.kill()
+            p.wait()
+        self.assertTrue(os.path.exists(png), "nothing shown")
+        out = subprocess.run(["magick", png, "-format", "%[fx:round(p{200,200}.r*255)] %[fx:round(p{200,200}.g*255)]",
+                              "info:"], capture_output=True, text=True, check=True).stdout.split()
+        return int(out[0]), int(out[1])
+
+    def alpha(self, alpha, late=False):
+        with tempfile.TemporaryDirectory() as d:
+            m, g = self.shown(alpha, "#ff00ff", d, late), self.shown(alpha, "#00ff00", d, late)
+        # Red: 255 behind magenta, 0 behind green; green the other way round. c1 - c2 = 255 (1 - a).
+        return round(255 - ((m[0] - g[0]) + (g[1] - m[1])) / 2)
+
+    def test_the_background_reaches_the_screen_at_the_alpha_asked(self):
+        self.assertAlmostEqual(self.alpha(166), 166, delta=2)
+
+    def test_told_after_the_first_frame_it_reads_that_frame_again(self):
+        # The tab learns it is a terminal after a frame was mapped as RGB32 (bindings in any order).
+        self.assertAlmostEqual(self.alpha(166, late=True), 166, delta=2)
+
+    def test_solid_stays_solid(self):
+        self.assertAlmostEqual(self.alpha(255), 255, delta=1)

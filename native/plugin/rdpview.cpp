@@ -134,6 +134,7 @@ void RdpView::tryAttach()
 	connect(m_notifier, &QSocketNotifier::activated, this, &RdpView::onReadable);
 	emit attachedChanged();
 	sendSize();
+	sendOpacity();
 	// Gliff pictures straight from the decoder's surfaces, when the scene graph draws with OpenGL
 	// (EGL takes the dmabufs); other sessions ignore the line.
 	if (!m_gpuFailed && QQuickWindow::graphicsApi() == QSGRendererInterface::OpenGL &&
@@ -470,8 +471,11 @@ void RdpView::mapFrame(int fd, int w, int h, int stride)
 	// BGRX in memory is 0xffRRGGBB as a little-endian word: Qt's RGB32. The mapping lives as long
 	// as any copy of the image: the render thread uploads from a copy after sync, so unmapping
 	// here when the session resizes would pull the pixels out from under that upload.
-	m_image = QImage(static_cast<const uchar*>(p), w, h, stride, QImage::Format_RGB32, releaseMapping,
-	                 new Mapping { p, size });
+	// A terminal's frame carries its background's alpha, premultiplied (terminalAlpha); the alpha
+	// is painted by omaremote-ssh itself, never sent by a server.
+	m_image = QImage(static_cast<const uchar*>(p), w, h, stride,
+	                 m_terminalAlpha >= 0 ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32,
+	                 releaseMapping, new Mapping { p, size });
 	m_dirty = true;
 	m_damageAll = true;
 	emit remoteSizeChanged();
@@ -630,7 +634,7 @@ public:
 	qint64 comparisonKey() const override { return qint64(quintptr(this)); }
 	QRhiTexture* rhiTexture() const override { return m_texture; }
 	QSize textureSize() const override { return m_image.size(); }
-	bool hasAlphaChannel() const override { return false; }
+	bool hasAlphaChannel() const override { return m_image.hasAlphaChannel(); }
 	bool hasMipmaps() const override { return false; }
 
 	void commitTextureOperations(QRhi* rhi, QRhiResourceUpdateBatch* updates) override
@@ -775,10 +779,13 @@ QSGNode* RdpView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 	}
 
 	auto* node = static_cast<QSGImageNode*>(old);
-	if (m_image.isNull())
+	if (m_image.isNull() || m_newNode)
 	{
 		delete node;
-		return nullptr;
+		node = nullptr;
+		m_newNode = false;
+		if (m_image.isNull())
+			return nullptr;
 	}
 	if (!node)
 	{
@@ -792,13 +799,17 @@ QSGNode* RdpView::updatePaintNode(QSGNode* old, UpdatePaintNodeData*)
 		if (window()->rhi())
 		{
 			// Only what changed goes to the GPU: a blinking cursor on a Retina screen was 30 MB a time.
-			if (!frame)
+			const bool fresh = !frame;
+			if (fresh)
 			{
 				frame = new FrameTexture;
-				node->setTexture(frame);
 				m_damageAll = true;
 			}
 			const qsizetype bytes = frame->setImage(m_image, m_damage, m_damageAll);
+			// After setImage: the node reads hasAlphaChannel() here, to blend a terminal's see-through
+			// background (premultiplied) or not.
+			if (fresh)
+				node->setTexture(frame);
 			node->markDirty(QSGNode::DirtyMaterial);
 			countUpload(bytes);
 		}
@@ -1334,6 +1345,36 @@ void RdpView::clipboardChanged(bool empty)
 		sendClipboard();
 	else
 		withdrawClipboard();
+}
+
+void RdpView::setTerminalAlpha(int alpha)
+{
+	alpha = qBound(-1, alpha, 255);
+	if (alpha == m_terminalAlpha)
+		return;
+	const bool wasTerminal = m_terminalAlpha >= 0;
+	m_terminalAlpha = alpha;
+	// A frame mapped before the tab knew it was a terminal (or the other way round): the same mapping
+	// read in the other format, kept alive by the old image.
+	const QImage::Format format = alpha >= 0 ? QImage::Format_ARGB32_Premultiplied : QImage::Format_RGB32;
+	if (!m_image.isNull() && (alpha >= 0) != wasTerminal && m_image.format() != format)
+	{
+		auto* keep = new QImage(m_image);
+		m_image = QImage(keep->constBits(), keep->width(), keep->height(), int(keep->bytesPerLine()), format,
+		                 [](void* image) { delete static_cast<QImage*>(image); }, keep);
+		m_dirty = true;
+		m_damageAll = true;
+		m_newNode = true;
+		update();
+	}
+	emit terminalAlphaChanged();
+	sendOpacity();
+}
+
+void RdpView::sendOpacity()
+{
+	if (m_fd >= 0 && m_terminalAlpha >= 0)
+		send("opacity " + QByteArray::number(m_terminalAlpha));
 }
 
 void RdpView::setOfferAtConnect(bool on)

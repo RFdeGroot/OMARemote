@@ -18,7 +18,7 @@ Rectangle {
     // The row last clicked, outlined like the sidebar's keyboard cursor.
     property string pickedId: ""
 
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     function isActive(c) {
         return Sessions.activeFor(c.id).length > 0

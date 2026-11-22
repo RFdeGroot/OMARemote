@@ -89,9 +89,27 @@ Item {
         Sessions.refreshMounts()
     }
 
+    // The letterbox around a picture. Not under an SSH terminal on a see-through window: its
+    // see-through background would show this solid ground instead of the desktop.
     Rectangle {
         anchors.fill: parent
+        visible: !(Theme.glass.on && root.isSsh)
         color: Qt.darker(Theme.background, 1.25)
+    }
+
+    // A remote desktop and the area around it stay opaque on a see-through window.
+    Rectangle {
+        anchors.fill: parent
+        visible: root.current && Theme.glass.on && !root.isSsh
+        color: Theme.background
+    }
+
+    // An SSH tab on a see-through window before its first picture: the terminal's background, so
+    // the tab never shows bare desktop. Gone once the picture (which carries it) is there.
+    Rectangle {
+        anchors.fill: parent
+        visible: root.current && root.isSsh && Theme.glass.on && view.remoteSize.width <= 0
+        color: Qt.rgba(Theme.background.r, Theme.background.g, Theme.background.b, Theme.glass.terminal / 255)
     }
 
     RdpView {
@@ -118,6 +136,9 @@ Item {
                         && (root.connection.protocol === "ssh" || root.connection.clipboard !== false)
         // VNC, as Gliff: nothing moves until something is copied during the session.
         offerAtConnect: !!root.connection && root.connection.protocol !== "vnc"
+        // SSH: the terminal's background follows Omarchy's see-through terminals (Theme.glass);
+        // remote desktops stay opaque.
+        terminalAlpha: root.isSsh ? Theme.glass.terminal : -1
         // VNC sends the text itself at once; Gliff's session process applies its own switch.
         withholdPasswords: !root.connection || (root.connection.protocol === "vnc"
                                                  && root.connection.clipboardPasswords !== true)

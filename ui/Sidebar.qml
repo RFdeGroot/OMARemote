@@ -49,7 +49,7 @@ Rectangle {
     signal credentialRequested(string id) // "" for a new set
     signal aboutRequested()
 
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     function countOf(f) {
         if (f === "trash")

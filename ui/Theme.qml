@@ -17,24 +17,67 @@ Singleton {
     readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy/current"
 
     readonly property color background: Commons.Color.background
-    readonly property color foreground: Commons.Color.foreground
-    readonly property color accent: Commons.Color.accent
+    readonly property color foreground: glass.on ? glass.foreground : Commons.Color.foreground
+    readonly property color accent: glass.on ? glass.accent : Commons.Color.accent
     readonly property color urgent: Commons.Color.urgent
     // Secondary text (hosts, times, hints, labels), Flea's dimmed foreground: the theme's own
     // text colour stepped a third of the way toward its background, so it is a quieter grey on
     // dark and light themes alike, held to WCAG AA (4.5:1) on the panel colour.
-    readonly property color muted: {
-        var c = Contrast.ensure(mix(foreground, background, 0.35), surface, 4.5)
+    readonly property color opaqueMuted: {
+        var c = Contrast.ensure(mix(Commons.Color.foreground, background, 0.35), surface, 4.5)
         return Qt.rgba(c.r, c.g, c.b, 1)
+    }
+    readonly property color muted: glass.on ? glass.muted : opaqueMuted
+
+    // See-through windows (Glass.qml): the alpha of a region's ground and the text lifted to read on
+    // it, Flea's material (js/Contrast.js). Glassy: the lowest alpha at which lifted text holds 4.5:1
+    // over the blur's brightest and darkest backdrop, 1 when none does. Transparent: Omarchy's own
+    // terminals' 0.985 focused and 0.96 not (o.transparent_window; groundAlpha), text lifted for 0.96.
+    // Opaque: 1.
+    // The text is lifted for a window Hyprland fades to 0.96 as well: while an SSH tab is shown the
+    // window carries the `terminal` tag (omaremote-session terminal_tag, for Omarchy's clipboard keys)
+    // and Omarchy's rule fades it, text included, as it fades foot. Always, so text does not change
+    // colour with the tab; the ground's alpha is worked out without it.
+    readonly property var glass: {
+        if (!Glass.glassy && !Glass.transparent)
+            return { on: false, alpha: 1, terminal: 255 }
+        var white = Glass.glassy ? Glass.blurBrightness : 1
+        var washes = [selection, hover]
+        var m = Contrast.material(background, surface, Commons.Color.foreground, opaqueMuted, washes, white)
+        var a = Glass.glassy ? Contrast.floor(m, 4.5) : 245
+        if (a >= 255)
+            return { on: false, alpha: 1, terminal: 255 }
+        var faded = Contrast.material(background, surface, Commons.Color.foreground, opaqueMuted, washes, white, 0.96)
+        var k = Contrast.inks(faded, a, 4.5)
+        var accent = Contrast.lift(faded, Commons.Color.accent, a, 3, true)
+        var rgb = function (c) { return Qt.rgba(c.r, c.g, c.b, 1) }
+        return { on: true, alpha: a / 255,
+                 // A terminal's own background: the default terminal's, from its theme file (Glass.qml;
+                 // omarchy-theme-set-glass writes 0.65 there in Glassy, or keeps the theme's own).
+                 // In Transparent a terminal stays solid, as foot does: Omarchy's rule fades the window.
+                 terminal: Glass.glassy ? Math.round(Glass.terminalOpacity * 255) : 255,
+                 foreground: rgb(k.foreground), muted: rgb(k.muted), accent: rgb(accent) }
+    }
+
+    // The ground's alpha, apart from glass so a focus change does not rerun the contrast search:
+    // Transparent follows Omarchy's focused / unfocused opacity.
+    readonly property real groundAlpha: !glass.on ? 1 : Glass.transparent && Qt.application.active ? 0.985 : glass.alpha
+
+    // A region's ground (the header, sidebar, list, detail, status bar): see-through on glass, so
+    // every pixel carries one plane at the glass alpha. Only regions use it; cards, menus and the
+    // area around a remote desktop keep their opaque colours.
+    function ground(c) {
+        return glass.on ? Qt.rgba(c.r, c.g, c.b, groundAlpha) : c
     }
     property color success: "#a6e3a1"
     property color warning: "#f9e2af"
     // Panels sit one step off the background, toward the foreground.
-    readonly property color surface: mix(background, foreground, 0.045)
-    readonly property color raised: mix(background, foreground, 0.08)
-    readonly property color hairline: mix(background, foreground, 0.12)
-    readonly property color selection: Util.alpha(accent, 0.16)
-    readonly property color hover: Util.alpha(foreground, 0.05)
+    // From Omarchy's own colours, never the lifted ones: glass is worked out from these.
+    readonly property color surface: mix(background, Commons.Color.foreground, 0.045)
+    readonly property color raised: mix(background, Commons.Color.foreground, 0.08)
+    readonly property color hairline: mix(background, Commons.Color.foreground, 0.12)
+    readonly property color selection: Util.alpha(Commons.Color.accent, 0.16)
+    readonly property color hover: Util.alpha(Commons.Color.foreground, 0.05)
 
     readonly property string font: Style.font.family
     readonly property int caption: Style.font.caption
@@ -129,6 +172,7 @@ Singleton {
             colorsFile.reload()
             shellFile.reload()
             Style.scheduleRefresh()
+            Glass.reread()
         }
     }
 }

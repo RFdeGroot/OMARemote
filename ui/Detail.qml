@@ -22,7 +22,7 @@ Rectangle {
     signal newRequested()
     signal saveQuickRequested()
 
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     readonly property var sessions: { Sessions.sessions; return connection ? Sessions.forConnection(connection.id) : [] }
     readonly property bool running: sessions.some(Sessions.isActive)

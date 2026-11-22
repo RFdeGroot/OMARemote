@@ -1350,7 +1350,7 @@ ANSWER_LIMITS.update({"read": ANSWER_MAX_BYTES, "list": 4 << 20, "hotkeys": 4 <<
                       "ssh-keys": 1 << 20, "self": 1 << 20, "mounts": 1 << 20, "import-sources": 1 << 20,
                       "ssh-config": 1 << 20, "pick": 1 << 20, "browse": 64 << 10, "unmount": 64 << 10,
                       "restart-gvfs": 64 << 10, "paths": 64 << 10, "update-check": 64 << 10,
-                      "plugin-check": 64 << 10, "monitor-scale": 4 << 10, "close-key": 4 << 10,
+                      "plugin-check": 64 << 10, "monitor-scale": 4 << 10, "close-key": 4 << 10, "terminal-glass": 4 << 10,
                       "system-name": 4 << 10})
 ANSWER_PLAIN = ("monitor-scale", "close-key", "system-name")
 ANSWER_TOO_LARGE = 3
@@ -2852,8 +2852,8 @@ def build_vnc_config(conn, password=None):
 
 # The terminal's look: the theme's terminal colours (Omarchy writes a foot.ini for every theme) and
 # the default terminal's font size; the font is fontconfig's monospace, which Omarchy sets.
-THEME_TERMINAL = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                              "omarchy", "current", "theme", "foot.ini")
+# Omarchy writes the current theme under $HOME, whatever XDG_STATE_HOME says (omarchy-theme-set).
+THEME_TERMINAL = os.path.join(os.path.expanduser("~/.local/state"), "omarchy", "current", "theme", "foot.ini")
 FONT_SIZE_RES = {
     "foot": (os.path.join(CONFIG_HOME, "foot", "foot.ini"), r"^\s*font\s*=.*?:size=([\d.]+)"),
     "alacritty": (os.path.join(CONFIG_HOME, "alacritty", "alacritty.toml"), r"^\s*size\s*=\s*([\d.]+)"),
@@ -2865,8 +2865,8 @@ FONT_SIZE_RES = {
 def default_terminal():
     """The default terminal's name (foot, alacritty, ghostty, kitty), as xdg-terminal-exec picks it."""
     try:
-        out = subprocess.run(["xdg-terminal-exec", "--print-id"], capture_output=True, text=True, timeout=2).stdout
-    except (OSError, subprocess.SubprocessError):
+        out = capped_output(["xdg-terminal-exec", "--print-id"], 4096, 2)
+    except (OSError, ValueError, subprocess.SubprocessError):
         return ""
     out = out.strip().lower()
     return next((name for name in FONT_SIZE_RES if name in out), "")
@@ -2886,6 +2886,60 @@ def terminal_font_size(terminal=None, fallback=9.0):
         if m:
             return float(m.group(1))
     return fallback
+
+
+# Omarchy's see-through terminals: the opacity each terminal's theme file sets. In Glassy windows
+# omarchy-theme-set-glass writes 0.65 there, or keeps the theme's own value; the user's choice of
+# default terminal decides which file counts.
+THEME_DIR = os.path.dirname(THEME_TERMINAL)
+TERMINAL_OPACITY_RES = {
+    "foot": ("foot.ini", r"^\s*alpha\s*=\s*([\d.]+)\s*$"),
+    "alacritty": ("alacritty.toml", r"^\s*opacity\s*=\s*([\d.]+)\s*$"),
+    "ghostty": ("ghostty.conf", r"^\s*background-opacity\s*=\s*([\d.]+)\s*$"),
+    "kitty": ("kitty.conf", r"^\s*background_opacity\s+([\d.]+)\s*$"),
+}
+# Omarchy's own: its glassy terminals and glass.lua's blur brightness.
+GLASS_TERMINAL_OPACITY = 0.65
+GLASS_BLUR_BRIGHTNESS = 0.75
+
+
+def terminal_opacity(terminal=None, theme_dir=None):
+    """The background opacity (0..1) the default terminal's theme file sets: the last setting in
+    it, as the terminal reads it; foot's file when the default is none of the four. None when the
+    file sets none (a theme switch in Opaque or Transparent leaves the terminals solid)."""
+    name = terminal if terminal is not None else default_terminal()
+    if name not in TERMINAL_OPACITY_RES:
+        name = "foot"
+    file, pattern = TERMINAL_OPACITY_RES[name]
+    try:
+        found = re.findall(pattern, read_text(os.path.join(theme_dir or THEME_DIR, file), 1 << 20, prefix=True), re.M)
+    except (OSError, ValueError):
+        return None
+    for value in reversed(found):
+        try:
+            v = float(value)
+        except ValueError:
+            continue
+        if 0 <= v <= 1:
+            return v
+    return None
+
+
+def blur_brightness():
+    """Hyprland's blur brightness (glass.lua sets 0.75): how bright the backdrop behind a glassy
+    surface can be. Omarchy's own when Hyprland does not say."""
+    answer = _hyprctl_json("getoption", "decoration:blur:brightness")
+    v = answer.get("float") if isinstance(answer, dict) else None
+    return float(v) if isinstance(v, (int, float)) and 0 < v <= 2 else GLASS_BLUR_BRIGHTNESS
+
+
+def terminal_glass():
+    """What the window needs for Omarchy's see-through windows: which terminal is the default, its
+    theme's background opacity, and Hyprland's blur brightness."""
+    name = default_terminal()
+    opacity = terminal_opacity(name)
+    return {"terminal": name or "foot", "opacity": GLASS_TERMINAL_OPACITY if opacity is None else opacity,
+            "blur": round(blur_brightness(), 4)}
 
 
 def build_ssh_command(conn):
@@ -4776,6 +4830,9 @@ def main(argv):
         return 0 if focus_window(rest[0], rest[1]) else 1
     if cmd == "monitor-scale":
         print(monitor_scale())
+        return 0
+    if cmd == "terminal-glass":
+        print(json.dumps(terminal_glass()))
         return 0
     if cmd == "secret" and len(rest) in (2, 3):
         # secret <set|clear|has> <connection-id>   or   secret <set|clear|has> credential <set-id>

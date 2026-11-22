@@ -728,6 +728,49 @@ class Ssh(unittest.TestCase):
                 session.FONT_SIZE_RES.clear()
                 session.FONT_SIZE_RES.update(saved)
 
+    def test_terminal_opacity_from_the_default_terminals_theme_file(self):
+        # Omarchy's glass block, as omarchy-theme-set-glass writes it into each terminal's theme file.
+        files = {"foot.ini": "[colors-dark]\n# omarchy-glass begin\nalpha=0.65\n# omarchy-glass end\nbackground=03142C\n",
+                 "ghostty.conf": "background = #03142c\nbackground-opacity = 0.9\nbackground-opacity = 0.55\n",
+                 "alacritty.toml": "[window]\nopacity = 0.8\n",
+                 "kitty.conf": "background_opacity 0.7\n"}
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in files.items():
+                with open(os.path.join(d, name), "w") as f:
+                    f.write(text)
+            self.assertEqual(session.terminal_opacity("foot", d), 0.65)
+            self.assertEqual(session.terminal_opacity("ghostty", d), 0.55)  # the last one, as Ghostty reads it
+            self.assertEqual(session.terminal_opacity("alacritty", d), 0.8)
+            self.assertEqual(session.terminal_opacity("kitty", d), 0.7)
+            # A default terminal OMARemote does not know: foot's file, which Omarchy writes for every theme.
+            self.assertEqual(session.terminal_opacity("wezterm", d), 0.65)
+            # Out of range or not a number: skipped; nothing usable: None.
+            with open(os.path.join(d, "kitty.conf"), "w") as f:
+                f.write("background_opacity 0.4\nbackground_opacity 7\n")
+            self.assertEqual(session.terminal_opacity("kitty", d), 0.4)
+            os.remove(os.path.join(d, "alacritty.toml"))
+            self.assertIsNone(session.terminal_opacity("alacritty", d))
+            # A FIFO in its place is not read (read_text): no hang, no value.
+            os.mkfifo(os.path.join(d, "alacritty.toml"))
+            self.assertIsNone(session.terminal_opacity("alacritty", d))
+
+    def test_terminal_glass_answers_with_omarchys_values_when_nothing_says(self):
+        saved = (session.default_terminal, session.terminal_opacity, session._hyprctl_json)
+        try:
+            session.default_terminal = lambda: ""
+            session.terminal_opacity = lambda name=None, theme_dir=None: None
+            session._hyprctl_json = lambda *a: None
+            self.assertEqual(session.terminal_glass(), {"terminal": "foot", "opacity": 0.65, "blur": 0.75})
+            session._hyprctl_json = lambda *a: {"option": "decoration:blur:brightness", "float": 0.6}
+            session.terminal_opacity = lambda name=None, theme_dir=None: 0.8
+            session.default_terminal = lambda: "ghostty"
+            self.assertEqual(session.terminal_glass(), {"terminal": "ghostty", "opacity": 0.8, "blur": 0.6})
+            # An odd brightness is Omarchy's own.
+            session._hyprctl_json = lambda *a: {"float": "bright"}
+            self.assertEqual(session.terminal_glass()["blur"], 0.75)
+        finally:
+            session.default_terminal, session.terminal_opacity, session._hyprctl_json = saved
+
 
 class SshKeys(unittest.TestCase):
     def setUp(self):

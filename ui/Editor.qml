@@ -17,7 +17,7 @@ Rectangle {
     signal saved(var connection, string password, bool passwordTouched, string gatewayPassword, bool gatewayPasswordTouched)
     signal cancelled()
 
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     readonly property bool isNew: !d.id
     readonly property bool isVnc: d.protocol === "vnc"

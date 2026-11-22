@@ -1028,9 +1028,11 @@ FocusScope {
         }
     }
 
+    // The window's ground. On glass the body draws none: each region draws its own
+    // (Theme.ground), since two see-through planes over each other would add up.
     Rectangle {
         anchors.fill: parent
-        color: Theme.background
+        color: Theme.glass.on ? "transparent" : Theme.background
     }
 
     ColumnLayout {
@@ -1042,7 +1044,7 @@ FocusScope {
             id: header
             Layout.fillWidth: true
             implicitHeight: tabBar.implicitHeight
-            color: Theme.surface
+            color: Theme.ground(Theme.surface)
 
             RowLayout {
                 anchors.fill: parent
@@ -1187,6 +1189,13 @@ FocusScope {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
+                // The list's ground on glass (off glass the body's shows through).
+                Rectangle {
+                    anchors.fill: parent
+                    visible: Theme.glass.on
+                    color: Theme.ground(Theme.background)
+                }
+
                 ConnectionList {
                     id: list
                     anchors.fill: parent
@@ -1303,6 +1312,14 @@ FocusScope {
                 id: sessionArea
                 anchors.fill: parent
                 anchors.leftMargin: root.dockWidth
+
+                // A remote desktop and the area around it stay opaque on glass. An SSH tab's terminal
+                // draws its own see-through background (SessionView).
+                Rectangle {
+                    anchors.fill: parent
+                    visible: Theme.glass.on && root.currentTab !== "home" && !root.currentIsSsh
+                    color: Theme.background
+                }
 
                 // One view per open tab, kept alive while hidden so switching is instant. Loaded by
                 // URL so a missing native plugin breaks only the tabs, not the whole window.
@@ -1980,6 +1997,8 @@ FocusScope {
         else if (a === "save") (editingGroup ? groupEditor : editingCredential ? credentialEditor : editor).save()
         else if (parts[0] === "cred") openCredential(parts[1] === "new" ? "" : parts[1])
         else if (a === "pin") togglePinned()
+        // A session tab with no session behind it (glass tests: the area around a remote desktop).
+        else if (parts[0] === "tab") { openTabs = openTabs.concat([parts[1]]); currentTab = parts[1] }
         else if (a === "popout") popOut(currentTab)
         else if (parts[0] === "run") runAction(parts[1])
         else if (parts[0] === "update") { Updates.latest = parts.slice(1).join(":"); Updates.newer = true }

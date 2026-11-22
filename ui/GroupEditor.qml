@@ -27,7 +27,7 @@ Rectangle {
     signal deleted(string name)
     signal cancelled()
 
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     readonly property int members: { Store.stored; return isNew ? 0 : Store.membersOf(originalName) }
 

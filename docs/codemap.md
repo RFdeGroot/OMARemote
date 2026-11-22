@@ -38,7 +38,7 @@ Sections, in order (`# ------- <name>` lines):
 Commands (`omaremote-session <cmd>`; `run_bounded` caps what each one the window reads whole prints, `ANSWER_LIMITS`): read list stop forget args export import sync pick ssh-keys
 import-sources import-scan import-foreign ssh-config watch-folder system-name paths view float terminal-tag summon open-window toggle place
 hide close-key browse unmount mounts restart-gvfs hotkeys hypr-hotkeys fullscreen center plugin-check
-update-check focus monitor-scale secret, plus launch.
+update-check focus monitor-scale terminal-glass secret, plus launch.
 
 ## ui/ (QML)
 
@@ -52,7 +52,8 @@ Singletons:
 | Hotkeys.qml | hotkey windows and the Hyprland config they write |
 | Updates.qml | the update check and `omaremote-update` |
 | Keymap.qml | every key binding: the one table the keys, the keymap sheet and the hints read; the session keys (Settings › Keyboard: `session()`, `isHostKey`, `isSessionChord`) |
-| Theme.qml | colours from Omarchy (`Commons.Color`), sizes |
+| Theme.qml | colours from Omarchy (`Commons.Color`), sizes; `glass` (see-through alpha, lifted text, a terminal's alpha), `ground(c)` for a region's background |
+| Glass.qml | Omarchy's Window Opacity mode (glassy / transparent / opaque) from its toggle files, the default terminal's opacity and the blur brightness (`terminal-glass`); rereads on Hyprland's configreloaded and a theme switch |
 
 The manager window:
 
@@ -70,6 +71,7 @@ The manager window:
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
 | Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim scrollbar on panes that scroll; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
 | js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; `Limits.count`: how many connections, groups, … (`STORE_MAX_*`, `Store.full`); sources in docs/limits.md |
+| js/Contrast.js | WCAG contrast; see-through grounds (Flea's material): `floor`, `inks`, `lift`, `worst` over a blurred/bare backdrop, washes and Hyprland's window fade |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels, `sessionSpec`/`isSessionChord` |
 
 ## native/ (C++)
@@ -111,7 +113,10 @@ Build: `ninja -C native/build`.
   (a session tab's clipboard through tests/qml/clipboard.qml against a fake session socket: wl-paste only,
   nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc
   against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept), test_ssh.py
-  (omaremote-ssh with a stand-in ssh: a dropped connection tried again, what is never retried).
+  (omaremote-ssh with a stand-in ssh: a dropped connection tried again, what is never retried; the
+  see-through background in the shared frame and through RdpView, tests/qml/terminal.qml), test_glass.py (Omarchy's
+  Glassy/Transparent: the contrast maths on every installed theme, the real window over magenta and green: one
+  plane per region, SSH tabs at the terminal's alpha).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
   OMAREMOTE_ACTIONS, read by ui/boot/shell.qml).
 - docs/plugin-interface.md (the bar plugin's contract), docs/security-review.md (before every

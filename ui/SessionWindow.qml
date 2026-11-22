@@ -188,9 +188,11 @@ FocusScope {
         }
     }
 
+    // The window's ground. On a see-through window (Theme.glass) the bars draw their own, the area
+    // of a remote desktop an opaque one, and an SSH terminal its own see-through background.
     Rectangle {
         anchors.fill: parent
-        color: Theme.background
+        color: Theme.glass.on ? "transparent" : Theme.background
     }
 
     // Hyprland maps a new window tiled, at a tile's size, until place floats it. The window shows
@@ -227,7 +229,7 @@ FocusScope {
             visible: !root.wholeScreen
             Layout.fillWidth: true
             implicitHeight: Theme.chrome
-            color: Theme.surface
+            color: Theme.ground(Theme.surface)
             Row {
                 anchors.left: parent.left
                 anchors.leftMargin: Theme.padX

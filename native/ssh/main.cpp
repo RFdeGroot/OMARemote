@@ -144,6 +144,10 @@ struct Session
 	int zoom = 0;                   // points added to fontSize (ctrl+= / ctrl+- / ctrl+0), this tab only
 	std::set<uint32_t> zoomKeys;    // their keys held: the release is ours too
 	int pad = 6; // margin around the cells, in pixels
+	// How opaque the terminal's own background is (the view's `opacity` line, Omarchy's see-through
+	// terminals): 255 is solid. Only the default background takes it; a cell with a colour of its
+	// own stays solid, as in Ghostty, and text is drawn solid on top.
+	int bgAlpha = 255;
 	Palette pal;
 	std::string themePath;
 	struct timespec themeTime = {};
@@ -366,7 +370,9 @@ static void resize(int w, int h, int scale, bool fontChanged = false)
 			return;
 		old = g.frame;
 		g.frame = fb;
-		g.image = QImage(fb.data, w, h, int(fb.stride), QImage::Format_RGB32);
+		// Premultiplied: B G R A in memory. With the background solid every A is 255, the same bytes
+		// as RGB32; the view reads it this way only for SSH (RdpView.alphaFrames).
+		g.image = QImage(fb.data, w, h, int(fb.stride), QImage::Format_ARGB32_Premultiplied);
 		g.pixelW = w;
 		g.pixelH = h;
 	}
@@ -446,6 +452,13 @@ static bool mode(uint16_t number)
 static QColor qcolor(GhosttyColorRgb c)
 {
 	return QColor(c.r, c.g, c.b);
+}
+
+// The default background at the view's alpha. It is painted with CompositionMode_Source, so it
+// replaces what was there instead of blending over the previous picture.
+static QColor background(GhosttyColorRgb c)
+{
+	return QColor(c.r, c.g, c.b, g.bgAlpha);
 }
 
 // One row of the render state, the row iterator on it.
@@ -563,7 +576,9 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 	if (ghostty_render_state_row_get(g.rowIt, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &g.cells) != GHOSTTY_SUCCESS)
 		return;
 	const int y = 0;
-	painter.fillRect(QRect(0, y, g.cols * g.cellW, g.cellH), qcolor(colors.background));
+	painter.setCompositionMode(QPainter::CompositionMode_Source);
+	painter.fillRect(QRect(0, y, g.cols * g.cellW, g.cellH), background(colors.background));
+	painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 	const bool cursorHere = cursor.visible && cursor.viewport_has_value && cursor.viewport_y == row && !scrolled_back();
 	const QColor cursorColour = colors.cursor_has_value ? qcolor(colors.cursor) : g.pal.cursor;
 	uint32_t cps[32];
@@ -719,7 +734,8 @@ static void flush(bool announce)
 	{
 		// Only the padding: the rows paint their own background.
 		QPainter frame(&g.image);
-		const QColor bg = qcolor(colors.background);
+		frame.setCompositionMode(QPainter::CompositionMode_Source);
+		const QColor bg = background(colors.background);
 		const int gridH = g.rows * g.cellH;
 		frame.fillRect(0, 0, g.pixelW, g.pad, bg);
 		frame.fillRect(0, g.pad + gridH, g.pixelW, g.pixelH - g.pad - gridH, bg);
@@ -1287,6 +1303,15 @@ static void handle_line(const std::string& line)
 		wheel(num(1), int(num(3)), int(num(4)));
 	else if (cmd == "clip" && w.size() >= 2)
 		g.localClip = unb64(w[1]);
+	else if (cmd == "opacity" && w.size() >= 2)
+	{
+		const int alpha = int(std::clamp(num(1), 0L, 255L));
+		if (alpha != g.bgAlpha)
+		{
+			g.bgAlpha = alpha;
+			g.full = true;
+		}
+	}
 	else if (cmd == "disconnect")
 		g.quit = 1;
 	else if (cmd == "reconnect" && w.size() >= 2 && !g.reconnectLine.empty())

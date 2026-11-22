@@ -36,7 +36,7 @@ Rectangle {
     property bool showCounts: true
 
     height: Math.round(Theme.small * 2.2)
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     // The hints that fit beside the counts: the first ones and always the last (the keymap, which
     // lists the rest), so a narrow window drops hints instead of drawing them over the counts.

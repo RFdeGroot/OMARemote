@@ -14,7 +14,9 @@ ShellRoot {
         title: body.item ? body.item.title : "OMARemote"
         implicitWidth: 1280
         implicitHeight: 800
-        color: "#101315"
+        // See-through from the start, as the manager's (boot/shell.qml): Omarchy's Glassy and
+        // Transparent windows can be switched on later. Off them the body paints every pixel.
+        color: "transparent"
         // Shown once the body has the theme and place waits for it (SessionWindow.showable), so it
         // never shows the default colours or a tiled frame first; after a second in any case.
         visible: (body.item && body.item.showable) || themeWait.over

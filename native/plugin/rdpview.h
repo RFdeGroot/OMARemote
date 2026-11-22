@@ -61,6 +61,10 @@ class RdpView : public QQuickItem
 	// Whether the desktop's clipboard goes to the session when it attaches (RDP, as mstsc; SSH).
 	// Without it (VNC) nothing moves until something is copied during the session.
 	Q_PROPERTY(bool offerAtConnect READ offerAtConnect WRITE setOfferAtConnect NOTIFY offerAtConnectChanged)
+	// A terminal's background alpha (0-255, Omarchy's see-through terminals), sent to the session as
+	// an `opacity` line; its frames are then read as premultiplied ARGB. -1 (the default): not a
+	// terminal, frames are opaque RGB32 (RDP, VNC, Gliff). Set once per tab, before a frame comes.
+	Q_PROPERTY(int terminalAlpha READ terminalAlpha WRITE setTerminalAlpha NOTIFY terminalAlphaChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -84,6 +88,8 @@ public:
 	bool withholdPasswords() const { return m_withholdPasswords; }
 	void setWithholdPasswords(bool on);
 	bool offerAtConnect() const { return m_offerAtConnect; }
+	int terminalAlpha() const { return m_terminalAlpha; }
+	void setTerminalAlpha(int alpha);
 	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
 
@@ -127,6 +133,7 @@ signals:
 	void shareClipboardChanged();
 	void withholdPasswordsChanged();
 	void offerAtConnectChanged();
+	void terminalAlphaChanged();
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
 	void pasteDone(int job);
@@ -261,5 +268,8 @@ private:
 	// a clipboard already shared there is offered again, as Gliff's across a reconnect.
 	bool m_clipChanged = false;
 	bool m_offerAtConnect = false; // until told otherwise: bindings run in any order
+	int m_terminalAlpha = -1;
+	bool m_newNode = false; // the frame's format changed: the node reads it only when made
+	void sendOpacity();
 	Qt::MouseButtons m_buttons;
 };

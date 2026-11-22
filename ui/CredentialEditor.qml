@@ -15,7 +15,7 @@ Rectangle {
     signal deleted(string id)
     signal cancelled()
 
-    color: Theme.surface
+    color: Theme.ground(Theme.surface)
 
     readonly property bool isNew: !cred.id
     readonly property var users: { Store.stored; Store.groupSettings; return cred.id ? Store.credentialUsers(cred.id) : { connections: 0, groups: 0 } }
