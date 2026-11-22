@@ -235,6 +235,81 @@ class KittyGraphics(unittest.TestCase):
         self.assertIn(b"\x1b[?", got)  # the device attributes
         self.assertNotIn(b"\x1b_G", got)
 
+# A program that asks the terminal 20000 times for its attributes and never reads the answers,
+# then sets a title (after "pid " with its own pid in $1) and waits: the pty's input fills up.
+DEAF_PROGRAM = r"""
+import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b"\x1b[c" * 20000)
+os.write(1, b"\x1b]0;after the flood\x07")
+time.sleep(30)
+"""
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class DeafServer(unittest.TestCase):
+    """A remote program that stops reading its input fills the pty: the terminal's answers (and
+    keys, pastes) can no longer be written. That must not hang the session for good."""
+
+    def start(self, d):
+        prog = os.path.join(d, "deaf.py")
+        with open(prog, "w") as f:
+            f.write(DEAF_PROGRAM)
+        sock = os.path.join(d, "s")
+        config = "\n".join(["arg=/usr/bin/python3", "arg=-I", f"arg={prog}", "reconnect=0",
+                            "font=monospace", "fontSize=10"]) + "\n"
+        env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+        p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, text=True, env=env)
+        p.stdin.write(config)
+        p.stdin.close()
+        return p, sock
+
+    def test_a_stop_ends_it_while_the_server_reads_nothing(self):
+        import signal, time
+        with tempfile.TemporaryDirectory() as d:
+            p, _ = self.start(d)
+            try:
+                time.sleep(1.5)
+                p.send_signal(signal.SIGTERM)
+                p.wait(4)
+            finally:
+                p.kill()
+                p.wait()
+
+    def test_answers_nobody_reads_are_dropped_and_the_terminal_goes_on(self):
+        import base64, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            p, sock = self.start(d)
+            try:
+                c = socket.socket(socket.AF_UNIX)
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                c.settimeout(1)
+                buf, title, end = b"", None, time.time() + 15
+                while title is None and time.time() < end:
+                    try:
+                        chunk = c.recv(1 << 20)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if line.startswith(b"title "):
+                            title = base64.b64decode(line[6:])
+                self.assertEqual(title, b"after the flood")
+            finally:
+                p.kill()
+                p.wait()
+
+
 GLYPH_TEST = os.path.join(HERE, "..", "native", "build", "ssh-glyph-test")
 
 

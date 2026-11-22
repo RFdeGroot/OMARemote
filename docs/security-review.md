@@ -122,7 +122,9 @@ an audit after two sync findings in a row found six more), and add the class her
   only through `oma::readClipboard`); every read in a session process has a timeout so a server
   stopping mid-message ends the session; only ordinary files are opened (a FIFO hangs: sync files
   too); queries on a foreign database stop after a few seconds; a sync round and a clipboard owner's
-  pipe have one too. (0.8.0, 0.8.3, 0.9.4, 0.9.5, 0.9.7)
+  pipe have one too. Writes count as well: the SSH terminal's answers to a program that never read
+  them waited forever; a write now ends on a stop and gives up after 5 s without progress. (0.8.0,
+  0.8.3, 0.9.4, 0.9.5, 0.9.7, 0.9.18)
 - **A switch works for every protocol.** A new setting is checked in each session process (RDP, VNC,
   SSH, Gliff): VNC shared the clipboard with the switch off. Off means untouched, not just unused.
   (0.9.4)

@@ -788,10 +788,18 @@ static void scroll_to_bottom()
 
 // ---------------------------------------------------------------- libghostty-vt callbacks
 
+// How long the pty may take no byte at all before what we write to it is dropped: a remote program
+// that stops reading its input (a server flooding queries it never reads the answers to) must not
+// hang the session. A slow one that still reads keeps everything: the time counts without progress.
+static constexpr uint64_t kPtyStallMs = 5000;
+static uint64_t g_ptyStalledSince = 0; // when the pty last refused a write, 0 while it takes them
+
+// Terminal answers, keys and pastes to the program. Never waits past a stop, or longer than
+// kPtyStallMs without progress; once stalled, later writes are dropped at once until one goes in.
 static void cb_write_pty(GhosttyTerminal, void*, const uint8_t* data, size_t len)
 {
 	const char* s = reinterpret_cast<const char*>(data);
-	while (len > 0 && g.pty >= 0)
+	while (len > 0 && g.pty >= 0 && !g.quit)
 	{
 		const ssize_t n = write(g.pty, s, len);
 		if (n < 0)
@@ -800,12 +808,26 @@ static void cb_write_pty(GhosttyTerminal, void*, const uint8_t* data, size_t len
 				continue;
 			if (errno == EAGAIN)
 			{
+				const uint64_t now = oma::now_ms();
+				if (!g_ptyStalledSince)
+					g_ptyStalledSince = now;
+				if (now - g_ptyStalledSince >= kPtyStallMs)
+				{
+					static uint64_t loggedAt = 0;
+					if (now - loggedAt >= 60000)
+					{
+						loggedAt = now;
+						log("the remote program reads no input: what is written to it is dropped");
+					}
+					return;
+				}
 				pollfd p = { g.pty, POLLOUT, 0 };
 				poll(&p, 1, 100);
 				continue;
 			}
 			return;
 		}
+		g_ptyStalledSince = 0;
 		s += n;
 		len -= size_t(n);
 	}
@@ -1386,6 +1408,7 @@ static bool start_ssh(std::vector<std::string>& args)
 		_exit(127);
 	}
 	fcntl(g.pty, F_SETFL, fcntl(g.pty, F_GETFL) | O_NONBLOCK);
+	g_ptyStalledSince = 0; // a new terminal: the last one's stall says nothing about this one
 	return true;
 }
 
