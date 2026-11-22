@@ -66,6 +66,10 @@ Item {
             Qt.callLater(focusDesktop)
         if (!live && isSsh)
             Qt.callLater(root.filesAfterSession)
+        // Settings › Sessions: a clean end goes straight back, unless its files question waits.
+        if (!live && Format.closeOnEnd(session, Store.ui.sessionEnd)
+                && !(isSsh && Sessions.isMounted(session.connection) && (Store.ui.sftpOnEnd || "ask") === "ask"))
+            Qt.callLater(root.closeRequested)
     }
 
     readonly property bool isSsh: !!session && session.protocol === "ssh"

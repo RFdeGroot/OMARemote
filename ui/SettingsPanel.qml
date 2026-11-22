@@ -16,6 +16,7 @@ FocusScope {
     readonly property var sections: [
         { id: "sync", label: "Sync", icon: "" },
         { id: "transfer", label: "Import & export", icon: "\uf0ec" },
+        { id: "sessions", label: "Sessions", icon: "\uf108" },
         { id: "ssh", label: "SSH", icon: "" },
         { id: "keyboard", label: "Keyboard", icon: "\uf084" },
         { id: "hotkeys", label: "Hotkeys", icon: "\uf11c" },
@@ -341,6 +342,18 @@ FocusScope {
                             }
                         }
                         // ------------------------------------------------ SSH
+                        Heading { visible: root.section === "sessions"; text: "WHEN A SESSION ENDS" }
+                        FormRow {
+                            visible: root.section === "sessions"
+                            label: "Ended by the remote side"
+                            help: "Typing exit, signing off. A failure always shows why, with Reconnect"
+                            Segment {
+                                value: Store.ui.sessionEnd === "close" ? "close" : "panel"
+                                options: [{ value: "panel", label: "Show Reconnect" }, { value: "close", label: "Close the tab" }]
+                                onPicked: function (v) { Store.setUi("sessionEnd", v) }
+                            }
+                        }
+
                         Heading { visible: root.section === "ssh"; text: "KEYS IN THE TERMINAL" }
                         Note {
                             visible: root.section === "ssh"

@@ -4391,10 +4391,13 @@ def supervise(conn, sid, tab=None):
         tail = copy_log(proc.stdout, log, on_line)
     code = proc.wait()
     stopped = os.path.join(SESSIONS_DIR, sid + ".stop")
-    error = None if os.path.exists(stopped) else describe_exit(code, "".join(tail), protocol)
-    if os.path.exists(stopped):
+    by_ui = os.path.exists(stopped)
+    error = None if by_ui else describe_exit(code, "".join(tail), protocol)
+    if by_ui:
         os.remove(stopped)
-    state.update(state="failed" if error else "ended", exitCode=code, error=error, ended=int(time.time()))
+    # stopped: ended from the UI (closed, replaced by a reconnect), not by the remote side.
+    state.update(state="failed" if error else "ended", exitCode=code, error=error, stopped=by_ui,
+                 ended=int(time.time()))
     write_session(state)
     if error and os.environ.get("OMAREMOTE_NOTIFY", "1") == "1":
         notify()

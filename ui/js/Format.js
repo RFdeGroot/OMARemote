@@ -306,6 +306,13 @@ function unlockDue(protocol, unlockAfter, awayMs) {
     return Number(awayMs) >= minutes * 60000
 }
 
+// Whether an ended session's tab or window closes by itself (Settings › Sessions): only when it
+// ended cleanly from the remote side (exit in a shell, signing off). A failure keeps its panel with
+// the reason, and a session the UI stopped (a reconnect replacing it) is the UI's to handle.
+function closeOnEnd(session, mode) {
+    return mode === "close" && !!session && session.state === "ended" && !session.error && !session.stopped
+}
+
 // A reconnect of a live session (ctrl+alt+r, unlock on return) keeps the old one on screen until
 // the new one is up: its new session for that connection, started after requestedAt (ms), or none.
 // The list is newest first: the first match is the newest.

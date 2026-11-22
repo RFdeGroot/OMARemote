@@ -26,6 +26,15 @@ Item {
             r.noStats = Format.parseStats("")
             r.ports = Format.defaultPorts
             r.gliffAddress = Format.address({ protocol: "gliff", host: "pc.lan", port: 22 })
+            r.closeOnEnd = {
+                clean: Format.closeOnEnd({ state: "ended" }, "close"),
+                off: Format.closeOnEnd({ state: "ended" }, "panel"),
+                unset: Format.closeOnEnd({ state: "ended" }, undefined),
+                failed: Format.closeOnEnd({ state: "failed", error: "x" }, "close"),
+                stopped: Format.closeOnEnd({ state: "ended", stopped: true }, "close"),
+                live: Format.closeOnEnd({ state: "connected" }, "close"),
+                none: Format.closeOnEnd(null, "close")
+            }
             r.unlock = {
                 due: Format.unlockDue("rdp", 10, 10 * 60000),
                 soon: Format.unlockDue("rdp", 10, 9 * 60000),

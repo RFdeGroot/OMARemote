@@ -63,6 +63,12 @@ class QuickCredential(unittest.TestCase):
         # SSH, VNC and Gliff run twice: one dropping is news.
         self.assertFalse(st["ssh"])
 
+    def test_only_a_clean_remote_end_closes_by_itself(self):
+        c = self.r["closeOnEnd"]
+        self.assertTrue(c["clean"])
+        for key in ("off", "unset", "failed", "stopped", "live", "none"):
+            self.assertFalse(c[key], key)
+
     def test_unlock_on_return_rdp_only_and_bounded(self):
         u = self.r["unlock"]
         self.assertTrue(u["due"])
