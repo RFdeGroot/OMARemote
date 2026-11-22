@@ -12,8 +12,10 @@ import Quickshell.Hyprland
 // Glassy and Transparent give the manager window's regions a see-through ground (Theme.ground), over
 // Hyprland's blur in Glassy, and SSH tabs a see-through terminal background, as Omarchy's own
 // terminals have; text is lifted to stay readable. Remote desktops (RDP, VNC, Gliff), the area
-// around them, cards and menus stay opaque. Opaque draws everything solid. OMARemote never adds a
-// Hyprland rule or tag of its own, which would fade the whole window, the remote desktop included.
+// around them, cards and menus stay opaque. Opaque draws everything solid. OMARemote adds no
+// Hyprland rule of its own, which would fade the whole window, the remote desktop included; while an
+// SSH tab is shown the window keeps its `terminal` tag (omaremote-session terminal_tag, for Omarchy's
+// clipboard keys), so Omarchy fades it slightly, as it fades foot (Theme.fadedNeed).
 //
 // Both see-through modes need Omarchy 4.5 (its glass.lua): 4.0.6 has no toggle files, which would read
 // as Transparent, and fades every window itself.

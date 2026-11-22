@@ -17,6 +17,8 @@ https://github.com/user-attachments/assets/fe9e0a48-631e-47a8-b5b3-4f7ddcde6d3f
 - **HiDPI scaling** that follows Hyprland: the remote desktop matches the tab's size and your scale.
 - **Credential sets** shared between hosts, and **group settings** that connections inherit.
 - **Fast Kerberos** on networks with many domain controllers.
+- **Follows Omarchy's window opacity** (Appearance › Windows): Glassy and Transparent windows,
+  with SSH terminals as see-through as Omarchy's own; remote desktops always stay solid.
 - **Keyboard-driven**, with a keymap sheet on `?`; the mouse works everywhere too.
 - Passwords optional, in your keyring; sessions in their own or hotkey window run on when you close
   OMARemote, and an update brings your tabs back.
@@ -41,7 +43,7 @@ desktop.
 
 ## Install
 
-> **Early development.** OMARemote 0.9.18 works day to day, but it is young: expect rough edges,
+> **Early development.** OMARemote 0.10.0 works day to day, but it is young: expect rough edges,
 > and please [report what you run into](https://github.com/RFdeGroot/OMARemote/issues).
 
 ### From a release (recommended)
