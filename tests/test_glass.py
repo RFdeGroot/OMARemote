@@ -207,6 +207,9 @@ class Window(unittest.TestCase):
                    OMARCHY_PATH=os.path.join(d, "omarchy"),
                    # A stand-in ssh that stays connected, so an SSH tab shows its terminal.
                    PATH=os.path.join(d, "bin") + os.pathsep + os.environ.get("PATH", ""))
+        if "connect" in actions.split():
+            # The terminal's first frame comes from omaremote-ssh; on a busy machine 600 ms is not enough.
+            env["OMAREMOTE_SNAP_DELAY"] = "3000"
         env.pop("OMAREMOTE_GLASS", None)
         if glass is not None:
             env["OMAREMOTE_GLASS"] = glass

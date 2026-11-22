@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,10 +47,18 @@ class Startup(unittest.TestCase):
                        OMAREMOTE_INSTALL="package", OMAREMOTE_BIN=slow, CALLS=calls,
                        REAL_BIN=os.path.join(REPO, "bin", "omaremote-session"), QML_IMPORT_PATH=PLUGIN,
                        OMAREMOTE_OPEN="c-late")
-            subprocess.run(["timeout", "6", QS, "-p", os.path.join(REPO, "ui", "boot")], env=env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            with open(calls) as f:
-                log = f.read().splitlines()
+            p = subprocess.Popen([QS, "-p", os.path.join(REPO, "ui", "boot")], env=env,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log, until = [], time.monotonic() + 20
+            try:
+                while time.monotonic() < until and not any(l.startswith("launch c-late") for l in log):
+                    time.sleep(0.1)
+                    if os.path.exists(calls):
+                        with open(calls) as f:
+                            log = f.read().splitlines()
+            finally:
+                p.kill()
+                p.wait(5)
             self.assertTrue(any(line.startswith("launch c-late") for line in log), log)
 
 

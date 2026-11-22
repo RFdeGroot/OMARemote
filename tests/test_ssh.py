@@ -113,9 +113,11 @@ class Reconnect(unittest.TestCase):
         self.assertEqual(log.count("connection lost:"), 1)
         self.assertLess(runs, 80)
 
-    def view(self, plan, answer):
+    def view(self, plan, answer, runs_first=0):
         """Runs a plan with a stand-in view on the session socket that answers the first
-        "reconnect wait" (or "trying") line with answer; returns (rc, log, runs, lines seen)."""
+        "reconnect wait" (or "trying") line with answer, once the stand-in ssh has started
+        runs_first times (a "trying" line comes before its ssh runs; on a busy machine an answer
+        could otherwise land first); returns (rc, log, runs, lines seen)."""
         import socket, threading
         with tempfile.TemporaryDirectory() as d:
             ssh = os.path.join(d, "ssh")
@@ -132,6 +134,13 @@ class Reconnect(unittest.TestCase):
             p.stdin.write(config)
             p.stdin.close()
             seen = []
+
+            def started():
+                try:
+                    with open(os.path.join(d, "n")) as f:
+                        return int(f.read() or 0)
+                except (OSError, ValueError):
+                    return 0
 
             def ui():
                 import time
@@ -156,6 +165,9 @@ class Reconnect(unittest.TestCase):
                             if line.startswith(b"reconnect"):
                                 seen.append(line.decode())
                                 if not answered and line.startswith(answer[1]):
+                                    until = time.monotonic() + 10
+                                    while started() < runs_first and time.monotonic() < until:
+                                        time.sleep(0.02)
                                     c.sendall(answer[0])
                                     answered = True
                 except OSError:
@@ -189,7 +201,7 @@ class Reconnect(unittest.TestCase):
 
     def test_cancel_ends_a_try_that_hangs(self):
         rc, log, runs, seen = self.view(["up:client_loop: send disconnect: Broken pipe", "wait"],
-                                        (b"reconnect cancel\n", b"reconnect trying"))
+                                        (b"reconnect cancel\n", b"reconnect trying"), runs_first=2)
         self.assertEqual((rc, runs), (255, 2))
         self.assertIn("reconnect trying 1", seen)
         self.assertIn("connection failed: client_loop: send disconnect: Broken pipe", log)

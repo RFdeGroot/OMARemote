@@ -60,6 +60,7 @@ class Runtime(unittest.TestCase):
         self.calls = os.path.join(self.dir, "calls")
         self.watch_script = os.path.join(self.dir, "watch")
         self.watch("")
+        self.at_attach = []  # (seconds, fn): run that long after the view attaches
 
     def watch(self, events, baseline="data"):
         """What wl-paste --watch reports: the state at the start, then events (shell lines)."""
@@ -123,6 +124,10 @@ fi
             with conn:
                 conn.settimeout(0.1)
                 start = time.monotonic()
+                for seconds, fn in self.at_attach:
+                    timer = threading.Timer(seconds, fn)
+                    timer.start()
+                    self.addCleanup(timer.cancel)
                 pending = [b"clip " + base64.b64encode(t) for t in send] + list(lines)
                 later = sorted(timed)
                 fds = list(frames)
@@ -258,7 +263,9 @@ fi
         self.assertEqual(self.sent, ["from the desktop", "-"])
 
     def watch_alive_at(self, seconds):
-        """Whether the first watch process runs, seconds from now, as a one-item list filled by then."""
+        """Whether the first watch process runs, seconds after the view attaches (the view's own
+        timeline: a slow start on a busy machine does not move the check ahead of it), as a
+        one-item list filled by then."""
         found = []
 
         def check():
@@ -270,27 +277,25 @@ fi
             except ProcessLookupError:
                 found.append(False)
 
-        timer = threading.Timer(seconds, check)
-        timer.start()
-        self.addCleanup(timer.cancel)
+        self.at_attach.append((seconds, check))
         return found
 
     def test_the_watch_runs_while_attached_and_sharing(self):
         self.stub(b"from the desktop")
         alive = self.watch_alive_at(1.0)
-        self.run_view(True, ms=1500, mode="quiet")
+        self.run_view(True, ms=2000, mode="quiet")
         self.assertEqual(alive, [True])
 
     def test_the_watch_stops_when_sharing_is_turned_off(self):
         self.stub(b"from the desktop")
-        alive = self.watch_alive_at(1.3)
-        self.run_view(True, ms=1800, mode="quiet-shareoff")
+        alive = self.watch_alive_at(1.6)  # sharing goes off at 800 ms
+        self.run_view(True, ms=2600, mode="quiet-shareoff")
         self.assertEqual(alive, [False])
 
     def test_the_watch_stops_on_detaching(self):
         self.stub(b"from the desktop")
-        alive = self.watch_alive_at(1.3)
-        self.run_view(True, ms=2200, mode="quiet-detach")
+        alive = self.watch_alive_at(1.6)  # detached at 800 ms, back 300 ms before the end
+        self.run_view(True, ms=3000, mode="quiet-detach")
         self.assertEqual(alive, [False])
 
     def test_the_watch_dies_with_the_window(self):
