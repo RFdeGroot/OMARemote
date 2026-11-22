@@ -204,5 +204,48 @@ class Reconnect(unittest.TestCase):
         self.assertEqual((rc, runs), (255, 1))
 
 
+# Asks the terminal whether it shows Kitty images, then records what comes back for a second.
+KITTY_QUERY = r"""
+import os, select, sys, termios, tty, time
+tty.setraw(0)
+os.write(1, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c")
+got, end = b"", time.time() + 1.0
+while time.time() < end:
+    if select.select([0], [], [], 0.1)[0]:
+        got += os.read(0, 4096)
+open(sys.argv[1], "wb").write(got)
+"""
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class KittyGraphics(unittest.TestCase):
+    def test_images_are_off(self):
+        # Nothing here shows images, and stored ones could fill memory: the protocol is off, so
+        # the query gets no answer (the device attributes after it do: the program was listening).
+        with tempfile.TemporaryDirectory() as d:
+            prog, rec = os.path.join(d, "q.py"), os.path.join(d, "rec")
+            with open(prog, "w") as f:
+                f.write(KITTY_QUERY)
+            config = "\n".join(["arg=/usr/bin/python3", "arg=-I", f"arg={prog}", f"arg={rec}", "reconnect=0",
+                                "font=monospace", "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=os.path.join(d, "s"), QT_QPA_PLATFORM="offscreen")
+            subprocess.run([HELPER], input=config, capture_output=True, text=True, env=env, timeout=30)
+            with open(rec, "rb") as f:
+                got = f.read()
+        self.assertIn(b"\x1b[?", got)  # the device attributes
+        self.assertNotIn(b"\x1b_G", got)
+
+GLYPH_TEST = os.path.join(HERE, "..", "native", "build", "ssh-glyph-test")
+
+
+@unittest.skipUnless(os.access(GLYPH_TEST, os.X_OK), "native build missing: ninja -C native/build")
+class GlyphRules(unittest.TestCase):
+    """Icons are sized as Ghostty sizes them: its own test cases (native/ssh/glyph_test.cpp)."""
+
+    def test_ghosttys_cases(self):
+        out = subprocess.run([GLYPH_TEST], capture_output=True, text=True, timeout=10)
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "ok"), out.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

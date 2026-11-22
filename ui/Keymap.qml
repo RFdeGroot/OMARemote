@@ -87,6 +87,7 @@ Singleton {
         { group: "In a session", context: "session", action: "sessionQuick", keys: ["ctrl+alt+n"], label: "Quick connect (the session stays)", run: false },
         { group: "In a session", context: "session", action: "sshCopy", keys: ["ctrl+shift+c", "super+c"], label: "SSH: copy the selection (drag to select)", run: false },
         { group: "In a session", context: "session", action: "sshPaste", keys: ["ctrl+shift+v", "super+v"], label: "SSH: paste (shift+insert, middle click too)", run: false },
+        { group: "In a session", context: "session", action: "sshZoom", keys: ["ctrl+=", "ctrl+-", "ctrl+0"], label: "SSH: bigger or smaller text, ctrl+0 back (this tab)", run: false },
         { group: "In a session", context: "session", action: "sshScroll", keys: ["shift+pgup", "shift+pgdown"], label: "SSH: scroll back (the wheel too)", run: false },
         { group: "In a session", context: "session", action: "fullscreen", keys: ["ctrl+alt+return"], label: "Fullscreen", run: false },
         { group: "In a session", context: "session", action: "popOut", keys: ["ctrl+alt+o"], label: "Move to its own window", run: false },

@@ -32,12 +32,46 @@ add_executable(omaremote-vnc vnc/main.cpp)
 target_link_libraries(omaremote-vnc PRIVATE omaremote-link PkgConfig::VNC)
 target_compile_options(omaremote-vnc PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-# SSH sessions: ssh in a pseudo-terminal, libvterm for the screen, Qt (offscreen) to draw it.
-pkg_check_modules(VTERM REQUIRED IMPORTED_TARGET vterm)
+# SSH sessions: ssh in a pseudo-terminal, libghostty-vt (Ghostty's terminal emulation) for the
+# screen, Qt (offscreen) to draw it. libghostty-vt links statically: no runtime dependency. Without
+# GHOSTTY_VT_PREFIX (an install of it: include/ghostty, lib/libghostty-vt.a), ghostty-vt/build.sh
+# builds it here, once, with the Zig it needs (both pinned by version and sha256).
 pkg_check_modules(XKB REQUIRED IMPORTED_TARGET xkbcommon)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui)
+set(GHOSTTY_VT_PREFIX "" CACHE PATH "libghostty-vt install prefix (empty: built by ghostty-vt/build.sh)")
+set(ghostty_vt ${GHOSTTY_VT_PREFIX})
+if(NOT ghostty_vt)
+  message(STATUS "libghostty-vt: ghostty-vt/build.sh (the first time downloads and builds it)")
+  execute_process(COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/ghostty-vt/build.sh ${CMAKE_BINARY_DIR}/ghostty-vt
+                  OUTPUT_VARIABLE ghostty_vt_out RESULT_VARIABLE ghostty_vt_rc)
+  if(NOT ghostty_vt_rc EQUAL 0)
+    message(FATAL_ERROR "libghostty-vt could not be built (ghostty-vt/build.sh, above)")
+  endif()
+  string(STRIP "${ghostty_vt_out}" ghostty_vt_out)
+  string(REGEX REPLACE ".*\n" "" ghostty_vt "${ghostty_vt_out}")
+endif()
+# Ghostty's Nerd Font glyph rules (from the same source) as a C++ header: how icons are drawn.
+set(nerd_font_tables ${ghostty_vt}/share/ghostty-vt/nerd_font_tables.zig)
+if(NOT EXISTS ${nerd_font_tables})
+  message(FATAL_ERROR "libghostty-vt: no ${nerd_font_tables} (ghostty-vt/build.sh installs it)")
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/generated/ghostty_nerd_font.hpp
+                   COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/ghostty-vt/gen_nerd_font.py
+                           ${nerd_font_tables} ${CMAKE_BINARY_DIR}/generated/ghostty_nerd_font.hpp
+                   DEPENDS ${nerd_font_tables} ghostty-vt/gen_nerd_font.py)
+add_custom_target(ghostty-nerd-font DEPENDS ${CMAKE_BINARY_DIR}/generated/ghostty_nerd_font.hpp)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/generated)
 add_executable(omaremote-ssh ssh/main.cpp)
-target_link_libraries(omaremote-ssh PRIVATE omaremote-link Qt6::Gui PkgConfig::VTERM PkgConfig::XKB)
+add_dependencies(omaremote-ssh ghostty-nerd-font)
+target_include_directories(omaremote-ssh PRIVATE ${ghostty_vt}/include ${CMAKE_BINARY_DIR}/generated)
+target_compile_definitions(omaremote-ssh PRIVATE GHOSTTY_STATIC)
+target_link_libraries(omaremote-ssh PRIVATE omaremote-link Qt6::Gui PkgConfig::XKB ${ghostty_vt}/lib/libghostty-vt.a)
+# ssh-glyph-test: the icon rules against Ghostty's own test cases (tests/test_ssh.py).
+add_executable(ssh-glyph-test ssh/glyph_test.cpp)
+add_dependencies(ssh-glyph-test ghostty-nerd-font)
+target_include_directories(ssh-glyph-test PRIVATE ${CMAKE_BINARY_DIR}/generated)
+target_compile_options(ssh-glyph-test PRIVATE -Wall -Wextra)
 target_compile_options(omaremote-ssh PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
 # Gliff sessions (Omarchy desktops over ssh, github.com/omacom/gliff): its protocol by hand, H.264

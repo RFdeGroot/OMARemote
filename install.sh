@@ -67,10 +67,12 @@ need_pkgconfig "RDP" winpr3 freerdp
 # VNC: libvncclient (VNC tabs).
 need_pkgconfig "VNC" libvncclient libvncserver
 
-# SSH: ssh in a terminal OMARemote draws (libvterm for the screen, xkbcommon for keys).
+# SSH: ssh in a terminal OMARemote draws (xkbcommon for keys). Its terminal emulation,
+# libghostty-vt, is downloaded and built with the Zig it needs (pinned, checked) by the build.
 need_command "SSH" ssh openssh
-need_pkgconfig "SSH" vterm libvterm
 need_pkgconfig "SSH" xkbcommon libxkbcommon
+need_command "SSH" curl curl
+need_command "SSH" xz xz
 
 # Gliff: Omarchy desktops over ssh (H.264 through FFmpeg's libavcodec); its clipboard and the
 # shortcut capture of its tabs speak Wayland protocols generated from wayland-protocols.

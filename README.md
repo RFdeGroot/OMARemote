@@ -156,9 +156,14 @@ the packages to install:
 | building the tab renderers | `cmake`, `ninja`, `gcc`, `pkgconf`, `qt6-declarative` |
 | RDP | `freerdp` (3.x) |
 | VNC | `libvncserver` (for libvncclient) |
-| SSH | `openssh`, `libvterm`, `libxkbcommon` |
+| SSH | `openssh`, `libxkbcommon`; `curl` and `xz` to build (see below) |
 | Gliff | `ffmpeg`, `libva`, `libglvnd`, `libdrm`, `wayland`, `wayland-protocols`, `qt6-shadertools` |
 | optional | `libnotify` (a notification when a session fails) |
+
+The SSH terminal is built on libghostty-vt, Ghostty's terminal emulation, which Arch does not
+package and which needs a newer Zig than Arch has: the build downloads both (Zig 0.17.1 and
+libghostty-vt 1.0.1, each checked against its sha256 in `native/ghostty-vt/build.sh`) and builds
+the library once, in about two minutes. It is linked in: nothing extra to install.
 
 `./install.sh --install-deps` installs the missing packages with pacman (it asks first),
 `./install.sh --check` only checks, and `./install.sh --uninstall` removes the links (your
@@ -479,7 +484,9 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   only passed when the connection sets them, so jump hosts, keys and users from your config still
   work. *Extra ssh options* are passed to ssh as-is (for example `-J jump.example.com`).
 - **Looks like your terminal**: Omarchy's terminal font (fontconfig's `monospace`) at your default
-  terminal's size, in the theme's terminal colours, following a theme switch live.
+  terminal's size, in the theme's terminal colours, following a theme switch live. The terminal is
+  Ghostty's own (libghostty-vt), and Nerd Font icons are sized and placed by Ghostty's rules.
+  `ctrl+=` / `ctrl+-` make the text bigger or smaller in that tab, `ctrl+0` resets it.
 - **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select),
   `ctrl+shift+v`, `super+v`, `shift+insert` or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel scroll back (10,000 lines).
   Programs that use the mouse (htop, vim with `mouse=a`) get it; hold `shift` to select anyway.
@@ -490,8 +497,8 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   scrollback kept, with growing pauses for up to 10 minutes; `Enter` tries at once. It is a new
   shell: programs that ran on the server are gone, unless they ran in tmux or screen there. A failed
   sign-in or a host key that is not accepted is never tried again.
-- A session that ends normally just closes; one where ssh could not connect says why, in plain
-  words (ssh's own are in the log).
+- A session that ends normally closes its tab (Settings › Sessions can show Reconnect instead);
+  one where ssh could not connect says why, in plain words (ssh's own are in the log).
 
 ## Gliff
 
@@ -569,7 +576,8 @@ bin/omaremote            launcher: opens the UI, or `connect <name>`
 bin/omaremote-session    backend: session settings, keyring, Kerberos discovery, session supervisor
 native/rdp/              omaremote-rdp: an RDP session for a tab (libfreerdp)
 native/vnc/              omaremote-vnc: a VNC session for a tab (libvncclient)
-native/ssh/              omaremote-ssh: an SSH session for a tab (ssh in a pty, libvterm, drawn with Qt)
+native/ssh/              omaremote-ssh: an SSH session for a tab (ssh in a pty, libghostty-vt, drawn with Qt)
+native/ghostty-vt/       builds libghostty-vt (Ghostty's terminal emulation) with a pinned Zig
 native/gliff/            omaremote-gliff: a Gliff session for a tab (Gliff's protocol, H.264 via libavcodec/VA-API)
 native/common/           the link both share with the UI
 native/plugin/           RdpView, the Qt Quick item that shows a session in a tab
@@ -579,7 +587,7 @@ native/plugin/           RdpView, the Qt Quick item that shows a session in a ta
 Each session is its own process, so one crashing never takes the window or other tabs with it:
 
 - libfreerdp or libvncclient renders into a shared-memory framebuffer (memfd); for SSH,
-  omaremote-ssh runs ssh in a pseudo-terminal and draws libvterm's screen into one; omaremote-gliff
+  omaremote-ssh runs ssh in a pseudo-terminal and draws the screen of libghostty-vt (Ghostty's terminal emulation) into one; omaremote-gliff
   hands over its decoder's pictures as dmabufs, which the tab converts on the GPU (or, without
   VA-API, a framebuffer like the others);
 - the UI attaches over a Unix socket in `$XDG_RUNTIME_DIR/omaremote/sessions/`, receives that
@@ -632,4 +640,6 @@ without passing the tests and a security review of what changed
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The SSH terminal links [libghostty-vt](https://lib.ghostty.org/vt/)
+and draws icons by Ghostty's Nerd Font rules, both MIT (Ghostty's licence is installed beside
+OMARemote's).

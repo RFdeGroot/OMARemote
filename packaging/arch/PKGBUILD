@@ -8,17 +8,35 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/RFdeGroot/OMARemote"
 license=('MIT')
 depends=('omarchy' 'quickshell' 'hyprland' 'qt6-declarative' 'freerdp' 'libvncserver'
-         'libvterm' 'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils' 'gnupg'
+         'libxkbcommon' 'openssh' 'python' 'python-gobject' 'libsecret' 'coreutils' 'gnupg'
          'wl-clipboard' 'ffmpeg' 'wayland' 'libva' 'libglvnd')
-makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'wayland-protocols' 'qt6-shadertools' 'libdrm')
+makedepends=('git' 'cmake' 'ninja' 'pkgconf' 'wayland-protocols' 'qt6-shadertools' 'libdrm' 'curl' 'xz')
 optdepends=('libnotify: a desktop notification when a session started from the command line fails')
 options=('!debug')
-source=("git+$url.git#tag=$_tag")
-sha256sums=('SKIP')
+# libghostty-vt (Ghostty's terminal emulation, MIT) is linked into omaremote-ssh; it needs a newer
+# Zig than Arch has. Both are pinned here and in native/ghostty-vt/build.sh, which builds them
+# (tests/test_packaging.py keeps the two the same).
+_zigver=0.17.1
+_ghosttyvtver=1.0.1
+_ghostty=https://release.files.ghostty.org/libghostty-vt/$_ghosttyvtver
+source=("git+$url.git#tag=$_tag"
+        "$_ghostty/libghostty-vt-$_ghosttyvtver.tar.gz"
+        "$_ghostty/libghostty-vt-$_ghosttyvtver-deps.tar.gz")
+source_x86_64=("https://ziglang.org/download/$_zigver/zig-x86_64-linux-$_zigver.tar.xz")
+source_aarch64=("https://ziglang.org/download/$_zigver/zig-aarch64-linux-$_zigver.tar.xz")
+noextract=("libghostty-vt-$_ghosttyvtver.tar.gz" "libghostty-vt-$_ghosttyvtver-deps.tar.gz"
+           "zig-x86_64-linux-$_zigver.tar.xz" "zig-aarch64-linux-$_zigver.tar.xz")
+sha256sums=('SKIP'
+            '333dfce97641ef9b536bb9e08907ad86abaaada50e8f7417b70d9284adef37aa'
+            '91a4e10960a52bf5bf4b15aa2a2cddaff8a89d6cd903d3055bda4fd17de3356d')
+sha256sums_x86_64=('3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a')
+sha256sums_aarch64=('a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795')
 
 build() {
   # Logging macros keep source paths; keep the build folder out of them.
   export CXXFLAGS+=" -ffile-prefix-map=$srcdir/="
+  # ghostty-vt/build.sh takes the files makepkg downloaded and checked: it downloads nothing.
+  export GHOSTTY_VT_SOURCES=$srcdir
   cmake -S OMARemote/native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
   ninja -C build
 }
@@ -41,6 +59,7 @@ package() {
   install -Dm644 share/applications/omaremote.desktop "$pkgdir/usr/share/applications/omaremote.desktop"
   install -Dm644 share/icons/hicolor/scalable/apps/omaremote.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/omaremote.svg"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 ../build/ghostty-vt/stage/LICENSE "$pkgdir/usr/share/licenses/$pkgname/libghostty-vt-LICENSE"
   # The key releases are signed with: bin/omaremote-update checks updates against it.
   install -Dm644 packaging/arch/omaremote-release.gpg "$pkgdir/usr/share/omaremote/omaremote-release.gpg"
 }

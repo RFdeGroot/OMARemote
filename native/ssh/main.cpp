@@ -1,6 +1,6 @@
 // omaremote-ssh: one SSH session, a terminal drawn for a tab in the OMARemote window.
 //
-// ssh runs in a pseudo-terminal; libvterm keeps the screen, and this process draws it into the
+// ssh runs in a pseudo-terminal; libghostty-vt (Ghostty's terminal) keeps the screen, and this process draws it into the
 // shared-memory framebuffer the UI maps, over the same Unix socket protocol omaremote-rdp and
 // omaremote-vnc speak (native/common/link.hpp). The view, tabs, own windows and reattaching work
 // the same for all three; the session outlives the window like any other.
@@ -14,7 +14,7 @@
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
 // click) pastes, shift+page up/down and the wheel scroll back. Remote programs that ask for the
-// mouse (htop, vim with mouse=a) get it; shift+drag still selects.
+// mouse (htop, vim with mouse=a) get it; shift+drag still selects. Ctrl+= / ctrl+- / ctrl+0 zoom the text.
 
 #include "../common/link.hpp"
 
@@ -24,9 +24,16 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QPainter>
+#include <QPainterPath>
+#include <QTransform>
 #include <QRawFont>
+#include <QTextLayout>
 
-#include <vterm.h>
+#include "ghostty_keys.hpp"
+#include "glyph_constraint.hpp"
+
+#include <ghostty/vt.h>
+#include <cstring>
 #include <xkbcommon/xkbcommon.h>
 
 #include <fcntl.h>
@@ -50,6 +57,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using oma::b64;
@@ -70,14 +78,32 @@ struct Palette
 	QColor ansi[16];
 };
 
-// A cell position in the whole history: lines 0 .. scrollback.size()-1 are history, the screen
-// follows them.
+// A cell position in the whole screen, scrollback included (Ghostty's "screen" points): row 0 is
+// the oldest line kept.
 struct Pos
 {
 	long line = 0;
 	int col = 0;
 	bool operator<(const Pos& o) const { return line < o.line || (line == o.line && col < o.col); }
 	bool operator==(const Pos& o) const { return line == o.line && col == o.col; }
+};
+
+// A symbol's glyph, from the terminal font or the fallback Qt picks, and how it is drawn in one or
+// two cells of room (Ghostty's constraint rules, glyph_constraint.hpp), worked out once.
+struct SymbolGlyph
+{
+	bool ok = false; // a glyph with a size to draw
+	QRawFont font;
+	quint32 index = 0;
+	QRectF bounds; // from the pen position on the baseline, y down
+	QPainterPath path;
+	struct Placed
+	{
+		bool done = false, stretched = false; // stretched: drawn as an outline, scaled unevenly
+		QRawFont font;                        // the glyph's font at its new size (evenly scaled)
+		QPointF pen;                          // where to put the pen in the cell, from its top left
+		QTransform outline;                   // stretched: the outline's place in the cell
+	} placed[2];
 };
 
 struct Session
@@ -91,39 +117,49 @@ struct Session
 	pid_t child = -1;
 	int exitStatus = 0;
 
-	VTerm* vt = nullptr;
-	VTermScreen* screen = nullptr;
+	// libghostty-vt: the terminal, a copy of what to draw, the key and mouse encoders.
+	GhosttyTerminal term = nullptr;
+	GhosttyRenderState render = nullptr;
+	GhosttyRenderStateRowIterator rowIt = nullptr;
+	GhosttyRenderStateRowCells cells = nullptr;
+	GhosttyKeyEncoder keys = nullptr;
+	GhosttyKeyEvent keyEvent = nullptr;
+	GhosttyMouseEncoder mouse = nullptr;
+	GhosttyMouseEvent mouseEvent = nullptr;
 	int rows = 24, cols = 80;
 
 	// Drawing.
 	oma::Framebuffer frame;
 	QImage image; // wraps frame.data
+	// A row is painted here first and copied into the frame finished: the UI reads the frame at
+	// any moment, and a row it catches half painted (background cleared, text not yet drawn) blinks.
+	QImage strip;
 	int pixelW = 0, pixelH = 0, scale = 100;
 	QFont font;
 	QRawFont raw[4]; // regular, bold, italic, bold italic
+	glyphfit::Metrics glyphMetrics; // what Ghostty's glyph constraints measure against
 	int cellW = 8, cellH = 16, ascent = 12;
+	std::vector<uint32_t> rowCps;                       // draw_row's, kept to reuse
+	std::unordered_map<uint64_t, SymbolGlyph> symbols; // by codepoint and style; emptied with the font
+	int zoom = 0;                   // points added to fontSize (ctrl+= / ctrl+- / ctrl+0), this tab only
+	std::set<uint32_t> zoomKeys;    // their keys held: the release is ours too
 	int pad = 6; // margin around the cells, in pixels
 	Palette pal;
 	std::string themePath;
 	struct timespec themeTime = {};
 
-	// What changed since the last flush, in cells; full when the whole picture must be redrawn.
-	bool dirty = false, full = false;
-	int dr0 = 0, dc0 = 0, dr1 = 0, dc1 = 0;
+	// The whole picture must be redrawn (a resize, a theme, the view scrolled); otherwise the
+	// render state says which rows changed.
+	bool full = true;
+	int cursorRow = -1; // the row the cursor was drawn on, redrawn when it moves away
+	long redrawFrom = 0, redrawTo = -1; // screen lines to redraw anyway (the selection changed there)
+	bool output = false;                 // the terminal got output since the last flush
 
-	VTermPos cursor = { 0, 0 };
-	bool cursorVisible = true;
-	int cursorShape = VTERM_PROP_CURSORSHAPE_BLOCK;
 	bool altScreen = false;
-	int mouseMode = VTERM_PROP_MOUSE_NONE;
+	bool mouseTracking = false;
 	std::string title;
 
-	// History above the screen, oldest first, and how far the view is scrolled into it.
-	std::deque<std::vector<VTermScreenCell>> history;
-	size_t historyMax = 10000;
-	int viewOffset = 0;
-
-	// Mouse selection, in history positions; empty when anchor == head.
+	// Mouse selection, in screen positions; empty when anchor == head.
 	bool selecting = false;
 	Pos selAnchor, selHead;
 	bool hasSelection = false;
@@ -136,8 +172,6 @@ struct Session
 	bool typed = false;      // a key went to the remote since the last drop
 	std::string said;        // the end of this try's terminal output: what its exit is judged by
 	std::string reconnectLine; // the view's reconnect banner, sent again when a view attaches
-	std::string osc52;       // a clipboard write from the remote program, gathered in fragments
-	bool osc52TooLong = false; // that write passed kMaxClipBytes: the rest of it is dropped
 
 	std::string get(const char* key, const char* fallback = "") const
 	{
@@ -150,12 +184,21 @@ static Session g;
 // The longest window title a server may set (OSC 0/2).
 static constexpr size_t kMaxTitleBytes = 4096;
 
+static void term_write(const char* s, size_t len);
+// Draws what changed; announce: tell the UI (not for a buffer it does not have yet).
+static void flush(bool announce = true);
+
 // ---------------------------------------------------------------- theme
 
 static QColor hex(const std::string& s)
 {
 	QColor c(QString::fromStdString("#" + s));
 	return c.isValid() ? c : QColor();
+}
+
+static GhosttyColorRgb rgb(const QColor& q)
+{
+	return GhosttyColorRgb{ uint8_t(q.red()), uint8_t(q.green()), uint8_t(q.blue()) };
 }
 
 // foot's colour file, the same Omarchy writes for every theme: foreground, background,
@@ -205,21 +248,19 @@ static void load_theme()
 			p.ansi[8 + key[6] - '0'] = c;
 	}
 	g.pal = p;
-	if (!g.vt)
+	if (!g.term)
 		return;
-	VTermState* state = vterm_obtain_state(g.vt);
-	auto vc = [](const QColor& q) {
-		VTermColor c;
-		vterm_color_rgb(&c, uint8_t(q.red()), uint8_t(q.green()), uint8_t(q.blue()));
-		return c;
-	};
-	VTermColor fg = vc(p.fg), bg = vc(p.bg);
-	vterm_state_set_default_colors(state, &fg, &bg);
+	// The theme's colours are the terminal's defaults: a program can still change them (OSC 4/10/11).
+	const GhosttyColorRgb fg = rgb(p.fg), bg = rgb(p.bg), cursor = rgb(p.cursor);
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &fg);
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &bg);
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &cursor);
+	GhosttyColorRgb palette[256];
+	if (ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, &palette) != GHOSTTY_SUCCESS)
+		memset(palette, 0, sizeof(palette));
 	for (int i = 0; i < 16; i++)
-	{
-		VTermColor c = vc(p.ansi[i]);
-		vterm_state_set_palette_color(state, i, &c);
-	}
+		palette[i] = rgb(p.ansi[i]);
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, &palette);
 }
 
 // A theme switch rewrites the file: follow it.
@@ -235,14 +276,14 @@ static void check_theme()
 	if (first)
 		return;
 	load_theme();
-	g.full = g.dirty = true;
+	g.full = true;
 }
 
 // ---------------------------------------------------------------- font and size
 
 static void setup_font()
 {
-	const double points = strtod(g.get("fontSize", "9").c_str(), nullptr);
+	const double points = std::clamp(strtod(g.get("fontSize", "9").c_str(), nullptr) + g.zoom, 4.0, 48.0);
 	// Points at 96 dpi, times the screen's scale: what a terminal shows on the same screen.
 	const int px = std::max(6, int(std::lround(points * 96.0 / 72.0 * g.scale / 100.0)));
 	g.font = QFont(QString::fromStdString(g.get("font", "monospace")));
@@ -262,6 +303,18 @@ static void setup_font()
 	g.cellH = std::max(1, int(std::ceil(m.height())));
 	g.ascent = int(std::ceil(m.ascent()));
 	g.pad = int(std::lround(6.0 * g.scale / 100.0));
+	// Ghostty's grid metrics (src/font/Metrics.zig) from Qt's: the face's own width and height,
+	// where its bottom sits in the cell, and the icon heights the Nerd Font rules use.
+	glyphfit::Metrics& gm = g.glyphMetrics;
+	gm.cellWidth = g.cellW;
+	gm.cellHeight = g.cellH;
+	gm.faceWidth = m.horizontalAdvance(QLatin1Char('M'));
+	gm.faceHeight = m.height();
+	gm.faceY = (g.cellH - g.ascent) - m.descent();
+	const double cap = m.capHeight() > 0 ? m.capHeight() : 0.75 * m.ascent();
+	gm.iconHeight = gm.faceHeight;
+	gm.iconHeightSingle = (2 * cap + gm.faceHeight) / 3;
+	g.symbols.clear();
 }
 
 static void set_pty_size()
@@ -276,358 +329,468 @@ static void set_pty_size()
 	ioctl(g.pty, TIOCSWINSZ, &ws);
 }
 
+// The mouse encoder turns the view's pixels into cells: it needs the picture's geometry.
+static void set_mouse_size()
+{
+	GhosttyMouseEncoderSize s = GHOSTTY_INIT_SIZED(GhosttyMouseEncoderSize);
+	s.screen_width = uint32_t(g.pixelW);
+	s.screen_height = uint32_t(g.pixelH);
+	s.cell_width = uint32_t(g.cellW);
+	s.cell_height = uint32_t(g.cellH);
+	s.padding_top = s.padding_left = uint32_t(g.pad);
+	s.padding_right = uint32_t(std::max(0, g.pixelW - g.pad - g.cols * g.cellW));
+	s.padding_bottom = uint32_t(std::max(0, g.pixelH - g.pad - g.rows * g.cellH));
+	ghostty_mouse_encoder_set(g.mouse, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &s);
+}
+
 // The view's size in pixels, and the screen scale: a new framebuffer that size, as many cells as
-// fit. The terminal and the program in it follow.
-static void resize(int w, int h, int scale)
+// fit. The terminal (which reflows) and the program in it follow.
+static void resize(int w, int h, int scale, bool fontChanged = false)
 {
 	w = std::clamp(w, 64, 16384);
 	h = std::clamp(h, 32, 16384);
 	scale = std::clamp(scale, 50, 500);
-	if (w == g.pixelW && h == g.pixelH && scale == g.scale && g.frame.data)
+	if (w == g.pixelW && h == g.pixelH && scale == g.scale && g.frame.data && !fontChanged)
 		return;
-	const bool fontChanged = scale != g.scale || !g.frame.data;
+	fontChanged = fontChanged || scale != g.scale || !g.frame.data;
 	g.scale = scale;
 	if (fontChanged)
 		setup_font();
-	oma::Framebuffer fb = oma::fb_alloc(uint32_t(w), uint32_t(h));
-	if (!fb.data)
-		return;
-	oma::Framebuffer old = g.frame;
-	g.frame = fb;
-	g.image = QImage(fb.data, w, h, int(fb.stride), QImage::Format_RGB32);
-	g.pixelW = w;
-	g.pixelH = h;
-	const int cols = std::max(2, (w - 2 * g.pad) / g.cellW), rows = std::max(1, (h - 2 * g.pad) / g.cellH);
-	if (cols != g.cols || rows != g.rows)
+	// The same size (a zoom): the picture is redrawn in place, row by row, never shown empty.
+	const bool sameSize = g.frame.data && w == g.pixelW && h == g.pixelH;
+	oma::Framebuffer old = {};
+	if (!sameSize)
+	{
+		oma::Framebuffer fb = oma::fb_alloc(uint32_t(w), uint32_t(h));
+		if (!fb.data)
+			return;
+		old = g.frame;
+		g.frame = fb;
+		g.image = QImage(fb.data, w, h, int(fb.stride), QImage::Format_RGB32);
+		g.pixelW = w;
+		g.pixelH = h;
+	}
+	const int cols = std::clamp((w - 2 * g.pad) / g.cellW, 2, 4096), rows = std::clamp((h - 2 * g.pad) / g.cellH, 1, 4096);
+	if (cols != g.cols || rows != g.rows || fontChanged)
 	{
 		g.cols = cols;
 		g.rows = rows;
-		vterm_set_size(g.vt, rows, cols);
+		ghostty_terminal_resize(g.term, uint16_t(cols), uint16_t(rows), uint32_t(g.cellW), uint32_t(g.cellH));
 		set_pty_size();
 	}
-	g.viewOffset = std::min<int>(g.viewOffset, int(g.history.size()));
-	g.full = g.dirty = true;
+	set_mouse_size();
+	g.full = true;
+	if (sameSize)
+		return; // the next flush redraws it and says so
+	// A new buffer goes to the UI painted: an empty one would show for a moment (the wallpaper
+	// through it).
+	flush(false);
+	g.full = true; // the program redraws for its new size: the next flush paints that whole
 	g.link.sendFrame(g.frame);
 	if (old.data)
 		oma::fb_release(old.data);
 }
 
-// ---------------------------------------------------------------- reading cells
+// ---------------------------------------------------------------- what the terminal says
 
-static void blank_cell(VTermScreenCell& c)
+static GhosttyTerminalScrollbar scrollbar()
 {
-	c = {};
-	c.width = 1;
-	vterm_color_rgb(&c.fg, 0, 0, 0);
-	c.fg.type = VTERM_COLOR_DEFAULT_FG;
-	vterm_color_rgb(&c.bg, 0, 0, 0);
-	c.bg.type = VTERM_COLOR_DEFAULT_BG;
+	GhosttyTerminalScrollbar s = {};
+	ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &s);
+	return s;
 }
 
-// The cell at a history position (history lines first, then the screen).
-static VTermScreenCell cell_at(long line, int col)
+// Whether the view is scrolled back into the history.
+static bool scrolled_back()
 {
-	VTermScreenCell c;
-	const long h = long(g.history.size());
-	if (line < h)
-	{
-		const auto& l = g.history[size_t(line)];
-		if (col < int(l.size()))
-			return l[size_t(col)];
-		blank_cell(c);
-		return c;
-	}
-	if (vterm_screen_get_cell(g.screen, VTermPos{ int(line - h), col }, &c) == 0)
-		blank_cell(c);
-	return c;
-}
-
-// The history line shown on a screen row, given how far the view is scrolled back.
-static long line_of_row(int row)
-{
-	return long(g.history.size()) - g.viewOffset + row;
-}
-
-static QColor resolve(VTermColor c, bool fg)
-{
-	if (fg ? VTERM_COLOR_IS_DEFAULT_FG(&c) : VTERM_COLOR_IS_DEFAULT_BG(&c))
-		return fg ? g.pal.fg : g.pal.bg;
-	if (VTERM_COLOR_IS_INDEXED(&c) && c.indexed.idx < 16)
-		return g.pal.ansi[c.indexed.idx];
-	vterm_screen_convert_color_to_rgb(g.screen, &c);
-	return QColor(c.rgb.red, c.rgb.green, c.rgb.blue);
-}
-
-static bool selected(long line, int col)
-{
-	if (!g.hasSelection)
-		return false;
-	Pos a = g.selAnchor, b = g.selHead;
-	if (b < a)
-		std::swap(a, b);
-	const Pos p{ line, col };
-	return !(p < a) && p < b;
-}
-
-// ---------------------------------------------------------------- drawing
-
-static void draw_rows(int r0, int r1, int c0, int c1)
-{
-	if (g.image.isNull())
-		return;
-	QPainter painter(&g.image);
-	painter.setRenderHint(QPainter::TextAntialiasing);
-	for (int row = r0; row < r1 && row < g.rows; row++)
-	{
-		const long line = line_of_row(row);
-		const int y = g.pad + row * g.cellH;
-		for (int col = c0; col < c1 && col < g.cols; col++)
-		{
-			VTermScreenCell cell = cell_at(line, col);
-			// The right half of a wide character is drawn with its left half.
-			if (cell.chars[0] == uint32_t(-1) || (col > 0 && cell.width == 0))
-				continue;
-			const int span = std::max(1, int(cell.width));
-			QColor fg = resolve(cell.fg, true), bg = resolve(cell.bg, false);
-			if (cell.attrs.reverse)
-				std::swap(fg, bg);
-			if (selected(line, col))
-			{
-				fg = g.pal.selFg;
-				bg = g.pal.selBg;
-			}
-			const bool atCursor = g.viewOffset == 0 && g.cursorVisible && row == g.cursor.row && col == g.cursor.col;
-			if (atCursor && g.cursorShape == VTERM_PROP_CURSORSHAPE_BLOCK)
-			{
-				fg = g.pal.cursorText;
-				bg = g.pal.cursor;
-			}
-			const QRect box(g.pad + col * g.cellW, y, span * g.cellW, g.cellH);
-			painter.fillRect(box, bg);
-			if (cell.chars[0] && cell.chars[0] != ' ' && !cell.attrs.conceal)
-			{
-				QString text;
-				for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && cell.chars[i]; i++)
-					text += QString::fromUcs4(reinterpret_cast<const char32_t*>(&cell.chars[i]), 1);
-				const QRawFont& raw = g.raw[(cell.attrs.bold ? 1 : 0) | (cell.attrs.italic ? 2 : 0)];
-				const QList<quint32> glyphs = raw.glyphIndexesForString(text);
-				painter.setPen(fg);
-				if (!glyphs.isEmpty() && glyphs[0] != 0 && glyphs.size() == 1)
-				{
-					QGlyphRun run;
-					run.setRawFont(raw);
-					run.setGlyphIndexes(glyphs);
-					run.setPositions({ QPointF(box.x(), y + g.ascent) });
-					painter.drawGlyphRun(QPointF(0, 0), run);
-				}
-				else
-				{
-					// Combining characters, and glyphs the font lacks: let Qt pick a fallback.
-					QFont f = g.font;
-					f.setBold(cell.attrs.bold);
-					f.setItalic(cell.attrs.italic);
-					painter.setFont(f);
-					painter.drawText(QPointF(box.x(), y + g.ascent), text);
-				}
-			}
-			const int thick = std::max(1, g.cellH / 14);
-			if (cell.attrs.underline)
-				painter.fillRect(QRect(box.x(), y + g.ascent + thick, box.width(), thick), fg);
-			if (cell.attrs.strike)
-				painter.fillRect(QRect(box.x(), y + g.cellH / 2, box.width(), thick), fg);
-			if (atCursor && g.cursorShape == VTERM_PROP_CURSORSHAPE_UNDERLINE)
-				painter.fillRect(QRect(box.x(), y + g.cellH - 2 * thick, box.width(), 2 * thick), g.pal.cursor);
-			if (atCursor && g.cursorShape == VTERM_PROP_CURSORSHAPE_BAR_LEFT)
-				painter.fillRect(QRect(box.x(), y, 2 * thick, g.cellH), g.pal.cursor);
-		}
-	}
-}
-
-// Draws what changed and tells the UI where.
-static void flush()
-{
-	if (!g.dirty || g.image.isNull())
-		return;
-	if (g.full)
-	{
-		{
-			QPainter painter(&g.image);
-			painter.fillRect(g.image.rect(), g.pal.bg);
-		}
-		draw_rows(0, g.rows, 0, g.cols);
-		g.link.send("damage 0 0 " + std::to_string(g.pixelW) + " " + std::to_string(g.pixelH));
-	}
-	else
-	{
-		draw_rows(g.dr0, g.dr1, g.dc0, g.dc1);
-		// A cell paints past its own edges: a wide character's right half, and a glyph's overhang.
-		// The view uploads only what this line names (plans/vnc-speed.md), so it names a cell more.
-		const int c0 = std::max(0, g.dc0 - 1), c1 = std::min(g.cols, g.dc1 + 1);
-		g.link.send("damage " + std::to_string(g.pad + c0 * g.cellW) + " " + std::to_string(g.pad + g.dr0 * g.cellH) + " " +
-		            std::to_string((c1 - c0) * g.cellW) + " " + std::to_string((g.dr1 - g.dr0) * g.cellH));
-	}
-	g.dirty = g.full = false;
-}
-
-static void damage(int r0, int r1, int c0, int c1)
-{
-	if (g.viewOffset > 0)
-	{
-		g.full = true; // the view is shifted against the screen: redraw it whole
-		g.dirty = true;
-		return;
-	}
-	if (!g.dirty)
-	{
-		g.dr0 = r0, g.dr1 = r1, g.dc0 = c0, g.dc1 = c1;
-		g.dirty = true;
-		return;
-	}
-	g.dr0 = std::min(g.dr0, r0), g.dr1 = std::max(g.dr1, r1);
-	g.dc0 = std::min(g.dc0, c0), g.dc1 = std::max(g.dc1, c1);
-}
-
-static void scroll_view(int lines)
-{
-	const int next = std::clamp(g.viewOffset + lines, 0, int(g.history.size()));
-	if (next == g.viewOffset)
-		return;
-	g.viewOffset = next;
-	g.full = g.dirty = true;
-}
-
-// ---------------------------------------------------------------- libvterm callbacks
-
-static int cb_damage(VTermRect r, void*)
-{
-	damage(r.start_row, r.end_row, r.start_col, r.end_col);
-	return 1;
-}
-
-static int cb_movecursor(VTermPos pos, VTermPos old, int visible, void*)
-{
-	damage(old.row, old.row + 1, old.col, old.col + 2);
-	g.cursor = pos;
-	g.cursorVisible = visible;
-	damage(pos.row, pos.row + 1, pos.col, pos.col + 2);
-	return 1;
+	bool active = true;
+	ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &active);
+	return !active;
 }
 
 static void send_cursor_shape()
 {
 	// A text cursor over the terminal, the arrow while a program takes the mouse.
-	g.link.send(g.mouseMode == VTERM_PROP_MOUSE_NONE ? "cursor-text" : "cursor-default");
+	g.link.send(g.mouseTracking ? "cursor-default" : "cursor-text");
 }
 
-static int cb_settermprop(VTermProp prop, VTermValue* val, void*)
+// After the terminal took input: the modes the rest of this file follows.
+static void after_write()
 {
-	switch (prop)
+	bool tracking = false;
+	ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking);
+	if (tracking != g.mouseTracking)
 	{
-		case VTERM_PROP_CURSORVISIBLE:
-			g.cursorVisible = val->boolean;
-			damage(g.cursor.row, g.cursor.row + 1, g.cursor.col, g.cursor.col + 2);
-			break;
-		case VTERM_PROP_CURSORSHAPE:
-			g.cursorShape = val->number;
-			damage(g.cursor.row, g.cursor.row + 1, g.cursor.col, g.cursor.col + 2);
-			break;
-		case VTERM_PROP_ALTSCREEN:
-			g.altScreen = val->boolean;
-			g.viewOffset = 0;
-			g.full = g.dirty = true;
-			break;
-		case VTERM_PROP_MOUSE:
-			g.mouseMode = val->number;
-			send_cursor_shape();
-			break;
-		case VTERM_PROP_TITLE:
-			if (val->string.initial)
-				g.title.clear();
-			// An OSC 2 that never ends would grow without limit: the rest of a long one is dropped.
-			if (g.title.size() < kMaxTitleBytes)
-				g.title.append(val->string.str, std::min(val->string.len, kMaxTitleBytes - g.title.size()));
-			if (val->string.final)
-				g.link.send("title " + b64(g.title));
-			break;
-		default:
-			break;
+		g.mouseTracking = tracking;
+		send_cursor_shape();
 	}
-	return 1;
-}
-
-static int cb_sb_pushline(int cols, const VTermScreenCell* cells, void*)
-{
-	g.history.emplace_back(cells, cells + cols);
-	if (g.history.size() > g.historyMax)
+	GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+	ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
+	const bool alt = screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE;
+	if (alt != g.altScreen)
 	{
-		g.history.pop_front();
-		// Positions are counted from the oldest line kept: move the selection along.
-		g.selAnchor.line--;
-		g.selHead.line--;
-		if (g.selAnchor.line < 0 || g.selHead.line < 0)
-			g.hasSelection = false;
+		g.altScreen = alt;
+		g.full = true;
 	}
-	else if (g.viewOffset > 0)
-		g.viewOffset = std::min<int>(g.viewOffset + 1, int(g.history.size())); // keep looking at the same lines
-	return 1;
 }
 
-static int cb_sb_popline(int cols, VTermScreenCell* cells, void*)
+static bool mode(uint16_t number)
 {
-	if (g.history.empty())
-		return 0;
-	const auto& line = g.history.back();
-	for (int i = 0; i < cols; i++)
+	GhosttyTerminalModeConfig m = {};
+	m.mode = ghostty_mode_new(number, false);
+	return ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_MODE, &m) == GHOSTTY_SUCCESS && m.value;
+}
+
+// ---------------------------------------------------------------- drawing
+
+static QColor qcolor(GhosttyColorRgb c)
+{
+	return QColor(c.r, c.g, c.b);
+}
+
+// One row of the render state, the row iterator on it.
+// One cell of a row, as the passes below need it.
+struct DrawCell
+{
+	QRect box;
+	QColor fg, bg;
+	QString text; // empty: nothing to draw (blank, a space, invisible)
+	uint32_t first = 0; // its first codepoint, 0 for an empty cell (also when not drawn)
+	int col = 0, span = 1;
+	bool bold = false, italic = false, atCursor = false;
+	GhosttyStyle style;
+};
+
+// The glyph for cp in this style: the terminal font's, else the one Qt falls back to.
+static SymbolGlyph& symbol_glyph(uint32_t cp, int variant, const QString& text)
+{
+	// Every codepoint a remote program prints could add one: bounded.
+	if (g.symbols.size() > 4096)
+		g.symbols.clear();
+	SymbolGlyph& s = g.symbols[uint64_t(cp) | uint64_t(variant) << 32];
+	if (s.ok || s.index)
+		return s;
+	s.index = 1; // looked up (ok tells whether there is something to draw)
+	QRawFont font = g.raw[variant];
+	QList<quint32> glyphs = font.glyphIndexesForString(text);
+	if (glyphs.size() != 1 || glyphs[0] == 0)
 	{
-		if (i < int(line.size()))
-			cells[i] = line[size_t(i)];
+		QFont f = g.font;
+		f.setBold(variant & 1);
+		f.setItalic(variant & 2);
+		QTextLayout layout(text, f);
+		layout.beginLayout();
+		layout.createLine();
+		layout.endLayout();
+		const QList<QGlyphRun> runs = layout.glyphRuns();
+		if (runs.size() != 1 || runs[0].glyphIndexes().size() != 1)
+			return s;
+		font = runs[0].rawFont();
+		glyphs = runs[0].glyphIndexes();
+	}
+	s.font = font;
+	s.index = glyphs[0];
+	s.bounds = font.boundingRect(glyphs[0]);
+	s.ok = s.index != 0 && s.bounds.width() >= 0.25 && s.bounds.height() >= 0.25;
+	return s;
+}
+
+// A symbol drawn as Ghostty draws it: its constraint (a Nerd Font rule, else fit for any symbol)
+// with `width` cells of room. False when there is no rule for it or no glyph: drawn as text then.
+static bool draw_symbol(QPainter& painter, const DrawCell& c, int width)
+{
+	const glyphfit::Constraint rule = glyphfit::constraint_for(c.first);
+	if (!glyphfit::does_anything(rule))
+		return false;
+	SymbolGlyph& s = symbol_glyph(c.first, (c.bold ? 1 : 0) | (c.italic ? 2 : 0), c.text);
+	if (!s.ok)
+		return false;
+	SymbolGlyph::Placed& p = s.placed[width > 1 ? 1 : 0];
+	if (!p.done)
+	{
+		p.done = true;
+		const QRectF& b = s.bounds;
+		const double baseline = g.cellH - g.ascent; // above the cell's bottom
+		const glyphfit::Box in{ b.width(), b.height(), b.x(), baseline - (b.y() + b.height()) };
+		glyphfit::Box r = glyphfit::constrain(rule, in, g.glyphMetrics, width);
+		// As Ghostty: a face narrower than the pixel cell is centred in it (not when stretched).
+		if (rule.size != nerdfont::Stretch && g.glyphMetrics.faceWidth < g.cellW)
+			r.x += std::round((g.cellW - g.glyphMetrics.faceWidth) / 2);
+		const double sx = r.width / b.width(), sy = r.height / b.height();
+		const double left = r.x, top = g.cellH - (r.y + r.height);
+		if (std::fabs(sx - sy) <= 1e-3 * std::max(sx, sy))
+		{
+			// Evenly: the font at that size (hinting and colour glyphs kept).
+			p.font = s.font;
+			if (std::fabs(sx - 1) > 1e-3)
+				p.font.setPixelSize(s.font.pixelSize() * sx);
+			p.pen = QPointF(left - b.x() * sx, top - b.y() * sx);
+		}
 		else
-			blank_cell(cells[i]);
+		{
+			p.stretched = true;
+			if (s.path.isEmpty())
+				s.path = s.font.pathForGlyph(s.index);
+			p.outline = QTransform::fromTranslate(-b.x(), -b.y()) * QTransform::fromScale(sx, sy) *
+			            QTransform::fromTranslate(left, top);
+		}
 	}
-	g.history.pop_back();
-	g.viewOffset = std::min<int>(g.viewOffset, int(g.history.size()));
-	return 1;
+	if (p.stretched)
+	{
+		painter.save();
+		painter.setRenderHint(QPainter::Antialiasing);
+		painter.translate(c.box.topLeft());
+		painter.setTransform(p.outline, true);
+		painter.fillPath(s.path, c.fg);
+		painter.restore();
+		return true;
+	}
+	QGlyphRun run;
+	run.setRawFont(p.font);
+	run.setGlyphIndexes({ s.index });
+	run.setPositions({ QPointF(c.box.x(), c.box.y()) + p.pen });
+	painter.setPen(c.fg);
+	painter.drawGlyphRun(QPointF(0, 0), run);
+	return true;
 }
 
-static int cb_sb_clear(void*)
+// Painted into g.strip from x = 0, y = 0. Backgrounds first, then the text, then lines and the
+// cursor: a glyph wider than its cell (an icon, an italic's overhang) is never painted over by
+// the next cell's background.
+static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors& colors,
+                     const GhosttyRenderStateCursor& cursor)
 {
-	g.history.clear();
-	g.viewOffset = 0;
-	g.hasSelection = false;
-	g.full = g.dirty = true;
-	return 1;
+	if (ghostty_render_state_row_get(g.rowIt, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &g.cells) != GHOSTTY_SUCCESS)
+		return;
+	const int y = 0;
+	painter.fillRect(QRect(0, y, g.cols * g.cellW, g.cellH), qcolor(colors.background));
+	const bool cursorHere = cursor.visible && cursor.viewport_has_value && cursor.viewport_y == row && !scrolled_back();
+	const QColor cursorColour = colors.cursor_has_value ? qcolor(colors.cursor) : g.pal.cursor;
+	uint32_t cps[32];
+	std::vector<DrawCell> cells;
+	cells.reserve(size_t(g.cols));
+	for (int col = 0; ghostty_render_state_row_cells_next(g.cells) && col < g.cols; col++)
+	{
+		GhosttyCell raw = 0;
+		ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw);
+		GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+		ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
+		// The right half of a wide character is drawn with its left half.
+		if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL)
+			continue;
+		const int span = wide == GHOSTTY_CELL_WIDE_WIDE ? 2 : 1;
+		DrawCell c;
+		ghostty_style_default(&c.style);
+		ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &c.style);
+		GhosttyColorRgb rgb;
+		c.fg = ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR, &rgb) ==
+		               GHOSTTY_SUCCESS
+		           ? qcolor(rgb)
+		           : qcolor(colors.foreground);
+		c.bg = ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR, &rgb) ==
+		               GHOSTTY_SUCCESS
+		           ? qcolor(rgb)
+		           : qcolor(colors.background);
+		if (c.style.flags & GHOSTTY_STYLE_FLAG_INVERSE)
+			std::swap(c.fg, c.bg);
+		if (c.style.flags & GHOSTTY_STYLE_FLAG_FAINT)
+			c.fg = QColor((c.fg.red() + c.bg.red()) / 2, (c.fg.green() + c.bg.green()) / 2, (c.fg.blue() + c.bg.blue()) / 2);
+		bool selected = false;
+		ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected);
+		if (selected)
+		{
+			c.fg = g.pal.selFg;
+			c.bg = g.pal.selBg;
+		}
+		c.atCursor = cursorHere && cursor.viewport_x == col;
+		if (c.atCursor && cursor.visual_style == GHOSTTY_CURSOR_STYLE_BLOCK)
+		{
+			c.fg = g.pal.cursorText;
+			c.bg = cursorColour;
+		}
+		c.box = QRect(col * g.cellW, y, span * g.cellW, g.cellH);
+		GhosttyCodepointBuffer graphemes = { cps, 32, 0 };
+		ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, &graphemes);
+		const size_t n = std::min<size_t>(graphemes.len, 32);
+		c.first = n ? cps[0] : 0;
+		c.col = col;
+		c.span = span;
+		if (n && !(n == 1 && cps[0] == ' ') && !(c.style.flags & GHOSTTY_STYLE_FLAG_INVISIBLE))
+			c.text = QString::fromUcs4(reinterpret_cast<const char32_t*>(cps), qsizetype(n));
+		c.bold = c.style.flags & GHOSTTY_STYLE_FLAG_BOLD;
+		c.italic = c.style.flags & GHOSTTY_STYLE_FLAG_ITALIC;
+		cells.push_back(std::move(c));
+	}
+
+	for (const DrawCell& c : cells)
+		if (c.bg != qcolor(colors.background))
+			painter.fillRect(c.box, c.bg);
+
+	// Each column's first codepoint (0: empty, or the right half of a wide character): how much
+	// room a symbol has.
+	g.rowCps.assign(size_t(g.cols), 0);
+	for (const DrawCell& c : cells)
+		g.rowCps[size_t(c.col)] = c.first;
+
+	for (size_t i = 0; i < cells.size(); i++)
+	{
+		const DrawCell& c = cells[i];
+		if (c.text.isEmpty())
+			continue;
+		const QRawFont& rawFont = g.raw[(c.bold ? 1 : 0) | (c.italic ? 2 : 0)];
+		painter.setPen(c.fg);
+		// One codepoint (with a variation selector at most): a symbol may be sized by its rule.
+		const qsizetype units = QChar::requiresSurrogates(c.first) ? 2 : 1;
+		if ((c.text.size() == units || (c.text.size() == units + 1 && c.text.back().unicode() == 0xFE0F)) &&
+		    draw_symbol(painter, c, glyphfit::constraint_width(g.rowCps.data(), c.col, g.cols, c.span)))
+			continue;
+		const QList<quint32> glyphs = rawFont.glyphIndexesForString(c.text);
+		if (!glyphs.isEmpty() && glyphs[0] != 0 && glyphs.size() == 1)
+		{
+			QGlyphRun run;
+			run.setRawFont(rawFont);
+			run.setGlyphIndexes(glyphs);
+			run.setPositions({ QPointF(c.box.x(), y + g.ascent) });
+			painter.drawGlyphRun(QPointF(0, 0), run);
+		}
+		else
+		{
+			// Grapheme clusters (combining marks, emoji sequences) and glyphs the font lacks:
+			// Qt shapes them and picks a fallback font.
+			QFont f = g.font;
+			f.setBold(c.bold);
+			f.setItalic(c.italic);
+			painter.setFont(f);
+			painter.drawText(QPointF(c.box.x(), y + g.ascent), c.text);
+		}
+	}
+
+	const int thick = std::max(1, g.cellH / 14);
+	for (const DrawCell& c : cells)
+	{
+		const QRect& box = c.box;
+		if (GHOSTTY_STYLE_UNDERLINE(c.style))
+			painter.fillRect(QRect(box.x(), y + g.ascent + thick, box.width(), thick), c.fg);
+		if (c.style.flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH)
+			painter.fillRect(QRect(box.x(), y + g.cellH / 2, box.width(), thick), c.fg);
+		if (c.style.flags & GHOSTTY_STYLE_FLAG_OVERLINE)
+			painter.fillRect(QRect(box.x(), y, box.width(), thick), c.fg);
+		if (!c.atCursor)
+			continue;
+		if (cursor.visual_style == GHOSTTY_CURSOR_STYLE_UNDERLINE)
+			painter.fillRect(QRect(box.x(), y + g.cellH - 2 * thick, box.width(), 2 * thick), cursorColour);
+		if (cursor.visual_style == GHOSTTY_CURSOR_STYLE_BAR)
+			painter.fillRect(QRect(box.x(), y, 2 * thick, g.cellH), cursorColour);
+		if (cursor.visual_style == GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW)
+		{
+			painter.setPen(cursorColour);
+			painter.drawRect(box.adjusted(0, 0, -1, -1));
+		}
+	}
 }
 
-// OSC 52 from the remote program (tmux, Neovim): it sets our clipboard, unless the connection's
-// Clipboard switch is off (copying a selection still works). Reading it is not offered.
-static int cb_selection_set(VTermSelectionMask, VTermStringFragment frag, void*)
+// Draws what changed and tells the UI where: the rows the render state marks, and the rows the
+// cursor left and moved to.
+static void flush(bool announce)
 {
-	if (g.get("clipboard", "1") == "0")
-		return 1;
-	if (frag.initial)
+	if (g.image.isNull() || !g.term)
+		return;
+	if (ghostty_render_state_update(g.render, g.term) != GHOSTTY_SUCCESS)
+		return;
+	GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+	ghostty_render_state_get(g.render, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty);
+	GhosttyRenderStateCursor cursor = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
+	ghostty_render_state_get(g.render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor);
+	const int cursorRow = cursor.visible && cursor.viewport_has_value ? int(cursor.viewport_y) : -1;
+	if (dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && !g.full && cursorRow == g.cursorRow)
+		return;
+	GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+	ghostty_render_state_get(g.render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
+	if (ghostty_render_state_get(g.render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &g.rowIt) != GHOSTTY_SUCCESS)
+		return;
+	// A selection change makes the library report the whole screen dirty; when nothing else
+	// happened, only the lines the selection changed on need drawing.
+	const bool onlySelection = !g.full && !g.output && g.redrawFrom <= g.redrawTo;
+	const bool all = g.full || (dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL && !onlySelection);
+	const int stripW = g.cols * g.cellW;
+	if (g.strip.width() != stripW || g.strip.height() != g.cellH)
+		g.strip = QImage(std::max(1, stripW), std::max(1, g.cellH), g.image.format());
+	if (all)
 	{
-		g.osc52.clear();
-		g.osc52TooLong = false;
+		// Only the padding: the rows paint their own background.
+		QPainter frame(&g.image);
+		const QColor bg = qcolor(colors.background);
+		const int gridH = g.rows * g.cellH;
+		frame.fillRect(0, 0, g.pixelW, g.pad, bg);
+		frame.fillRect(0, g.pad + gridH, g.pixelW, g.pixelH - g.pad - gridH, bg);
+		frame.fillRect(0, g.pad, g.pad, gridH, bg);
+		frame.fillRect(g.pad + stripW, g.pad, g.pixelW - g.pad - stripW, gridH, bg);
 	}
-	// libvterm hands the text over decoded, in fragments as it arrives.
-	if (!g.osc52TooLong && g.osc52.size() + frag.len > oma::kMaxClipBytes)
+	const long top = long(scrollbar().offset);
+	QPainter painter(&g.strip);
+	painter.setRenderHint(QPainter::TextAntialiasing);
+	std::vector<std::pair<int, int>> runs; // redrawn rows, [first, last + 1)
+	for (int row = 0; ghostty_render_state_row_iterator_next(g.rowIt) && row < g.rows; row++)
 	{
-		oma::log("clipboard: the remote program's text is larger than %zu bytes; not passed on", oma::kMaxClipBytes);
-		g.osc52TooLong = true;
-		g.osc52.clear();
+		bool rowDirty = false;
+		ghostty_render_state_row_get(g.rowIt, GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY, &rowDirty);
+		const bool selChanged = top + row >= g.redrawFrom && top + row <= g.redrawTo;
+		if (onlySelection)
+			rowDirty = false;
+		if (!all && !rowDirty && !selChanged && row != cursorRow && row != g.cursorRow)
+			continue;
+		draw_row(painter, row, colors, cursor);
+		const int y = g.pad + row * g.cellH;
+		const size_t bytes = size_t(stripW) * 4;
+		for (int line = 0; line < g.cellH && y + line < g.image.height(); line++)
+			memcpy(g.image.scanLine(y + line) + size_t(g.pad) * 4, g.strip.constScanLine(line), bytes);
+		if (!runs.empty() && runs.back().second == row)
+			runs.back().second = row + 1;
+		else
+			runs.emplace_back(row, row + 1);
 	}
-	if (!g.osc52TooLong)
-		g.osc52.append(frag.str, frag.len);
-	if (frag.final && !g.osc52TooLong && !g.osc52.empty())
-	{
-		g.localClip = g.osc52;
-		g.link.send("clip " + b64(g.osc52));
-	}
-	return 1;
+	painter.end();
+	g.redrawFrom = 0;
+	g.redrawTo = -1;
+	g.output = false;
+	ghostty_render_state_clean(g.render);
+	g.cursorRow = cursorRow;
+	if (!announce)
+		;
+	else if (all)
+		g.link.send("damage 0 0 " + std::to_string(g.pixelW) + " " + std::to_string(g.pixelH));
+	else
+		for (const auto& [r0, r1] : runs)
+			g.link.send("damage " + std::to_string(g.pad) + " " + std::to_string(g.pad + r0 * g.cellH) + " " +
+			            std::to_string(stripW) + " " + std::to_string((r1 - r0) * g.cellH));
+	g.full = false;
 }
 
-static void cb_output(const char* s, size_t len, void*)
+static void scroll_view(int lines)
 {
+	// Positive: back into the history (up).
+	GhosttyTerminalScrollViewport s = {};
+	s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA;
+	s.value.delta = -intptr_t(lines);
+	ghostty_terminal_scroll_viewport(g.term, s);
+	g.full = true;
+}
+
+static void scroll_to_bottom()
+{
+	if (!scrolled_back())
+		return;
+	GhosttyTerminalScrollViewport s = {};
+	s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM;
+	ghostty_terminal_scroll_viewport(g.term, s);
+	g.full = true;
+}
+
+// ---------------------------------------------------------------- libghostty-vt callbacks
+
+static void cb_write_pty(GhosttyTerminal, void*, const uint8_t* data, size_t len)
+{
+	const char* s = reinterpret_cast<const char*>(data);
 	while (len > 0 && g.pty >= 0)
 	{
 		const ssize_t n = write(g.pty, s, len);
@@ -648,41 +811,113 @@ static void cb_output(const char* s, size_t len, void*)
 	}
 }
 
+static void to_pty(const std::string& s)
+{
+	cb_write_pty(g.term, nullptr, reinterpret_cast<const uint8_t*>(s.data()), s.size());
+}
+
+static void cb_title(GhosttyTerminal, void*)
+{
+	GhosttyString t = {};
+	if (ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_TITLE, &t) != GHOSTTY_SUCCESS)
+		return;
+	g.title.assign(reinterpret_cast<const char*>(t.ptr), std::min(t.len, kMaxTitleBytes));
+	g.link.send("title " + b64(g.title));
+}
+
+// OSC 52 (and its newer cousins) from the remote program (tmux, Neovim): it sets our clipboard,
+// unless the connection's Clipboard switch is off (copying a selection still works). Reading the
+// clipboard is not offered: no CLIPBOARD_READ callback, so those requests are refused.
+static void cb_clipboard_write(GhosttyTerminal, void*, const GhosttyClipboardWrite* w)
+{
+	GhosttyClipboardWriteReply reply = GHOSTTY_INIT_SIZED(GhosttyClipboardWriteReply);
+	reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED;
+	if (g.get("clipboard", "1") != "0" && w->location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD)
+	{
+		for (size_t i = 0; i < w->contents_len; i++)
+		{
+			const GhosttyClipboardContent& c = w->contents[i];
+			const std::string mime(reinterpret_cast<const char*>(c.mime.ptr), c.mime.len);
+			if (mime != "text/plain" && mime.rfind("text/plain;", 0) != 0)
+				continue;
+			if (c.data.len > oma::kMaxClipBytes)
+			{
+				oma::log("clipboard: the remote program's text is larger than %zu bytes; not passed on",
+				         oma::kMaxClipBytes);
+				reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA;
+				break;
+			}
+			if (c.data.len)
+			{
+				g.localClip.assign(reinterpret_cast<const char*>(c.data.ptr), c.data.len);
+				g.link.send("clip " + b64(g.localClip));
+			}
+			reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+			break;
+		}
+	}
+	w->reply(w, &reply);
+}
+
 // ---------------------------------------------------------------- selection and clipboard
+
+// The terminal keeps the selection (it follows the text as the screen scrolls), from our anchor
+// and head: positions between cells, so the end is the cell before the head.
+static bool apply_selection()
+{
+	if (!g.hasSelection)
+	{
+		ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr);
+		return false;
+	}
+	Pos a = g.selAnchor, b = g.selHead;
+	if (b < a)
+		std::swap(a, b);
+	if (b.col > 0)
+		b.col--;
+	else if (b.line > a.line)
+	{
+		b.line--;
+		b.col = g.cols - 1;
+	}
+	GhosttyPoint pa = {}, pb = {};
+	pa.tag = pb.tag = GHOSTTY_POINT_TAG_SCREEN;
+	pa.value.coordinate = { uint16_t(a.col), uint32_t(std::max(0L, a.line)) };
+	pb.value.coordinate = { uint16_t(b.col), uint32_t(std::max(0L, b.line)) };
+	GhosttySelection sel = {};
+	if (ghostty_terminal_grid_ref(g.term, pa, &sel.start) != GHOSTTY_SUCCESS ||
+	    ghostty_terminal_grid_ref(g.term, pb, &sel.end) != GHOSTTY_SUCCESS)
+		return false;
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SELECTION, &sel);
+	return true;
+}
 
 static std::string selection_text()
 {
 	if (!g.hasSelection)
 		return {};
-	Pos a = g.selAnchor, b = g.selHead;
-	if (b < a)
-		std::swap(a, b);
-	std::string out;
-	for (long line = a.line; line <= b.line; line++)
+	GhosttySelection sel = {};
+	if (ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_SELECTION, &sel) != GHOSTTY_SUCCESS)
+		return {};
+	GhosttyFormatter f = nullptr;
+	if (ghostty_formatter_terminal_new(nullptr, &f, g.term) != GHOSTTY_SUCCESS)
+		return {};
+	const GhosttyFormatterFormat plain = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+	const bool yes = true;
+	ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_EMIT, &plain);
+	ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_TRIM, &yes);
+	ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_UNWRAP, &yes);
+	ghostty_formatter_set(f, GHOSTTY_FORMATTER_OPT_SELECTION, &sel);
+	uint8_t* out = nullptr;
+	size_t len = 0;
+	std::string text;
+	if (ghostty_formatter_format_alloc(f, nullptr, &out, &len) == GHOSTTY_SUCCESS && out)
 	{
-		const int from = line == a.line ? a.col : 0;
-		const int to = line == b.line ? b.col : g.cols;
-		std::string text;
-		for (int col = from; col < to; col++)
-		{
-			const VTermScreenCell c = cell_at(line, col);
-			if (c.chars[0] == uint32_t(-1))
-				continue;
-			if (!c.chars[0])
-			{
-				text += ' ';
-				continue;
-			}
-			for (int i = 0; i < VTERM_MAX_CHARS_PER_CELL && c.chars[i]; i++)
-				text += QString::fromUcs4(reinterpret_cast<const char32_t*>(&c.chars[i]), 1).toStdString();
-		}
-		while (!text.empty() && text.back() == ' ')
-			text.pop_back();
-		out += text;
-		if (line != b.line)
-			out += '\n';
+		text.assign(reinterpret_cast<const char*>(out), std::min(len, oma::kMaxClipBytes));
+		ghostty_free(nullptr, out, len);
 	}
-	return out;
+	ghostty_formatter_free(f);
+	return text;
 }
 
 static void copy_selection()
@@ -695,20 +930,32 @@ static void copy_selection()
 }
 
 // Pasted text goes to the program as typed, bracketed when it asks for that (shells and editors
-// then do not run or indent it line by line).
+// then do not run or indent it line by line). Ghostty's encoder also takes out what could end
+// the bracket early.
 static void paste()
 {
 	if (g.localClip.empty() || g.pty < 0)
 		return;
 	std::string text = g.localClip;
-	for (auto& c : text)
-		if (c == '\n')
-			c = '\r';
-	g.viewOffset = 0;
-	g.full = g.dirty = true;
-	vterm_keyboard_start_paste(g.vt);
-	cb_output(text.data(), text.size(), nullptr);
-	vterm_keyboard_end_paste(g.vt);
+	scroll_to_bottom();
+	const bool bracketed = mode(2004);
+	size_t need = 0;
+	ghostty_paste_encode(text.data(), text.size(), bracketed, nullptr, 0, &need);
+	std::string out(need, '\0');
+	size_t written = 0;
+	if (ghostty_paste_encode(text.data(), text.size(), bracketed, reinterpret_cast<uint8_t*>(out.data()), out.size(),
+	                         &written) == GHOSTTY_SUCCESS)
+		to_pty(out.substr(0, written));
+}
+
+// Marks the screen lines from a to b (either order) for the next flush.
+static void redraw_lines(const Pos& a, const Pos& b)
+{
+	const long from = std::min(a.line, b.line), to = std::max(a.line, b.line);
+	if (g.redrawFrom > g.redrawTo)
+		g.redrawFrom = from, g.redrawTo = to;
+	else
+		g.redrawFrom = std::min(g.redrawFrom, from), g.redrawTo = std::max(g.redrawTo, to);
 }
 
 static void clear_selection()
@@ -716,7 +963,8 @@ static void clear_selection()
 	if (!g.hasSelection)
 		return;
 	g.hasSelection = false;
-	g.full = g.dirty = true;
+	redraw_lines(g.selAnchor, g.selHead);
+	apply_selection();
 }
 
 // ---------------------------------------------------------------- input
@@ -733,43 +981,24 @@ static bool shift_held() { return held({ 42, 54 }); }
 static bool ctrl_held() { return held({ 29, 97 }); }
 static bool alt_held() { return held({ 56 }); } // right alt is AltGr: it types characters
 
-static VTermModifier mods()
+static GhosttyMods mods()
 {
-	int m = VTERM_MOD_NONE;
+	GhosttyMods m = 0;
 	if (shift_held())
-		m |= VTERM_MOD_SHIFT;
+		m |= GHOSTTY_MODS_SHIFT;
 	if (ctrl_held())
-		m |= VTERM_MOD_CTRL;
+		m |= GHOSTTY_MODS_CTRL;
 	if (alt_held())
-		m |= VTERM_MOD_ALT;
-	return VTermModifier(m);
+		m |= GHOSTTY_MODS_ALT;
+	return m;
 }
 
-static VTermKey special_key(uint32_t sym)
+static GhosttyKey key_of(uint32_t evdev)
 {
-	switch (sym)
-	{
-		case XKB_KEY_Return: return VTERM_KEY_ENTER;
-		case XKB_KEY_KP_Enter: return VTERM_KEY_KP_ENTER;
-		case XKB_KEY_Tab:
-		case XKB_KEY_ISO_Left_Tab: return VTERM_KEY_TAB;
-		case XKB_KEY_BackSpace: return VTERM_KEY_BACKSPACE;
-		case XKB_KEY_Escape: return VTERM_KEY_ESCAPE;
-		case XKB_KEY_Up: case XKB_KEY_KP_Up: return VTERM_KEY_UP;
-		case XKB_KEY_Down: case XKB_KEY_KP_Down: return VTERM_KEY_DOWN;
-		case XKB_KEY_Left: case XKB_KEY_KP_Left: return VTERM_KEY_LEFT;
-		case XKB_KEY_Right: case XKB_KEY_KP_Right: return VTERM_KEY_RIGHT;
-		case XKB_KEY_Insert: case XKB_KEY_KP_Insert: return VTERM_KEY_INS;
-		case XKB_KEY_Delete: case XKB_KEY_KP_Delete: return VTERM_KEY_DEL;
-		case XKB_KEY_Home: case XKB_KEY_KP_Home: return VTERM_KEY_HOME;
-		case XKB_KEY_End: case XKB_KEY_KP_End: return VTERM_KEY_END;
-		case XKB_KEY_Page_Up: case XKB_KEY_KP_Page_Up: return VTERM_KEY_PAGEUP;
-		case XKB_KEY_Page_Down: case XKB_KEY_KP_Page_Down: return VTERM_KEY_PAGEDOWN;
-		default: break;
-	}
-	if (sym >= XKB_KEY_F1 && sym <= XKB_KEY_F12)
-		return VTermKey(VTERM_KEY_FUNCTION(int(sym - XKB_KEY_F1) + 1));
-	return VTERM_KEY_NONE;
+	for (const auto& k : kEvdevKeys)
+		if (k.evdev == evdev)
+			return k.key;
+	return GHOSTTY_KEY_UNIDENTIFIED;
 }
 
 static bool is_modifier(uint32_t sym)
@@ -778,13 +1007,76 @@ static bool is_modifier(uint32_t sym)
 	       sym == XKB_KEY_ISO_Level5_Shift || sym == XKB_KEY_Mode_switch || sym == XKB_KEY_Num_Lock;
 }
 
+// One key through Ghostty's encoder, which follows the modes the program set: cursor and keypad
+// application keys, modifyOtherKeys, the Kitty keyboard protocol.
+static void encode_key(GhosttyKeyAction action, uint32_t evdev, uint32_t sym, const std::string& text)
+{
+	const GhosttyKey key = key_of(evdev);
+	if (key == GHOSTTY_KEY_UNIDENTIFIED && text.empty())
+		return;
+	// The layout's text, without control characters (ctrl+c comes as the key and its modifiers).
+	std::string utf8;
+	for (char32_t c : QString::fromStdString(text).toUcs4())
+		if (c >= 0x20 && c != 0x7f)
+			utf8 += QString::fromUcs4(&c, 1).toStdString();
+	if (utf8.empty() && action != GHOSTTY_KEY_ACTION_RELEASE)
+		if (const uint32_t c = xkb_keysym_to_utf32(sym); c >= 0x20 && c != 0x7f)
+		{
+			const char32_t cc = c;
+			utf8 = QString::fromUcs4(&cc, 1).toStdString();
+		}
+	const GhosttyMods m = mods();
+	ghostty_key_event_set_action(g.keyEvent, action);
+	ghostty_key_event_set_key(g.keyEvent, key);
+	ghostty_key_event_set_mods(g.keyEvent, m);
+	// Shift that made the character (a capital, a symbol) is part of it, not a modifier on top.
+	ghostty_key_event_set_consumed_mods(g.keyEvent, (m & GHOSTTY_MODS_SHIFT) && !utf8.empty() ? GHOSTTY_MODS_SHIFT : 0);
+	ghostty_key_event_set_utf8(g.keyEvent, GhosttyString{ reinterpret_cast<const uint8_t*>(utf8.data()), utf8.size() });
+	ghostty_key_event_set_unshifted_codepoint(g.keyEvent, xkb_keysym_to_utf32(xkb_keysym_to_lower(sym)));
+	ghostty_key_encoder_set_from_terminal(g.keys, g.term);
+	uint8_t buf[128];
+	size_t n = 0;
+	if (ghostty_key_encoder_encode(g.keys, g.keyEvent, buf, sizeof(buf), &n) == GHOSTTY_SUCCESS && n)
+		to_pty(std::string(reinterpret_cast<const char*>(buf), n));
+	else if (action != GHOSTTY_KEY_ACTION_RELEASE && key == GHOSTTY_KEY_UNIDENTIFIED && !utf8.empty())
+		to_pty(utf8); // a key Ghostty has no name for that still typed something
+	ghostty_key_event_set_utf8(g.keyEvent, GhosttyString{});
+}
+
+// Ctrl+= (or +) bigger, ctrl+- smaller, ctrl+0 back, a point at a time, as Ghostty and Alacritty.
+// The terminal reflows to the new cell size; the program gets the new rows and columns.
+static bool zoom_key(uint32_t sym)
+{
+	int step;
+	switch (sym)
+	{
+	case XKB_KEY_equal: case XKB_KEY_plus: case XKB_KEY_KP_Add: step = 1; break;
+	case XKB_KEY_minus: case XKB_KEY_KP_Subtract: step = -1; break;
+	case XKB_KEY_0: case XKB_KEY_KP_0: case XKB_KEY_KP_Insert: step = 0; break;
+	default: return false;
+	}
+	const double base = strtod(g.get("fontSize", "9").c_str(), nullptr);
+	const int next = step ? std::clamp(g.zoom + step, int(std::ceil(4.0 - base)), int(std::floor(48.0 - base))) : 0;
+	if (next != g.zoom && g.frame.data)
+	{
+		g.zoom = next;
+		resize(g.pixelW, g.pixelH, g.scale, true);
+	}
+	return true;
+}
+
 static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 {
 	g.held.insert(evdev);
 	if (g.pty < 0 && (sym == 0xff0d || sym == 0xff8d)) // Return, KP_Enter: try again now
 		g.retryNow = true;
-	if (is_modifier(sym) || g.pty < 0)
+	if (g.pty < 0)
 		return;
+	if (is_modifier(sym))
+	{
+		encode_key(GHOSTTY_KEY_ACTION_PRESS, evdev, sym, {}); // the Kitty protocol may report it
+		return;
+	}
 	g.typed = true;
 	const bool shift = shift_held(), ctrl = ctrl_held();
 
@@ -801,70 +1093,68 @@ static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 		return paste();
 	if (shift && !ctrl && (sym == XKB_KEY_Page_Up || sym == XKB_KEY_Page_Down) && !g.altScreen)
 		return scroll_view(sym == XKB_KEY_Page_Up ? g.rows - 1 : -(g.rows - 1));
+	if (ctrl && !alt_held() && zoom_key(sym))
+	{
+		g.zoomKeys.insert(evdev);
+		return;
+	}
 
 	// Typing returns the view to the bottom.
-	if (g.viewOffset)
-	{
-		g.viewOffset = 0;
-		g.full = g.dirty = true;
-	}
+	scroll_to_bottom();
 	clear_selection();
+	encode_key(GHOSTTY_KEY_ACTION_PRESS, evdev, sym, text);
+}
 
-	VTermModifier m = mods();
-	if (const VTermKey key = special_key(sym); key != VTERM_KEY_NONE)
-	{
-		if (sym == XKB_KEY_ISO_Left_Tab)
-			m = VTermModifier(m | VTERM_MOD_SHIFT);
-		vterm_keyboard_key(g.vt, key, m);
+static void key_up(uint32_t evdev, uint32_t sym)
+{
+	g.held.erase(evdev);
+	if (g.zoomKeys.erase(evdev))
 		return;
-	}
-	// With ctrl or alt the key is a combination: the character itself, shift already applied.
-	if (m & (VTERM_MOD_CTRL | VTERM_MOD_ALT))
-	{
-		const uint32_t c = xkb_keysym_to_utf32(sym);
-		if (c)
-			vterm_keyboard_unichar(g.vt, c, VTermModifier(m & ~VTERM_MOD_SHIFT));
-		return;
-	}
-	// Plain typing: the text the keyboard layout produced (dead keys and compose included).
-	const QString typed = QString::fromStdString(text);
-	if (!typed.isEmpty())
-	{
-		for (char32_t c : typed.toUcs4())
-			if (c >= 0x20 && c != 0x7f)
-				vterm_keyboard_unichar(g.vt, uint32_t(c), VTERM_MOD_NONE);
-		return;
-	}
-	if (const uint32_t c = xkb_keysym_to_utf32(sym); c >= 0x20)
-		vterm_keyboard_unichar(g.vt, c, VTERM_MOD_NONE);
+	if (g.pty >= 0)
+		encode_key(GHOSTTY_KEY_ACTION_RELEASE, evdev, sym, {}); // nothing unless the program asked for releases
 }
 
 static Pos pos_at(int x, int y)
 {
 	const int col = std::clamp((x - g.pad) / std::max(1, g.cellW), 0, g.cols - 1);
 	const int row = std::clamp((y - g.pad) / std::max(1, g.cellH), 0, g.rows - 1);
-	return Pos{ line_of_row(row), col };
+	return Pos{ long(scrollbar().offset) + row, col };
 }
 
 // Whether the program in the terminal gets the mouse (shift keeps it for selecting).
 static bool program_mouse()
 {
-	return g.mouseMode != VTERM_PROP_MOUSE_NONE && !shift_held();
+	return g.mouseTracking && !shift_held();
+}
+
+static void send_mouse(GhosttyMouseAction action, int button, int x, int y)
+{
+	ghostty_mouse_event_set_action(g.mouseEvent, action);
+	if (button)
+		ghostty_mouse_event_set_button(g.mouseEvent, GhosttyMouseButton(button));
+	else
+		ghostty_mouse_event_clear_button(g.mouseEvent);
+	ghostty_mouse_event_set_mods(g.mouseEvent, mods());
+	ghostty_mouse_event_set_position(g.mouseEvent, GhosttyMousePosition{ float(x), float(y) });
+	ghostty_mouse_encoder_set_from_terminal(g.mouse, g.term);
+	const bool pressed = g.mouseButtons != 0;
+	ghostty_mouse_encoder_set(g.mouse, GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
+	uint8_t buf[64];
+	size_t n = 0;
+	if (ghostty_mouse_encoder_encode(g.mouse, g.mouseEvent, buf, sizeof(buf), &n) == GHOSTTY_SUCCESS && n)
+		to_pty(std::string(reinterpret_cast<const char*>(buf), n));
 }
 
 static void mouse_button(int button, bool down, int x, int y)
 {
-	// UI numbering: 1 left, 2 right, 3 middle. Terminals: 1 left, 2 middle, 3 right.
-	const int term = button == 1 ? 1 : button == 2 ? 3 : button == 3 ? 2 : 0;
-	if (program_mouse() && term)
+	// UI numbering: 1 left, 2 right, 3 middle; Ghostty's is the same.
+	if (program_mouse() && button >= 1 && button <= 3)
 	{
-		const Pos p = pos_at(x, y);
-		vterm_mouse_move(g.vt, int(p.line - long(g.history.size()) + g.viewOffset), p.col, mods());
-		vterm_mouse_button(g.vt, term, down, mods());
 		if (down)
-			g.mouseButtons |= 1 << term;
+			g.mouseButtons |= 1 << button;
 		else
-			g.mouseButtons &= ~(1 << term);
+			g.mouseButtons &= ~(1 << button);
+		send_mouse(down ? GHOSTTY_MOUSE_ACTION_PRESS : GHOSTTY_MOUSE_ACTION_RELEASE, button, x, y);
 		return;
 	}
 	if (button == 1)
@@ -887,11 +1177,15 @@ static void mouse_move(int x, int y)
 {
 	if (program_mouse())
 	{
-		if (g.mouseMode == VTERM_PROP_MOUSE_MOVE || (g.mouseMode == VTERM_PROP_MOUSE_DRAG && g.mouseButtons))
-		{
-			const Pos p = pos_at(x, y);
-			vterm_mouse_move(g.vt, int(p.line - long(g.history.size()) + g.viewOffset), p.col, mods());
-		}
+		// The encoder knows the tracking mode: motion only with a button, or always, or never.
+		int button = 0;
+		for (int b = 1; b <= 3; b++)
+			if (g.mouseButtons & (1 << b))
+			{
+				button = b;
+				break;
+			}
+		send_mouse(GHOSTTY_MOUSE_ACTION_MOTION, button, x, y);
 		return;
 	}
 	if (!g.selecting)
@@ -904,9 +1198,11 @@ static void mouse_move(int x, int y)
 	const Pos p = pos_at(x + g.cellW / 2, y);
 	if (p == g.selHead)
 		return;
+	// Only the lines between the old and the new end change.
+	redraw_lines(g.selHead, p);
 	g.selHead = p;
 	g.hasSelection = !(g.selAnchor == g.selHead);
-	g.full = g.dirty = true;
+	apply_selection();
 }
 
 static void wheel(long dy, int x, int y)
@@ -916,20 +1212,18 @@ static void wheel(long dy, int x, int y)
 		return;
 	if (program_mouse())
 	{
-		const Pos p = pos_at(x, y);
-		vterm_mouse_move(g.vt, int(p.line - long(g.history.size()) + g.viewOffset), p.col, mods());
 		for (int i = 0; i < std::abs(notches); i++)
-		{
-			vterm_mouse_button(g.vt, notches > 0 ? 4 : 5, true, mods());
-			vterm_mouse_button(g.vt, notches > 0 ? 4 : 5, false, mods());
-		}
+			send_mouse(GHOSTTY_MOUSE_ACTION_PRESS, notches > 0 ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE, x,
+			           y);
 		return;
 	}
 	if (g.altScreen)
 	{
-		// Full-screen programs without the mouse (less, man): the wheel moves through them.
+		// Full-screen programs without the mouse (less, man): the wheel moves through them, as
+		// arrow keys in the mode the program set.
+		const uint32_t evdev = notches > 0 ? 103 : 108; // KEY_UP, KEY_DOWN
 		for (int i = 0; i < 3 * std::abs(notches); i++)
-			vterm_keyboard_key(g.vt, notches > 0 ? VTERM_KEY_UP : VTERM_KEY_DOWN, VTERM_MOD_NONE);
+			encode_key(GHOSTTY_KEY_ACTION_PRESS, evdev, notches > 0 ? XKB_KEY_Up : XKB_KEY_Down, {});
 		return;
 	}
 	scroll_view(3 * notches);
@@ -948,17 +1242,20 @@ static void handle_line(const std::string& line)
 	else if (cmd == "key" && w.size() >= 3)
 	{
 		const uint32_t evdev = uint32_t(num(2));
+		const uint32_t sym = w.size() >= 4 ? uint32_t(strtoul(w[3].c_str(), nullptr, 10)) : 0;
 		if (num(1))
-			key_down(evdev, w.size() >= 4 ? uint32_t(strtoul(w[3].c_str(), nullptr, 10)) : 0,
-			         w.size() >= 5 ? unb64(w[4]) : std::string());
+			key_down(evdev, sym, w.size() >= 5 ? unb64(w[4]) : std::string());
 		else
-			g.held.erase(evdev);
+			key_up(evdev, sym);
 	}
 	else if (cmd == "text" && w.size() >= 2 && g.pty >= 0)
 	{
-		// Composed text that came without a key.
+		// Composed text that came without a key: as it is, control characters left out.
+		std::string text;
 		for (char32_t c : QString::fromStdString(unb64(w[1])).toUcs4())
-			vterm_keyboard_unichar(g.vt, uint32_t(c), VTERM_MOD_NONE);
+			if (c >= 0x20 && c != 0x7f)
+				text += QString::fromUcs4(&c, 1).toStdString();
+		to_pty(text);
 	}
 	else if (cmd == "mouse" && w.size() >= 3)
 		mouse_move(int(num(1)), int(num(2)));
@@ -978,6 +1275,14 @@ static void handle_line(const std::string& line)
 		else if (w[1] == "cancel")
 			g.cancelReconnect = true;
 	}
+}
+
+// What the program printed, into the terminal.
+static void term_write(const char* s, size_t len)
+{
+	ghostty_terminal_vt_write(g.term, reinterpret_cast<const uint8_t*>(s), len);
+	g.output = true;
+	after_write();
 }
 
 // ---------------------------------------------------------------- main
@@ -1111,7 +1416,7 @@ static int run_ssh()
 				const ssize_t got = read(g.pty, buf, sizeof(buf));
 				if (got > 0)
 				{
-					vterm_input_write(g.vt, buf, size_t(got));
+					term_write(buf, size_t(got));
 					g.said.append(buf, size_t(got));
 					if (!saidAt)
 						saidAt = oma::now_ms();
@@ -1193,11 +1498,11 @@ static void note(std::string text)
 	           text.end());
 	// Its own screen only when one is on: ?1049l also puts the cursor back where it was saved.
 	if (g.altScreen)
-		vterm_input_write(g.vt, "\x1b[?1049l", 8);
+		term_write("\x1b[?1049l", 8);
 	static const char reset[] = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m";
-	vterm_input_write(g.vt, reset, sizeof(reset) - 1);
+	term_write(reset, sizeof(reset) - 1);
 	const std::string line = "\r\n\x1b[2m\xe2\x94\x80\xe2\x94\x80 " + text + " \xe2\x94\x80\xe2\x94\x80\x1b[0m\r\n";
-	vterm_input_write(g.vt, line.data(), line.size());
+	term_write(line.data(), line.size());
 	flush();
 }
 
@@ -1249,32 +1554,43 @@ int main(int argc, char** argv)
 	QGuiApplication app(argc, argv);
 
 	g.themePath = g.get("theme");
-	g.historyMax = size_t(std::max(0L, strtol(g.get("scrollback", "10000").c_str(), nullptr, 10)));
-
 	if (!g.link.listen(getenv("OMAREMOTE_SOCKET")))
 		return 136;
 	g.link.onAttach = replay;
 
-	g.vt = vterm_new(g.rows, g.cols);
-	vterm_set_utf8(g.vt, 1);
-	vterm_output_set_callback(g.vt, cb_output, nullptr);
-	g.screen = vterm_obtain_screen(g.vt);
-	static VTermScreenCallbacks callbacks = {};
-	callbacks.damage = cb_damage;
-	callbacks.movecursor = cb_movecursor;
-	callbacks.settermprop = cb_settermprop;
-	callbacks.sb_pushline = cb_sb_pushline;
-	callbacks.sb_popline = cb_sb_popline;
-	callbacks.sb_clear = cb_sb_clear;
-	vterm_screen_set_callbacks(g.screen, &callbacks, nullptr);
-	vterm_screen_enable_altscreen(g.screen, 1);
-	vterm_screen_enable_reflow(g.screen, true);
-	static VTermSelectionCallbacks selection = {};
-	selection.set = cb_selection_set;
-	static char selectionBuffer[4096];
-	vterm_state_set_selection_callbacks(vterm_obtain_state(g.vt), &selection, nullptr, selectionBuffer,
-	                                    sizeof(selectionBuffer));
-	vterm_screen_reset(g.screen, 1);
+	// The terminal: its scrollback, and what it tells us (output to the program, a title, a
+	// clipboard write). No clipboard read: a program on the server never reads ours.
+	if (ghostty_terminal_new(nullptr, &g.term, uint16_t(g.cols), uint16_t(g.rows)) != GHOSTTY_SUCCESS ||
+	    ghostty_render_state_new(nullptr, &g.render) != GHOSTTY_SUCCESS ||
+	    ghostty_render_state_row_iterator_new(nullptr, &g.rowIt) != GHOSTTY_SUCCESS ||
+	    ghostty_render_state_row_cells_new(nullptr, &g.cells) != GHOSTTY_SUCCESS ||
+	    ghostty_key_encoder_new(nullptr, &g.keys) != GHOSTTY_SUCCESS ||
+	    ghostty_key_event_new(nullptr, &g.keyEvent) != GHOSTTY_SUCCESS ||
+	    ghostty_mouse_encoder_new(nullptr, &g.mouse) != GHOSTTY_SUCCESS ||
+	    ghostty_mouse_event_new(nullptr, &g.mouseEvent) != GHOSTTY_SUCCESS)
+	{
+		log("cannot start the terminal");
+		return 1;
+	}
+	const size_t scrollback = size_t(std::max(0L, strtol(g.get("scrollback", "10000").c_str(), nullptr, 10)));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback);
+	// No Kitty graphics: nothing here shows images, and a remote program could fill memory with
+	// them (stored up to 10 MB by default). Zero turns the protocol off; loading from files or
+	// shared memory is off already. Escape sequences of that kind are buffered up to 64 KiB.
+	const uint64_t noImages = 0;
+	if (ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &noImages) != GHOSTTY_SUCCESS)
+		log("Kitty graphics: not turned off (not in this libghostty-vt)");
+	const size_t apcMax = 64 << 10;
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, &apcMax);
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(&cb_write_pty));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, reinterpret_cast<const void*>(&cb_title));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(&cb_clipboard_write));
+	// Unicode grapheme clusters (mode 2027), as Ghostty itself runs: an emoji with a skin tone, a flag,
+	// a family is one character of the right width, not its parts side by side.
+	GhosttyTerminalModeConfig clusters = {};
+	clusters.mode = GHOSTTY_MODE_GRAPHEME_CLUSTER;
+	clusters.value = true;
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &clusters);
 	load_theme();
 	check_theme();
 
