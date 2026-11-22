@@ -439,7 +439,9 @@ fi
 
     def test_a_copy_arriving_with_the_keyboard_wins_too(self):
         self.stub(b"from the desktop")
-        result, _, err = self.run_view(True, ms=2500, send=[b"from the session"], mode="copy-return-away")
+        # The session's text arrives at about 850 ms, the view gets the keyboard back at 3000 ms and
+        # the result is read at 4000 ms: wide margins, so a busy machine does not reorder them.
+        result, _, err = self.run_view(True, ms=4000, send=[b"from the session"], mode="copy-return-away")
         self.assertEqual(result["clipboard"], "copied on return", err)
 
     def test_text_from_the_session_is_set_up_to_the_limit(self):

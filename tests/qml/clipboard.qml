@@ -5,7 +5,7 @@ import OMARemote
 // mode "away": the view loses the keyboard at 600 ms and gets it back 300 ms before the end;
 // "copy-away": the same, with a copy elsewhere on the desktop at 1200 ms; "copy-return-away": the
 // copy elsewhere arrives just after the view gets the keyboard back (Wayland sends the selection
-// around the keyboard's arrival); anything else: focused. A mode with "vnc" in it attaches as VNC
+// around the keyboard's arrival), 1000 ms before the end; anything else: focused. A mode with "vnc" in it attaches as VNC
 // does (offerAtConnect off), "quiet" has no copy on the desktop at 400 ms, "late" turns offerAtConnect
 // on at 800 ms, "shareoff" turns sharing off at 800 ms, "detach" leaves the session at 800 ms and
 // comes back 300 ms before the end, "early" has a copy on the desktop 250 ms before attaching.
@@ -74,9 +74,11 @@ Window {
         interval: 1200
         onTriggered: { source.text = "copied later"; source.selectAll(); source.copy() }
     }
+    // "copy-return-away" returns earlier: the held text is applied 150 ms after the keyboard's
+    // arrival, and a busy machine needs room for that before the result is read.
     Timer {
         running: root.mode.endsWith("away")
-        interval: root.ms - 300
+        interval: root.ms - (root.mode === "copy-return-away" ? 1000 : 300)
         onTriggered: {
             sink.text = ""
             sink.paste()
