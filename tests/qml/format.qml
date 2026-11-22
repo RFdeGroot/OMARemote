@@ -26,14 +26,18 @@ Item {
             r.noStats = Format.parseStats("")
             r.ports = Format.defaultPorts
             r.gliffAddress = Format.address({ protocol: "gliff", host: "pc.lan", port: 22 })
+            var ran = { state: "ended", connectedAt: 1000, ended: 1005 }
+            function with_(extra) { return Object.assign({}, ran, extra) }
             r.closeOnEnd = {
-                clean: Format.closeOnEnd({ state: "ended" }, "close"),
-                off: Format.closeOnEnd({ state: "ended" }, "panel"),
-                unset: Format.closeOnEnd({ state: "ended" }, undefined),
-                failed: Format.closeOnEnd({ state: "failed", error: "x" }, "close"),
-                stopped: Format.closeOnEnd({ state: "ended", stopped: true }, "close"),
-                live: Format.closeOnEnd({ state: "connected" }, "close"),
-                none: Format.closeOnEnd(null, "close")
+                clean: Format.closeOnEnd(ran, "close"),
+                unset: Format.closeOnEnd(ran, undefined),
+                off: Format.closeOnEnd(ran, "panel"),
+                failed: Format.closeOnEnd(with_({ state: "failed", error: "x" }), undefined),
+                stopped: Format.closeOnEnd(with_({ stopped: true }), undefined),
+                live: Format.closeOnEnd(with_({ state: "connected" }), undefined),
+                quick: Format.closeOnEnd(with_({ ended: 1004 }), undefined),
+                neverConnected: Format.closeOnEnd(with_({ connectedAt: 0 }), undefined),
+                none: Format.closeOnEnd(null, undefined)
             }
             r.unlock = {
                 due: Format.unlockDue("rdp", 10, 10 * 60000),

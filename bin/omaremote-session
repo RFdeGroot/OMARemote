@@ -4374,7 +4374,7 @@ def supervise(conn, sid, tab=None):
             return
         # gdi_init_ex is FreeRDP's post-connect; omaremote-vnc, -ssh and -gliff say so themselves.
         if "gdi_init_ex" in line or line.startswith("[omaremote] connected to"):
-            state.update(state="connected", stage=None)
+            state.update(state="connected", stage=None, connectedAt=int(time.time()))
             write_session(state)
             mark_connected(conn["id"])
             return

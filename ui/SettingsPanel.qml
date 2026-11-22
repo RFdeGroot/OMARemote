@@ -346,9 +346,9 @@ FocusScope {
                         FormRow {
                             visible: root.section === "sessions"
                             label: "Ended by the remote side"
-                            help: "Typing exit, signing off. A failure always shows why, with Reconnect"
+                            help: "Typing exit, signing off. A failure, or an end within seconds of connecting, always shows why, with Reconnect"
                             Segment {
-                                value: Store.ui.sessionEnd === "close" ? "close" : "panel"
+                                value: Store.ui.sessionEnd === "panel" ? "panel" : "close"
                                 options: [{ value: "panel", label: "Show Reconnect" }, { value: "close", label: "Close the tab" }]
                                 onPicked: function (v) { Store.setUi("sessionEnd", v) }
                             }
