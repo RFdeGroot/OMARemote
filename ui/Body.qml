@@ -142,8 +142,12 @@ FocusScope {
     readonly property int trashCount: Store.trash.length
     onTrashCountChanged: if (trashCount === 0 && inTrash) filter = "all"
 
-    // Keep a selection whenever there is something to select.
-    onShownChanged: {
+    // Keep a selection whenever there is something to select. Not while the file loads: the list
+    // passes through a moment in another order (ungrouped, before `grouped` follows), and its first
+    // row then would stay selected; once loaded, the list's real first row.
+    function keepSelection() {
+        if (!Store.loaded)
+            return
         for (var i = 0; i < shown.length; i++)
             if (shown[i].id === selectedId)
                 return
@@ -151,6 +155,11 @@ FocusScope {
         if (!editing)
             selectedId = shown.length > 1 && shown[0].quickRow ? shown[1].id
                        : shown.length > 0 ? shown[0].id : ""
+    }
+    onShownChanged: keepSelection()
+    Connections {
+        target: Store
+        function onLoadedChanged() { root.keepSelection() }
     }
     onSelectedIdChanged: {
         deleteArmed = false
