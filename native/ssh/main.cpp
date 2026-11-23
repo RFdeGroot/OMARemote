@@ -156,6 +156,8 @@ struct Session
 	// render state says which rows changed.
 	bool full = true;
 	int cursorRow = -1; // the row the cursor was drawn on, redrawn when it moves away
+	int cursorCol = -1; // and its column and style: a move along the row redraws it too
+	int cursorStyle = -1;
 	long redrawFrom = 0, redrawTo = -1; // screen lines to redraw anyway (the selection changed there)
 	bool output = false;                 // the terminal got output since the last flush
 
@@ -717,7 +719,12 @@ static void flush(bool announce)
 	GhosttyRenderStateCursor cursor = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
 	ghostty_render_state_get(g.render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor);
 	const int cursorRow = cursor.visible && cursor.viewport_has_value ? int(cursor.viewport_y) : -1;
-	if (dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && !g.full && cursorRow == g.cursorRow)
+	// The library does not mark a row dirty when only the cursor moves (left and right on the
+	// prompt): its column and style count as a change of their own.
+	const int cursorCol = cursorRow >= 0 ? int(cursor.viewport_x) : -1;
+	const int cursorStyle = int(cursor.visual_style);
+	if (dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && !g.full && cursorRow == g.cursorRow
+	    && cursorCol == g.cursorCol && cursorStyle == g.cursorStyle)
 		return;
 	GhosttyRenderStateColors colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
 	ghostty_render_state_get(g.render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors);
@@ -771,6 +778,8 @@ static void flush(bool announce)
 	g.output = false;
 	ghostty_render_state_clean(g.render);
 	g.cursorRow = cursorRow;
+	g.cursorCol = cursorCol;
+	g.cursorStyle = cursorStyle;
 	if (!announce)
 		;
 	else if (all)

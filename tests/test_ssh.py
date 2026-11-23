@@ -417,6 +417,74 @@ class SeeThrough(unittest.TestCase):
                 p.wait()
 
 
+class CursorMoves(unittest.TestCase):
+    """The cursor block follows a move along its row with no text changed (left and right on a
+    prompt): the library marks no row dirty for it, so the session must redraw it by itself."""
+
+    def test_the_block_follows_left_on_the_same_row(self):
+        import mmap, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "s")
+            config = "\n".join(["arg=/bin/sh", "arg=-c", "arg=printf '    '; sleep 1; printf '\\033[2D'; sleep 30",
+                                "reconnect=0", "font=monospace", "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            try:
+                c = socket.socket(socket.AF_UNIX)
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                c.settimeout(1)
+                frame, end = None, time.time() + 10
+                while frame is None and time.time() < end:
+                    try:
+                        data, fds, _, _ = socket.recv_fds(c, 65536, 4)
+                    except socket.timeout:
+                        continue
+                    for line in data.split(b"\n"):
+                        if line.startswith(b"frame") and fds:
+                            w, h, stride = (int(v) for v in line.split()[1:4])
+                            fd = fds.pop(0)
+                            if (w, h) == (400, 300):
+                                frame = (mmap.mmap(fd, stride * h, mmap.MAP_SHARED, mmap.PROT_READ), stride)
+                            os.close(fd)
+                self.assertIsNotNone(frame, "no frame")
+                fb, stride = frame
+
+                def block():
+                    """The cursor block's left edge on the first row (the default cursor is light
+                    on a dark ground), or None."""
+                    y = 10
+                    for x in range(400):
+                        b, g, r, _ = fb[y * stride + x * 4:y * stride + x * 4 + 4]
+                        if r > 150 and g > 150 and b > 150:
+                            return x
+                    return None
+
+                deadline = time.time() + 5
+                while time.time() < deadline and (block() is None or block() < 20):
+                    time.sleep(0.05)
+                first = block()
+                self.assertIsNotNone(first, "no cursor drawn")
+                deadline = time.time() + 5
+                while time.time() < deadline and block() == first:
+                    time.sleep(0.05)
+                moved = block()
+                self.assertIsNotNone(moved, "the cursor vanished")
+                self.assertLess(moved, first, "the block stayed where the cursor was")
+                c.close()
+            finally:
+                p.kill()
+                p.wait()
+
+
 @unittest.skipUnless(os.path.exists(HELPER) and shutil.which("qml6") and shutil.which("magick"),
                      "needs the native build, qml6 and ImageMagick")
 class SeeThroughInTheView(unittest.TestCase):
