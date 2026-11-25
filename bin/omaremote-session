@@ -64,6 +64,7 @@ import hmac
 import io
 import itertools
 import json
+import math
 import os
 import re
 import shlex
@@ -2888,6 +2889,90 @@ def terminal_font_size(terminal=None, fallback=9.0):
     return fallback
 
 
+# How fast an SSH tab scrolls, as Ghostty does with its mouse-scroll-multiplier: lines a wheel notch
+# moves (discrete) and a factor on a trackpad's pixels (precision). Read only when Ghostty is the
+# default terminal: other terminals' multipliers count differently (Omarchy sets foot's to 7).
+GHOSTTY_CONFIG = os.path.join(CONFIG_HOME, "ghostty", "config")
+SCROLL_DEFAULT = (3.0, 1.0)
+
+
+def _scroll_number(text):
+    v = float(text)
+    if not math.isfinite(v):
+        raise ValueError(text)
+    return min(10000.0, max(0.01, v))
+
+
+def ghostty_settings(terminal, keys):
+    """The lines of Ghostty's config that set one of keys, in order, as (key, value): only when
+    Ghostty is the default terminal (an empty list otherwise, or when the file cannot be read)."""
+    if (terminal if terminal is not None else default_terminal()) != "ghostty":
+        return []
+    try:
+        text = read_text(GHOSTTY_CONFIG, 1 << 20, prefix=True)
+    except (OSError, ValueError):
+        return []
+    names = "|".join(re.escape(k) for k in keys)
+    return [(m.group(1), m.group(2).strip('"'))
+            for m in re.finditer(rf"^[ \t]*({names})[ \t]*=[ \t]*(.*?)[ \t]*$", text, re.M)]
+
+
+def terminal_scroll(terminal=None):
+    """(wheel, touch) multipliers for an SSH tab: Ghostty's mouse-scroll-multiplier when Ghostty
+    is the default terminal (a bare number sets both; `precision:a,discrete:b` either; the last
+    line wins, a line Ghostty would refuse is left out), Ghostty's defaults otherwise."""
+    wheel, touch = SCROLL_DEFAULT
+    for _key, value in ghostty_settings(terminal, ["mouse-scroll-multiplier"]):
+        try:
+            if not value:
+                wheel, touch = SCROLL_DEFAULT
+            elif ":" not in value:
+                wheel = touch = _scroll_number(value)
+            else:
+                w, t = wheel, touch
+                for part in value.split(","):
+                    key, _, number = part.partition(":")
+                    key = key.strip()
+                    if key == "discrete":
+                        w = _scroll_number(number)
+                    elif key == "precision":
+                        t = _scroll_number(number)
+                    else:
+                        raise ValueError(key)
+                wheel, touch = w, t
+        except ValueError:
+            continue
+    return wheel, touch
+
+
+# How much an SSH tab keeps above the screen: Ghostty's scrollback-limit-bytes (50 MB, per tab;
+# the old name scrollback-limit still counts) and scrollback-limit-lines (none by default).
+# `unlimited` bytes is capped: a tab's process may hold at most kMaxSessionData (4 GiB), and a
+# server could fill it with output.
+SCROLLBACK_BYTES = 50_000_000
+SCROLLBACK_BYTES_MAX = 1 << 30
+
+
+def terminal_scrollback(terminal=None):
+    """(bytes, lines) an SSH tab keeps; lines None for no line limit."""
+    size, lines = SCROLLBACK_BYTES, None
+    keys = ["scrollback-limit", "scrollback-limit-bytes", "scrollback-limit-lines"]
+    for key, value in ghostty_settings(terminal, keys):
+        if value == "":
+            n = SCROLLBACK_BYTES if key != "scrollback-limit-lines" else None
+        elif value == "unlimited":
+            n = SCROLLBACK_BYTES_MAX if key != "scrollback-limit-lines" else None
+        elif re.fullmatch(r"\d{1,20}", value):
+            n = int(value)
+        else:
+            continue
+        if key == "scrollback-limit-lines":
+            lines = n
+        else:
+            size = min(n, SCROLLBACK_BYTES_MAX)
+    return size, lines
+
+
 # Omarchy's see-through terminals: the opacity each terminal's theme file sets. In Glassy windows
 # omarchy-theme-set-glass writes 0.65 there, or keeps the theme's own value; the user's choice of
 # default terminal decides which file counts.
@@ -3337,8 +3422,13 @@ def build_gliff_config(conn):
 def build_ssh_config(conn):
     """Settings for omaremote-ssh, as key=value lines (fed on stdin)."""
     lines = [f"arg={a}" for a in build_ssh_command(conn)]
-    lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size():g}",
-              f"theme={THEME_TERMINAL}", f"clipboard={0 if conn.get('clipboard') is False else 1}",
+    terminal = default_terminal()
+    wheel, touch = terminal_scroll(terminal)
+    size, rows = terminal_scrollback(terminal)
+    lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
+              f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
+              *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
+              f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)
 

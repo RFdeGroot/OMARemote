@@ -625,6 +625,19 @@ class Ssh(unittest.TestCase):
         # Reconnecting after a drop is on unless switched off.
         self.assertIn("reconnect=1", lines)
         self.assertIn("reconnect=0", session.build_ssh_config(self.ssh(sshReconnect=False)))
+        # Scrolling at the default terminal's speed (terminal_scroll).
+        from unittest import mock
+        with mock.patch.object(session, "terminal_scroll", return_value=(0.95, 2.0)):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("scrollWheel=0.95", lines)
+        self.assertIn("scrollTouch=2", lines)
+        # Ghostty's scrollback; a line limit only when one is set.
+        with mock.patch.object(session, "terminal_scrollback", return_value=(50_000_000, None)):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("scrollbackBytes=50000000", lines)
+        self.assertFalse(any(l.startswith("scrollback=") for l in lines))
+        with mock.patch.object(session, "terminal_scrollback", return_value=(1000, 300)):
+            self.assertIn("scrollback=300", session.build_ssh_config(self.ssh()))
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -727,6 +740,67 @@ class Ssh(unittest.TestCase):
             finally:
                 session.FONT_SIZE_RES.clear()
                 session.FONT_SIZE_RES.update(saved)
+
+    def test_scroll_speed_from_ghosttys_config(self):
+        import tempfile
+        cases = {
+            "": (3.0, 1.0),                                              # Ghostty's defaults
+            "mouse-scroll-multiplier = 0.95\n": (0.95, 0.95),          # Omarchy's: both
+            "mouse-scroll-multiplier = precision:2,discrete:1.5\n": (1.5, 2.0),
+            "mouse-scroll-multiplier = discrete:5\n": (5.0, 1.0),      # the other one stays
+            "mouse-scroll-multiplier = 2\nmouse-scroll-multiplier = 4\n": (4.0, 4.0),  # the last line
+            "mouse-scroll-multiplier = 2\nmouse-scroll-multiplier =\n": (3.0, 1.0),    # empty: reset
+            "mouse-scroll-multiplier = 2\nmouse-scroll-multiplier = fast\n": (2.0, 2.0),  # refused
+            "mouse-scroll-multiplier = nan\nmouse-scroll-multiplier = speed:3\n": (3.0, 1.0),
+            "mouse-scroll-multiplier = 0\n": (0.01, 0.01),            # Ghostty's bounds
+            "mouse-scroll-multiplier = 1e9\n": (10000.0, 10000.0),
+            '  mouse-scroll-multiplier="0.5"  \n': (0.5, 0.5),
+            "# mouse-scroll-multiplier = 9\n": (3.0, 1.0),
+        }
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_scroll("ghostty"), expected, text)
+                # Only Ghostty's own setting counts: foot's multiplier means something else.
+                with open(session.GHOSTTY_CONFIG, "w") as f:
+                    f.write("mouse-scroll-multiplier = 0.95\n")
+                self.assertEqual(session.terminal_scroll("foot"), (3.0, 1.0))
+                self.assertEqual(session.terminal_scroll(""), (3.0, 1.0))
+                os.unlink(session.GHOSTTY_CONFIG)
+                self.assertEqual(session.terminal_scroll("ghostty"), (3.0, 1.0))
+        finally:
+            session.GHOSTTY_CONFIG = saved
+
+    def test_scrollback_from_ghosttys_config(self):
+        import tempfile
+        mb50, gib = 50_000_000, 1 << 30
+        cases = {
+            "": (mb50, None),                                        # Ghostty's: 50 MB, no line limit
+            "scrollback-limit-bytes = 1000000\n": (1000000, None),
+            "scrollback-limit = 2000000\n": (2000000, None),        # the name before Ghostty 1.4
+            "scrollback-limit-lines = 5000\n": (mb50, 5000),
+            "scrollback-limit-bytes = unlimited\n": (gib, None),    # capped under kMaxSessionData
+            "scrollback-limit-bytes = 99999999999\n": (gib, None),
+            "scrollback-limit-lines = 5000\nscrollback-limit-lines = unlimited\n": (mb50, None),
+            "scrollback-limit-bytes = 1000\nscrollback-limit-bytes =\n": (mb50, None),  # reset
+            "scrollback-limit-bytes = lots\nscrollback-limit-bytes = -5\n": (mb50, None),  # refused
+            "scrollback-limit-bytes = 0\n": (0, None),               # no scrollback at all
+        }
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_scrollback("ghostty"), expected, text)
+                self.assertEqual(session.terminal_scrollback("foot"), (mb50, None))
+        finally:
+            session.GHOSTTY_CONFIG = saved
 
     def test_terminal_opacity_from_the_default_terminals_theme_file(self):
         # Omarchy's glass block, as omarchy-theme-set-glass writes it into each terminal's theme file.

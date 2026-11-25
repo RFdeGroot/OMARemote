@@ -10,10 +10,14 @@
 //   font       font family (default: monospace, which Omarchy points at its terminal font)
 //   fontSize   in points at scale 100 (default 9)
 //   theme      a foot.ini with the theme's terminal colours, followed when it changes
-//   scrollback lines kept above the screen (default 10000)
+//   scrollbackBytes how much is kept above the screen (default 50 MB, Ghostty's; at most 1 GiB)
+//   scrollback lines kept above the screen (default: no line limit, as Ghostty)
+//   scrollWheel lines a wheel notch scrolls (default 3; Ghostty's mouse-scroll-multiplier discrete)
+//   scrollTouch how far a trackpad's pixels go (default 1; Ghostty's precision multiplier)
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
-// click) pastes, shift+page up/down and the wheel scroll back. Remote programs that ask for the
+// click) pastes, shift+page up/down and the wheel scroll back, shift+home/end go to the top and
+// bottom, ctrl+shift+up/down jump between prompts. Remote programs that ask for the
 // mouse (htop, vim with mouse=a) get it; shift+drag still selects. Ctrl+= / ctrl+- / ctrl+0 zoom the text.
 
 #include "../common/link.hpp"
@@ -170,6 +174,12 @@ struct Session
 	Pos selAnchor, selHead;
 	bool hasSelection = false;
 	int mouseButtons = 0; // buttons held, for the remote program's mouse reporting
+
+	// Scrolling as Ghostty does it (Surface.zig scrollCallback): every wheel event in pixels, a
+	// row's worth makes a step. The multipliers come from the default terminal's config
+	// (`scrollWheel`, `scrollTouch`; Ghostty's mouse-scroll-multiplier discrete and precision).
+	double wheelLines = 3, touchFactor = 1;
+	double pendingY = 0, pendingX = 0; // less than a row (a column) not scrolled yet
 
 	std::set<uint32_t> held; // evdev codes held: the modifiers come from these
 	std::string localClip;   // the UI's clipboard, offered on focus and when it changes
@@ -811,6 +821,24 @@ static void scroll_to_bottom()
 	g.full = true;
 }
 
+// Ghostty's jump_to_prompt (ctrl+shift+up/down): needs the shell to mark its prompts (OSC 133).
+static void jump_prompt(int delta)
+{
+	GhosttyTerminalScrollViewport s = {};
+	s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA_PROMPT;
+	s.value.delta_prompt = delta;
+	ghostty_terminal_scroll_viewport(g.term, s);
+	g.full = true;
+}
+
+static void scroll_to_top()
+{
+	GhosttyTerminalScrollViewport s = {};
+	s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_TOP;
+	ghostty_terminal_scroll_viewport(g.term, s);
+	g.full = true;
+}
+
 // ---------------------------------------------------------------- libghostty-vt callbacks
 
 // How long the pty may take no byte at all before what we write to it is dropped: a remote program
@@ -1138,8 +1166,15 @@ static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 		return paste();
 	if (shift && !ctrl && sym == XKB_KEY_Insert)
 		return paste();
+	// Ghostty's scroll keys; on the alternate screen (no scrollback) they go to the program.
 	if (shift && !ctrl && (sym == XKB_KEY_Page_Up || sym == XKB_KEY_Page_Down) && !g.altScreen)
-		return scroll_view(sym == XKB_KEY_Page_Up ? g.rows - 1 : -(g.rows - 1));
+		return scroll_view(sym == XKB_KEY_Page_Up ? g.rows : -g.rows);
+	if (shift && !ctrl && sym == XKB_KEY_Home && !g.altScreen)
+		return scroll_to_top();
+	if (shift && !ctrl && sym == XKB_KEY_End && !g.altScreen)
+		return scroll_to_bottom();
+	if (shift && ctrl && (sym == XKB_KEY_Up || sym == XKB_KEY_Down) && !g.altScreen)
+		return jump_prompt(sym == XKB_KEY_Up ? -1 : 1);
 	if (ctrl && !alt_held() && zoom_key(sym))
 	{
 		g.zoomKeys.insert(evdev);
@@ -1252,28 +1287,68 @@ static void mouse_move(int x, int y)
 	apply_selection();
 }
 
-static void wheel(long dy, int x, int y)
+// How many whole steps of `unit` pixels the pending amount and this offset make; the rest waits.
+// As Ghostty: once a step is reached the remainder is dropped, not carried (Surface.zig).
+static int steps(double& pending, double off, double unit)
 {
-	const int notches = int(dy / 120);
-	if (!notches)
+	const double p = pending + off;
+	if (std::abs(p) < unit)
+	{
+		pending = p;
+		return 0;
+	}
+	pending = 0;
+	return int(std::trunc(p / unit));
+}
+
+// A wheel or trackpad event. dy/dx in Qt's eighths of a degree (120 a notch, positive up and
+// left); a trackpad also gives its pixels (logical, positive the same way), and then those count.
+static void wheel(long dy, long dx, int x, int y, bool touch, long py, long px)
+{
+	const double scale = g.scale / 100.0;
+	int lines = 0, cols = 0;
+	if (touch)
+	{
+		// Ghostty's GTK app takes a trackpad's pixels times 10 "to get a better response from
+		// touchpad scrolling" (apprt/gtk surface.zig); GTK passes the Wayland value on as it is
+		// (gdkseat-wayland.c), as Qt does for pixelDelta, so the 10 is ours to add.
+		constexpr double kGhosttyTouch = 10;
+		lines = steps(g.pendingY, py * kGhosttyTouch * scale * g.touchFactor, g.cellH);
+		cols = steps(g.pendingX, px * kGhosttyTouch * scale, g.cellW);
+	}
+	else
+	{
+		lines = steps(g.pendingY, dy / 120.0 * g.cellH * g.wheelLines, g.cellH);
+		cols = int(std::lround(dx / 120.0));
+	}
+	if (!lines && !cols)
 		return;
 	if (program_mouse())
 	{
-		for (int i = 0; i < std::abs(notches); i++)
-			send_mouse(GHOSTTY_MOUSE_ACTION_PRESS, notches > 0 ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE, x,
+		// The program's own scrolling: one button 4/5 (up/down) or 6/7 (left/right) a step.
+		for (int i = 0; i < std::abs(lines); i++)
+			send_mouse(GHOSTTY_MOUSE_ACTION_PRESS, lines > 0 ? GHOSTTY_MOUSE_BUTTON_FOUR : GHOSTTY_MOUSE_BUTTON_FIVE, x,
 			           y);
+		for (int i = 0; i < std::abs(cols); i++)
+			send_mouse(GHOSTTY_MOUSE_ACTION_PRESS, cols > 0 ? GHOSTTY_MOUSE_BUTTON_SIX : GHOSTTY_MOUSE_BUTTON_SEVEN, x, y);
 		return;
 	}
+	if (!lines)
+		return;
 	if (g.altScreen)
 	{
-		// Full-screen programs without the mouse (less, man): the wheel moves through them, as
-		// arrow keys in the mode the program set.
-		const uint32_t evdev = notches > 0 ? 103 : 108; // KEY_UP, KEY_DOWN
-		for (int i = 0; i < 3 * std::abs(notches); i++)
-			encode_key(GHOSTTY_KEY_ACTION_PRESS, evdev, notches > 0 ? XKB_KEY_Up : XKB_KEY_Down, {});
+		// Full-screen programs without the mouse (less, man) and alternate scroll on (1007, on
+		// unless the program turns it off): the wheel moves through them as arrow keys, in the
+		// mode the program set. With it off, the wheel does nothing there: no scrollback to show.
+		if (!mode(1007))
+			return;
+		clear_selection();
+		const uint32_t evdev = lines > 0 ? 103 : 108; // KEY_UP, KEY_DOWN
+		for (int i = 0; i < std::abs(lines); i++)
+			encode_key(GHOSTTY_KEY_ACTION_PRESS, evdev, lines > 0 ? XKB_KEY_Up : XKB_KEY_Down, {});
 		return;
 	}
-	scroll_view(3 * notches);
+	scroll_view(lines);
 }
 
 static void handle_line(const std::string& line)
@@ -1309,7 +1384,8 @@ static void handle_line(const std::string& line)
 	else if (cmd == "button" && w.size() >= 5)
 		mouse_button(int(num(1)), num(2) != 0, int(num(3)), int(num(4)));
 	else if (cmd == "wheel" && w.size() >= 5)
-		wheel(num(1), int(num(3)), int(num(4)));
+		wheel(num(1), num(2), int(num(3)), int(num(4)), w.size() >= 7, w.size() >= 7 ? num(5) : 0,
+		      w.size() >= 7 ? num(6) : 0);
 	else if (cmd == "clip" && w.size() >= 2)
 		g.localClip = unb64(w[1]);
 	else if (cmd == "opacity" && w.size() >= 2)
@@ -1629,8 +1705,28 @@ int main(int argc, char** argv)
 		log("cannot start the terminal");
 		return 1;
 	}
-	const size_t scrollback = size_t(std::max(0L, strtol(g.get("scrollback", "10000").c_str(), nullptr, 10)));
-	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback);
+	// Ghostty's scrollback: 50 MB a tab (scrollback-limit-bytes), no line limit unless one is given
+	// (scrollback-limit-lines). Without a byte limit the library keeps 10 KB: one page, a few
+	// hundred lines. The bytes are capped at 1 GiB, under the session's kMaxSessionData.
+	const auto count = [](const std::string& v, unsigned long long fallback) {
+		char* end = nullptr;
+		const unsigned long long n = strtoull(v.c_str(), &end, 10);
+		return v.empty() || v[0] == '-' || *end ? fallback : n;
+	};
+	const size_t scrollbackBytes = size_t(std::min(count(g.get("scrollbackBytes", ""), 50000000ULL), 1ULL << 30));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &scrollbackBytes);
+	if (!g.get("scrollback", "").empty())
+	{
+		const size_t scrollback = size_t(count(g.get("scrollback", ""), SIZE_MAX));
+		ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback);
+	}
+	// Ghostty's bounds for its scroll multipliers; anything not a number keeps its default.
+	const auto multiplier = [](const std::string& v, double fallback) {
+		const double d = strtod(v.c_str(), nullptr);
+		return std::isfinite(d) && d > 0 ? std::clamp(d, 0.01, 10000.0) : fallback;
+	};
+	g.wheelLines = multiplier(g.get("scrollWheel", "3"), 3);
+	g.touchFactor = multiplier(g.get("scrollTouch", "1"), 1);
 	// No Kitty graphics: nothing here shows images, and a remote program could fill memory with
 	// them (stored up to 10 MB by default). Zero turns the protocol off; loading from files or
 	// shared memory is off already. Escape sequences of that kind are buffered up to 64 KiB.

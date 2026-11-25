@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shutil
 import subprocess
@@ -421,11 +422,15 @@ class CursorMoves(unittest.TestCase):
     """The cursor block follows a move along its row with no text changed (left and right on a
     prompt): the library marks no row dirty for it, so the session must redraw it by itself."""
 
-    def test_the_block_follows_left_on_the_same_row(self):
+    @contextlib.contextmanager
+    def watch(self, script):
+        """Runs script in omaremote-ssh (400x300, offscreen) and yields light(): the left edge and
+        width of the light run on the first row (the default cursor is light on a dark ground),
+        or None when there is none."""
         import mmap, socket, time
         with tempfile.TemporaryDirectory() as d:
             sock = os.path.join(d, "s")
-            config = "\n".join(["arg=/bin/sh", "arg=-c", "arg=printf '    '; sleep 1; printf '\\033[2D'; sleep 30",
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}",
                                 "reconnect=0", "font=monospace", "fontSize=10"]) + "\n"
             env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
             p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -458,31 +463,271 @@ class CursorMoves(unittest.TestCase):
                 self.assertIsNotNone(frame, "no frame")
                 fb, stride = frame
 
-                def block():
-                    """The cursor block's left edge on the first row (the default cursor is light
-                    on a dark ground), or None."""
-                    y = 10
+                def light():
+                    y, left = 10, None
                     for x in range(400):
                         b, g, r, _ = fb[y * stride + x * 4:y * stride + x * 4 + 4]
-                        if r > 150 and g > 150 and b > 150:
-                            return x
-                    return None
+                        on = r > 150 and g > 150 and b > 150
+                        if on and left is None:
+                            left = x
+                        elif not on and left is not None:
+                            return left, x - left
+                    return None if left is None else (left, 400 - left)
 
-                deadline = time.time() + 5
-                while time.time() < deadline and (block() is None or block() < 20):
-                    time.sleep(0.05)
-                first = block()
-                self.assertIsNotNone(first, "no cursor drawn")
-                deadline = time.time() + 5
-                while time.time() < deadline and block() == first:
-                    time.sleep(0.05)
-                moved = block()
-                self.assertIsNotNone(moved, "the cursor vanished")
-                self.assertLess(moved, first, "the block stayed where the cursor was")
+                yield light
                 c.close()
             finally:
                 p.kill()
                 p.wait()
+
+    def settle(self, light, ready):
+        """Waits up to 5 s for ready(light()) and returns light() then."""
+        import time
+        deadline = time.time() + 5
+        while time.time() < deadline and not ready(light()):
+            time.sleep(0.05)
+        return light()
+
+    def test_the_block_follows_left_on_the_same_row(self):
+        with self.watch("printf '    '; sleep 1; printf '\\033[2D'; sleep 30") as light:
+            first = self.settle(light, lambda s: s is not None and s[0] >= 20)
+            self.assertIsNotNone(first, "no cursor drawn")
+            moved = self.settle(light, lambda s: s != first)
+            self.assertIsNotNone(moved, "the cursor vanished")
+            self.assertLess(moved[0], first[0], "the block stayed where the cursor was")
+
+    def test_a_style_change_on_the_same_cell_is_drawn(self):
+        """DECSCUSR (block -> bar, ESC [ 6 SP q) changes no text and no position: only the style."""
+        with self.watch("printf '    '; sleep 1; printf '\\033[6 q'; sleep 30") as light:
+            first = self.settle(light, lambda s: s is not None and s[0] >= 20)
+            self.assertIsNotNone(first, "no cursor drawn")
+            changed = self.settle(light, lambda s: s != first)
+            self.assertIsNotNone(changed, "the cursor vanished")
+            self.assertLess(changed[1], first[1], "the block did not become a bar")
+            self.assertLessEqual(abs(changed[0] - first[0]), 1, "the cursor moved")
+
+
+# Sets the terminal up ($2, with escapes), waits for the answer to a device attributes query (so
+# the setup was read), then records every byte it gets into $1 as it comes.
+RECORDER = r"""
+import os, select, sys, tty
+tty.setraw(0)
+os.write(1, sys.argv[2].encode().decode("unicode_escape").encode("latin-1") + b"\x1b[c")
+got = b""
+while b"c" not in got:
+    got += os.read(0, 64)
+with open(sys.argv[1] + ".tmp", "wb", buffering=0) as f:
+    os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+    while True:
+        data = os.read(0, 4096)
+        if not data:
+            break
+        f.write(data)
+"""
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Scrolling(unittest.TestCase):
+    """The wheel and the trackpad as Ghostty scrolls (Surface.zig scrollCallback): pixels add up to
+    rows, a notch is scrollWheel rows, a trackpad's pixels times 10 times scrollTouch. On the alternate
+    screen they come to the program as arrow keys, to a program that asks for the mouse as
+    buttons 4 to 7; the scroll keys stay the terminal's."""
+
+    @contextlib.contextmanager
+    def session(self, setup, *settings):
+        import socket, time
+        with tempfile.TemporaryDirectory() as d:
+            prog, rec, sock = os.path.join(d, "r.py"), os.path.join(d, "rec"), os.path.join(d, "s")
+            with open(prog, "w") as f:
+                f.write(RECORDER)
+            config = "\n".join(["arg=/usr/bin/python3", "arg=-I", f"arg={prog}", f"arg={rec}", f"arg={setup}",
+                                "reconnect=0", "font=monospace", "fontSize=10", *settings]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            c = socket.socket(socket.AF_UNIX)
+            try:
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                deadline = time.time() + 20
+                while not os.path.exists(rec) and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(os.path.exists(rec), "the program did not start")
+
+                def send(*lines):
+                    c.sendall("".join(line + "\n" for line in lines).encode())
+
+                def got(expect, wait=5):
+                    """What the program got, once it holds `expect` bytes (or after `wait` s)."""
+                    deadline = time.time() + wait
+                    while time.time() < deadline:
+                        with open(rec, "rb") as f:
+                            data = f.read()
+                        if len(data) >= expect:
+                            return data
+                        time.sleep(0.05)
+                    with open(rec, "rb") as f:
+                        return f.read()
+
+                yield send, got
+            finally:
+                c.close()
+                p.kill()
+                p.wait()
+
+    ALT = r"\x1b[?1049h"
+    UP = b"\x1b[A"
+
+    def test_a_notch_is_three_rows_as_in_ghostty(self):
+        with self.session(self.ALT) as (send, got):
+            send("wheel 120 0 10 10", "wheel -120 0 10 10")
+            self.assertEqual(got(18), self.UP * 3 + b"\x1b[B" * 3)
+
+    def test_the_terminal_configs_wheel_multiplier(self):
+        # Omarchy's Ghostty: mouse-scroll-multiplier = 0.95. A notch is under a row, two make one:
+        # what is left once a row is reached is dropped, as in Ghostty.
+        with self.session(self.ALT, "scrollWheel=0.95") as (send, got):
+            send("wheel 120 0 10 10")
+            self.assertEqual(got(1, wait=1), b"")
+            send("wheel 120 0 10 10")
+            self.assertEqual(got(3), self.UP)
+            send("wheel 120 0 10 10")
+            self.assertEqual(got(6, wait=1), self.UP)
+
+    def test_a_high_resolution_wheel_adds_up(self):
+        # Eighths of a notch (15 each; nothing was scrolled at all before). Each is 3/8 of a row;
+        # Ghostty drops what is over once a row is reached, so a notch of them makes 2 rows, not 3.
+        with self.session(self.ALT) as (send, got):
+            send(*["wheel 15 0 10 10"] * 8)
+            self.assertEqual(got(9, wait=1), self.UP * 2)
+
+    def test_a_trackpad_counts_its_pixels_times_ten(self):
+        # Ghostty's GTK app: a pixel counts 10. 10 is less than a row at 10 points (13 px type),
+        # two of them make one; 10 pixels at once are several rows.
+        with self.session(self.ALT) as (send, got):
+            send("wheel 12 0 10 10 1 0")
+            self.assertEqual(got(1, wait=1), b"")
+            send("wheel 12 0 10 10 1 0")
+            self.assertEqual(got(3), self.UP)
+            send("wheel 120 0 10 10 10 0")
+            data = got(15)
+            self.assertGreaterEqual(len(data) // 3, 5)
+            self.assertEqual(data, self.UP * (len(data) // 3))
+
+    def test_the_trackpad_multiplier(self):
+        # scrollTouch=0.1 undoes the 10: back to a row for every row's worth of pixels.
+        with self.session(self.ALT, "scrollTouch=0.1") as (send, got):
+            send("wheel 12 0 10 10 10 0")
+            self.assertEqual(got(1, wait=1), b"")
+            send("wheel 12 0 10 10 10 0")
+            self.assertEqual(got(3), self.UP)
+
+    def test_no_arrows_when_the_program_turns_alternate_scroll_off(self):
+        with self.session(self.ALT + r"\x1b[?1007l") as (send, got):
+            send("wheel 120 0 10 10", "key 1 30 97 YQ==")
+            self.assertEqual(got(1), b"a")
+
+    def test_a_program_with_the_mouse_gets_buttons_four_to_seven(self):
+        # SGR reports: 64/65 up/down, 66/67 left/right (a tilt wheel, a sideways trackpad).
+        with self.session(r"\x1b[?1000h\x1b[?1006h") as (send, got):
+            send("wheel 120 0 10 10", "wheel 0 120 10 10", "wheel 0 -120 10 10")
+            data = got(60)
+            self.assertEqual(data.count(b"\x1b[<64;"), 3)
+            self.assertEqual(data.count(b"\x1b[<66;"), 1)
+            self.assertEqual(data.count(b"\x1b[<67;"), 1)
+
+    def test_the_scroll_keys_stay_the_terminals(self):
+        # Shift+Home/End/PageUp and Ctrl+Shift+Up go to the view, not the program; then an "a".
+        import base64
+        with self.session("") as (send, got):
+            send("key 1 42 65505")  # Shift_L
+            for evdev, sym in ((102, 65360), (107, 65367), (104, 65365), (109, 65366)):
+                send(f"key 1 {evdev} {sym}", f"key 0 {evdev} {sym}")
+            send("key 1 29 65507", "key 1 103 65362", "key 0 103 65362", "key 0 29 65507")
+            send("key 0 42 65505", "key 1 30 97 " + base64.b64encode(b"a").decode(), "key 0 30 97")
+            self.assertEqual(got(1), b"a")
+
+    def test_on_the_alternate_screen_they_go_to_the_program(self):
+        # No scrollback there: Shift+Page Up is the program's (less, vim).
+        with self.session(self.ALT) as (send, got):
+            send("key 1 42 65505", "key 1 104 65365", "key 0 104 65365", "key 0 42 65505")
+            self.assertEqual(got(6), b"\x1b[5;2~")
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Scrollback(unittest.TestCase):
+    """As much history as Ghostty keeps (50 MB a tab, no line limit): left to the library's own
+    default (10 KB, one page), a tab kept a few hundred lines."""
+
+    def oldest_kept(self, *settings):
+        """Prints L0..L19999, goes to the top (Shift+Home), copies the first row: what it says."""
+        import base64, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "s")
+            script = "i=0; while [ $i -lt 20000 ]; do echo L$i; i=$((i+1)); done; echo done; sleep 30"
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}", "reconnect=0", "font=monospace",
+                                "fontSize=10", *settings]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            c = socket.socket(socket.AF_UNIX)
+            try:
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                c.settimeout(0.2)
+                buf = b""
+
+                def lines():
+                    nonlocal buf
+                    try:
+                        buf += c.recv(65536)
+                    except socket.timeout:
+                        pass
+                    *done, buf = buf.split(b"\n")
+                    return done
+
+                # The output is all there once the shell sleeps: read the view's lines meanwhile
+                # (a view that stops reading is dropped).
+                end = time.time() + 3
+                while time.time() < end:
+                    lines()
+                c.sendall(b"key 1 42 65505\nkey 1 102 65360\nkey 0 102 65360\nkey 0 42 65505\n"
+                          b"button 1 1 0 11\nmouse 390 11\nbutton 1 0 390 11\n"
+                          b"key 1 29 65507\nkey 1 42 65505\nkey 1 46 67\nkey 0 46 67\n"
+                          b"key 0 42 65505\nkey 0 29 65507\n")
+                end = time.time() + 10
+                while time.time() < end:
+                    for line in lines():
+                        if line.startswith(b"clip "):
+                            return base64.b64decode(line.split()[1]).decode().strip()
+                self.fail("nothing was copied")
+            finally:
+                c.close()
+                p.kill()
+                p.wait()
+
+    def test_twenty_thousand_lines_are_all_kept(self):
+        self.assertEqual(self.oldest_kept(), "L0")
+
+    def test_a_line_limit_from_the_config(self):
+        # scrollback-limit-lines = 1000 takes effect. The library trims whole pages, and a page of
+        # this narrow view holds more rows than that: what is left can be fewer than 1000.
+        oldest = int(self.oldest_kept("scrollback=1000")[1:])
+        self.assertGreater(oldest, 20000 - 1000 - 100)
 
 
 @unittest.skipUnless(os.path.exists(HELPER) and shutil.which("qml6") and shutil.which("magick"),
