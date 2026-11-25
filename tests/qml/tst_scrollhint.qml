@@ -19,6 +19,24 @@ Item {
         ScrollHint { id: hint; flickable: list }
     }
 
+    // A pane that is no Flickable (an SSH tab): rows, and a seek handler (SessionView's).
+    Rectangle {
+        id: terminal
+        x: 210
+        y: 50
+        width: 180
+        height: 200
+        property real asked: -1
+        ScrollHint {
+            id: rows
+            pane: terminal
+            total: 1000
+            windowSize: 50
+            position: 950
+            onSeek: function (row) { terminal.asked = row }
+        }
+    }
+
     TestCase {
         name: "ScrollHint"
         when: windowShown
@@ -63,6 +81,24 @@ Item {
             mouseMove(root, 300, 280)
             compare(hint.shown, false, "the scroll kept it shown after the pointer left")
             tryCompare(hint, "visible", false, 1000)
+        }
+
+        function test_a_terminal_in_rows_seeks_by_dragging() {
+            mouseMove(terminal, 90, 100)
+            tryCompare(rows, "shown", true, 1000)
+            tryCompare(rows, "opacity", 1, 1000)
+            // At the bottom (950 of 950): the thumb at the bottom. Drag it to the top.
+            const thumb = findChild(rows, "thumb")
+            verify(Math.abs(thumb.y + thumb.height - rows.height) < 1, "thumb at " + thumb.y)
+            mousePress(rows, 3, rows.height - 5)
+            mouseMove(rows, 3, rows.height / 2)
+            mouseMove(rows, 3, 2)
+            mouseRelease(rows, 3, 2)
+            compare(terminal.asked, 0, "seek")
+            // A row history shows its bar (scrolls: whole rows), none without one.
+            rows.position = 0
+            rows.total = 50
+            compare(rows.scrolls, false, "scrolls")
         }
 
         function test_a_scroll_by_keys_shows_it_a_moment() {

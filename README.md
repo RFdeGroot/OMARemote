@@ -490,7 +490,8 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   Ghostty's own (libghostty-vt), and Nerd Font icons are sized and placed by Ghostty's rules.
   `ctrl+=` / `ctrl+-` make the text bigger or smaller in that tab, `ctrl+0` resets it.
 - **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select),
-  `ctrl+shift+v`, `super+v`, `shift+insert` or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel or trackpad scroll back (as much as Ghostty keeps: 50 MB a tab, or your Ghostty's `scrollback-limit-bytes`/`-lines`),
+  `ctrl+shift+v`, `super+v`, `shift+insert` or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel or trackpad scroll back (as much as Ghostty keeps: 50 MB a tab, or your Ghostty's `scrollback-limit-bytes`/`-lines`;
+  a scrollbar shows while you hover or scroll, and its thumb drags),
   `shift+home`/`shift+end` go to the top or bottom, `ctrl+shift+up`/`ctrl+shift+down` jump between
   prompts (when the shell marks them, as fish does). Scrolling moves as Ghostty's does, at your
   `mouse-scroll-multiplier` when Ghostty is your default terminal (Ghostty's defaults otherwise).

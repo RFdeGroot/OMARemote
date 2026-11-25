@@ -180,6 +180,7 @@ struct Session
 	// (`scrollWheel`, `scrollTouch`; Ghostty's mouse-scroll-multiplier discrete and precision).
 	double wheelLines = 3, touchFactor = 1;
 	double pendingY = 0, pendingX = 0; // less than a row (a column) not scrolled yet
+	std::string scrollbarLine;         // the last `scrollbar` line sent: the view's scrollbar
 
 	std::set<uint32_t> held; // evdev codes held: the modifiers come from these
 	std::string localClip;   // the UI's clipboard, offered on focus and when it changes
@@ -416,6 +417,19 @@ static GhosttyTerminalScrollbar scrollbar()
 	GhosttyTerminalScrollbar s = {};
 	ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &s);
 	return s;
+}
+
+// The view's scrollbar: `scrollbar <total> <offset> <len>` in rows (the history and the screen,
+// the first row shown, the rows shown), when it changed; force for a view that just attached.
+static void send_scrollbar(bool force = false)
+{
+	const GhosttyTerminalScrollbar s = scrollbar();
+	std::string line = "scrollbar " + std::to_string(s.total) + " " + std::to_string(s.offset) + " " +
+	                   std::to_string(s.len);
+	if (line == g.scrollbarLine && !force)
+		return;
+	g.scrollbarLine = line;
+	g.link.send(line);
 }
 
 // Whether the view is scrolled back into the history.
@@ -798,6 +812,8 @@ static void flush(bool announce)
 		for (const auto& [r0, r1] : runs)
 			g.link.send("damage " + std::to_string(g.pad) + " " + std::to_string(g.pad + r0 * g.cellH) + " " +
 			            std::to_string(stripW) + " " + std::to_string((r1 - r0) * g.cellH));
+	if (announce)
+		send_scrollbar();
 	g.full = false;
 }
 
@@ -1383,6 +1399,15 @@ static void handle_line(const std::string& line)
 		mouse_move(int(num(1)), int(num(2)));
 	else if (cmd == "button" && w.size() >= 5)
 		mouse_button(int(num(1)), num(2) != 0, int(num(3)), int(num(4)));
+	else if (cmd == "scroll-to" && w.size() >= 2)
+	{
+		// The view's scrollbar: the row (as in `scrollbar`'s offset) to show first.
+		GhosttyTerminalScrollViewport s = {};
+		s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW;
+		s.value.row = size_t(std::max(0L, num(1)));
+		ghostty_terminal_scroll_viewport(g.term, s);
+		g.full = true;
+	}
 	else if (cmd == "wheel" && w.size() >= 5)
 		wheel(num(1), num(2), int(num(3)), int(num(4)), w.size() >= 7, w.size() >= 7 ? num(5) : 0,
 		      w.size() >= 7 ? num(6) : 0);
@@ -1430,6 +1455,7 @@ static void replay()
 	if (g.frame.data)
 		g.link.sendFrame(g.frame);
 	send_cursor_shape();
+	send_scrollbar(true);
 	if (!g.title.empty())
 		g.link.send("title " + b64(g.title));
 	if (!g.reconnectLine.empty())

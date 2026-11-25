@@ -181,6 +181,17 @@ Item {
         }
     }
 
+    // An SSH tab's scrollbar, as Ghostty's and every other pane's here: the terminal's history in
+    // rows (omaremote-ssh's `scrollbar` lines; other sessions send none, so there is never one).
+    // None on the alternate screen (less, vim): no history there.
+    ScrollHint {
+        pane: view
+        total: view.scrollTotal
+        windowSize: view.scrollLength
+        position: view.scrollOffset
+        onSeek: function (row) { view.scrollToRow(Math.round(row)) }
+    }
+
     // SSH trying a lost connection again (omaremote-ssh): what it does, and a way out. The
     // terminal stays usable under it (ssh may ask for a password on a try).
     property var reconnect: null

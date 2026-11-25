@@ -64,12 +64,12 @@ The manager window:
 | ConnectionList.qml, ConnectionRow.qml | the list and one row |
 | Detail.qml | the right-hand pane of the selected connection |
 | Editor.qml, GroupEditor.qml, CredentialEditor.qml | the editors |
-| SessionView.qml | one session: RdpView, the sign-in/certificate prompt, the ended panel, `chord()` (ctrl+alt keys) |
+| SessionView.qml | one session: RdpView, an SSH tab's scrollbar (ScrollHint on the view's `scrollTotal`/`scrollOffset`/`scrollLength`, `scrollToRow`), the sign-in/certificate prompt, the ended panel, `chord()` (ctrl+alt keys) |
 | SessionWindow.qml | a session's own or hotkey window; `wholeScreen` (Hyprland fullscreen: chrome hidden, the top edge slides in `connectionBar`) |
 | TabBar.qml, PinnedList.qml, StatusBar.qml | chrome (StatusBar: a Gliff tab's stats, a health dot and the facts that fit, a click opens the card; words in Format.js `parseStats`/`statsParts`/`statsRows`) |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
-| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim overlay scrollbar on panes that scroll, shown while hovered or scrolling; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
+| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim overlay scrollbar on panes that scroll (a Flickable, or any pane in its own units: the SSH tab), shown while hovered or scrolling; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
 | js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; `Limits.count`: how many connections, groups, … (`STORE_MAX_*`, `Store.full`); sources in docs/limits.md |
 | js/Contrast.js | WCAG contrast; see-through grounds (Flea's material): `floor`, `inks`, `lift`, `worst` over a blurred/bare backdrop, washes and Hyprland's window fade |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels, `sessionSpec`/`isSessionChord` |
@@ -86,7 +86,7 @@ The manager window:
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode`; `log_stats` (a `stats:` log line a second while the picture changes) |
 | rdp/gfxguard.cpp | `oma::guard_gfx`: wraps FreeRDP's RDPGFX CreateSurface (8192 a side, 2 GiB for all surfaces with their progressive tiles) and SurfaceToCache (128 MiB of cache, read back from gdi's entries); gfxguard-test.cpp = rdp-gfx-test |
 | vnc/main.cpp | libvncclient client; `log_stats` (a `stats:` log line a second while the picture changes); `server_clipboard` (Gliff's rules for the server's text) |
-| ssh/main.cpp | ssh in a pty + libghostty-vt terminal: `flush`/`draw_row` (rows painted off-screen, backgrounds then text then lines), `draw_symbol` (icons by Ghostty's rules), keys (`encode_key`, ghostty_keys.hpp), mouse, selection/copy, scrollback (Ghostty's byte limit) and scrolling (`wheel`/`steps`: Ghostty's scrollCallback, ×10 on a trackpad as its GTK app), zoom (`zoom_key`), Kitty graphics off; `start_ssh`/`run_ssh`, a lost connection tried again (`lost_words`, `transient_words`, `wait_serving`; exit 129/143 counts) |
+| ssh/main.cpp | ssh in a pty + libghostty-vt terminal: `flush`/`draw_row` (rows painted off-screen, backgrounds then text then lines), `draw_symbol` (icons by Ghostty's rules), keys (`encode_key`, ghostty_keys.hpp), mouse, selection/copy, scrollback (Ghostty's byte limit), the view's scrollbar (`send_scrollbar`: `scrollbar` lines out, `scroll-to` in) and scrolling (`wheel`/`steps`: Ghostty's scrollCallback, ×10 on a trackpad as its GTK app), zoom (`zoom_key`), Kitty graphics off; `start_ssh`/`run_ssh`, a lost connection tried again (`lost_words`, `transient_words`, `wait_serving`; exit 129/143 counts) |
 | ssh/glyph_constraint.hpp | Ghostty's glyph constraints (Glyph.zig, cell.zig `constraintWidth`) ported; glyph_test.cpp = ssh-glyph-test with Ghostty's own cases |
 | ghostty-vt/build.sh | downloads (sha256-checked) and builds libghostty-vt + Zig, pinned (also in packaging/arch/PKGBUILD; tests/test_packaging.py); gen_nerd_font.py turns Ghostty's nerd_font_tables.zig into ghostty_nerd_font.hpp |
 | gliff/main.cpp | Gliff client (Omarchy desktops): `ssh … gliff-server --stdio` in pipes (`start_server`, reconnect with backoff), two H.264 decoders (VA-API or CPU; `kMaxStreamW/H` = what Hello asks for, `pick_format` refuses a picture larger than its StreamConfig before FFmpeg allocates), pictures as dmabufs when the UI says `gpu 1` (`show_gpu`, `export_surface`, `release`) or converted into shared memory, UI lines to Gliff input, `send_stats` (key=value words; a Ping a second, `on_pong`, `health`: noreply / congested / latency) |
@@ -114,7 +114,7 @@ Build: `ninja -C native/build`.
   nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc
   against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept), test_ssh.py
   (omaremote-ssh with a stand-in ssh: a dropped connection tried again, what is never retried; the
-  see-through background in the shared frame and through RdpView, tests/qml/terminal.qml), test_scrollhint.py (ui/ScrollHint.qml through tests/qml/scrollhint.qml: hidden at rest, shown while scrolling), test_glass.py (Omarchy's
+  see-through background in the shared frame and through RdpView, tests/qml/terminal.qml), test_scrollbar.py (an SSH tab's scrollbar: omaremote-ssh's `scrollbar` lines, RdpView through tests/qml/scrollbar.qml), test_scrollhint.py (ui/ScrollHint.qml through tests/qml/scrollhint.qml: hidden at rest, shown while scrolling), test_glass.py (Omarchy's
   Glassy/Transparent: the contrast maths on every installed theme, the real window over magenta and green: one
   plane per region, SSH tabs at the terminal's alpha).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and

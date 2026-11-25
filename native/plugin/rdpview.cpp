@@ -13,7 +13,9 @@
 #include <QVarLengthArray>
 #include <rhi/qrhi.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -169,7 +171,23 @@ void RdpView::detach()
 	forgetSurfaces();
 	m_showTaken = true;
 	m_drawnSeq = 0;
+	setScrollbar(0, 0, 0);
 	emit attachedChanged();
+}
+
+void RdpView::setScrollbar(int total, int offset, int length)
+{
+	if (total == m_scrollTotal && offset == m_scrollOffset && length == m_scrollLength)
+		return;
+	m_scrollTotal = total;
+	m_scrollOffset = offset;
+	m_scrollLength = length;
+	emit scrollbarChanged();
+}
+
+void RdpView::scrollToRow(int row)
+{
+	send("scroll-to " + QByteArray::number(std::max(0, row)));
 }
 
 void RdpView::send(const QByteArray& line)
@@ -352,6 +370,13 @@ void RdpView::handleLine(const QByteArray& line)
 	}
 	else if (cmd == "cursor-hide")
 		setCursor(Qt::BlankCursor);
+	else if (cmd == "scrollbar" && w.size() >= 4)
+	{
+		// Rows, from the session: kept to what makes sense, whatever it says.
+		const int total = int(std::clamp<long long>(w[1].toLongLong(), 0, INT_MAX));
+		const int length = int(std::clamp<long long>(w[3].toLongLong(), 0, total));
+		setScrollbar(total, int(std::clamp<long long>(w[2].toLongLong(), 0, total - length)), length);
+	}
 	else if (cmd == "cursor-default")
 		setCursor(Qt::ArrowCursor);
 	else if (cmd == "cursor-text")

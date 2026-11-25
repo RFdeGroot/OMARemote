@@ -65,6 +65,11 @@ class RdpView : public QQuickItem
 	// an `opacity` line; its frames are then read as premultiplied ARGB. -1 (the default): not a
 	// terminal, frames are opaque RGB32 (RDP, VNC, Gliff). Set once per tab, before a frame comes.
 	Q_PROPERTY(int terminalAlpha READ terminalAlpha WRITE setTerminalAlpha NOTIFY terminalAlphaChanged)
+	// A terminal's scrollbar (SSH), in rows: the history and the screen, the first row shown, the
+	// rows shown; all 0 until the session says (`scrollbar` lines). scrollToRow() shows that row first.
+	Q_PROPERTY(int scrollTotal READ scrollTotal NOTIFY scrollbarChanged)
+	Q_PROPERTY(int scrollOffset READ scrollOffset NOTIFY scrollbarChanged)
+	Q_PROPERTY(int scrollLength READ scrollLength NOTIFY scrollbarChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -89,6 +94,9 @@ public:
 	void setWithholdPasswords(bool on);
 	bool offerAtConnect() const { return m_offerAtConnect; }
 	int terminalAlpha() const { return m_terminalAlpha; }
+	int scrollTotal() const { return m_scrollTotal; }
+	int scrollOffset() const { return m_scrollOffset; }
+	int scrollLength() const { return m_scrollLength; }
 	void setTerminalAlpha(int alpha);
 	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
@@ -117,6 +125,7 @@ public:
 	Q_INVOKABLE void cancelReconnect();
 	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
 	Q_INVOKABLE void releaseShortcuts();
+	Q_INVOKABLE void scrollToRow(int row);
 	Q_INVOKABLE int cachedCursors() const { return int(m_cursors.size()); } // for tests
 	Q_INVOKABLE QRectF pictureOnScreen() const; // for tests: in screen pixels
 
@@ -134,6 +143,7 @@ signals:
 	void withholdPasswordsChanged();
 	void offerAtConnectChanged();
 	void terminalAlphaChanged();
+	void scrollbarChanged();
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
 	void pasteDone(int job);
@@ -269,6 +279,8 @@ private:
 	bool m_clipChanged = false;
 	bool m_offerAtConnect = false; // until told otherwise: bindings run in any order
 	int m_terminalAlpha = -1;
+	int m_scrollTotal = 0, m_scrollOffset = 0, m_scrollLength = 0;
+	void setScrollbar(int total, int offset, int length);
 	bool m_newNode = false; // the frame's format changed: the node reads it only when made
 	void sendOpacity();
 	Qt::MouseButtons m_buttons;
