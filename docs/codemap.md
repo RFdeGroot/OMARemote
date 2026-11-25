@@ -69,7 +69,7 @@ The manager window:
 | TabBar.qml, PinnedList.qml, StatusBar.qml | chrome (StatusBar: a Gliff tab's stats, a health dot and the facts that fit, a click opens the card; words in Format.js `parseStats`/`statsParts`/`statsRows`) |
 | SettingsPanel.qml, KeymapSheet.qml | settings, the keymap sheet (?) |
 | QuickConnectCard.qml, GroupPicker.qml, AboutCard.qml, ImportCard.qml | cards over the window (ImportCard: what an import from another client would add) |
-| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim scrollbar on panes that scroll; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
+| Input.qml, Check.qml, Segment.qml, ActionButton.qml, Glyph.qml, FormRow.qml, ScrollHint.qml | small controls (ScrollHint: the slim overlay scrollbar on panes that scroll, shown while hovered or scrolling; Input wraps Omarchy's TextField; every text field is an Input, which never reads the clipboard by itself: PasteGuard) |
 | js/Limits.js | the most characters each kind of field takes (`maximumLength: Limits.host`); the same as `LIMITS` in omaremote-session; `Limits.count`: how many connections, groups, … (`STORE_MAX_*`, `Store.full`); sources in docs/limits.md |
 | js/Contrast.js | WCAG contrast; see-through grounds (Flea's material): `floor`, `inks`, `lift`, `worst` over a blurred/bare backdrop, washes and Hyprland's window fade |
 | js/Format.js | pure helpers: `matches`, `quickSpec`, `ago`, labels, `sessionSpec`/`isSessionChord` |
@@ -114,7 +114,7 @@ Build: `ninja -C native/build`.
   nothing when not shared, size and time limits; cursors: size limit, at most 64 kept), test_vnc.py (omaremote-vnc
   against a fake RFB server: a server stalling mid-message ends the session, an idle one is kept), test_ssh.py
   (omaremote-ssh with a stand-in ssh: a dropped connection tried again, what is never retried; the
-  see-through background in the shared frame and through RdpView, tests/qml/terminal.qml), test_glass.py (Omarchy's
+  see-through background in the shared frame and through RdpView, tests/qml/terminal.qml), test_scrollhint.py (ui/ScrollHint.qml through tests/qml/scrollhint.qml: hidden at rest, shown while scrolling), test_glass.py (Omarchy's
   Glassy/Transparent: the contrast maths on every installed theme, the real window over magenta and green: one
   plane per region, SSH tabs at the terminal's alpha).
 - `debugAction` in Body.qml drives the UI offscreen for screenshots (OMAREMOTE_SNAPSHOT and
