@@ -489,13 +489,19 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   terminal's size, in the theme's terminal colours, following a theme switch live. The terminal is
   Ghostty's own (libghostty-vt), and Nerd Font icons are sized and placed by Ghostty's rules.
   `ctrl+=` / `ctrl+-` make the text bigger or smaller in that tab, `ctrl+0` resets it.
-- **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select),
+- **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select, as in
+  Ghostty: a double click takes a word, a triple click the line, `ctrl` + triple click a command's
+  output, `ctrl+alt` + drag a block; dragging past the top or bottom scrolls),
   `ctrl+shift+v`, `super+v`, `shift+insert` or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel or trackpad scroll back (as much as Ghostty keeps: 50 MB a tab, or your Ghostty's `scrollback-limit-bytes`/`-lines`;
   a scrollbar shows while you hover or scroll, and its thumb drags),
   `shift+home`/`shift+end` go to the top or bottom, `ctrl+shift+up`/`ctrl+shift+down` jump between
   prompts (when the shell marks them, as fish does). Scrolling moves as Ghostty's does, at your
   `mouse-scroll-multiplier` when Ghostty is your default terminal (Ghostty's defaults otherwise).
   Programs that use the mouse (htop, vim with `mouse=a`) get it; hold `shift` to select anyway.
+  Hold `ctrl` over a URL or a link a program made (OSC 8) to see where it goes, `ctrl`+click opens it
+  (web, mail and the like; not `file:`, which would be a path on the server). Programs that ask
+  are told when the tab gains or loses the keyboard (vim's `FocusGained`, tmux `focus-events`);
+  without it the cursor is a hollow block, as in Ghostty.
   Remote programs can set your clipboard (OSC 52, as tmux and Neovim do). The `ctrl+alt` keys stay
   OMARemote's, as in every session.
 - **Reconnects by itself** (*Reconnect*, on by default): when a working connection drops (the host

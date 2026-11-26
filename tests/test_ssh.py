@@ -474,6 +474,7 @@ class CursorMoves(unittest.TestCase):
                             return left, x - left
                     return None if left is None else (left, 400 - left)
 
+                light.send = c.sendall
                 yield light
                 c.close()
             finally:
@@ -495,6 +496,18 @@ class CursorMoves(unittest.TestCase):
             moved = self.settle(light, lambda s: s != first)
             self.assertIsNotNone(moved, "the cursor vanished")
             self.assertLess(moved[0], first[0], "the block stayed where the cursor was")
+
+    def test_without_the_keyboard_the_cursor_is_a_hollow_block(self):
+        # Ghostty's renderer: unfocused, a hollow block. Across its middle only its two sides show.
+        with self.watch("printf '    '; sleep 30") as light:
+            first = self.settle(light, lambda s: s is not None and s[0] >= 20)
+            self.assertIsNotNone(first, "no cursor drawn")
+            light.send(b"blur\n")
+            hollow = self.settle(light, lambda s: s != first)
+            self.assertIsNotNone(hollow, "the cursor vanished")
+            self.assertLess(hollow[1], first[1] / 2, "still a solid block")
+            light.send(b"focus 2\n")
+            self.assertEqual(self.settle(light, lambda s: s == first), first, "not solid again")
 
     def test_a_style_change_on_the_same_cell_is_drawn(self):
         """DECSCUSR (block -> bar, ESC [ 6 SP q) changes no text and no position: only the style."""
@@ -662,6 +675,24 @@ class Scrolling(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class FocusEvents(unittest.TestCase):
+    """Focus reporting (mode 1004, vim's FocusGained, tmux focus-events): the view's `focus` and
+    `blur` reach a program that asked, as CSI I and CSI O, once per change."""
+
+    session = Scrolling.session
+
+    def test_a_program_that_asked_is_told(self):
+        with self.session(r"\x1b[?1004h") as (send, got):
+            send("blur", "blur", "focus 2", "focus 2")
+            self.assertEqual(got(7, wait=1.5), b"\x1b[O\x1b[I")
+
+    def test_nothing_unless_asked(self):
+        with self.session("") as (send, got):
+            send("blur", "focus 2", "key 1 30 97 YQ==")
+            self.assertEqual(got(1), b"a")
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
 class Scrollback(unittest.TestCase):
     """As much history as Ghostty keeps (50 MB a tab, no line limit): left to the library's own
     default (10 KB, one page), a tab kept a few hundred lines."""
@@ -728,6 +759,179 @@ class Scrollback(unittest.TestCase):
         # this narrow view holds more rows than that: what is left can be fewer than 1000.
         oldest = int(self.oldest_kept("scrollback=1000")[1:])
         self.assertGreater(oldest, 20000 - 1000 - 100)
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Selecting(unittest.TestCase):
+    """Ghostty's own selection gestures (libghostty-vt's): a double click selects a word, a triple
+    click the line, a single click starts over, a drag past the top scrolls into the history."""
+
+    COPY = (b"key 1 29 65507\nkey 1 42 65505\nkey 1 46 67\nkey 0 46 67\n"
+            b"key 0 42 65505\nkey 0 29 65507\n")
+
+    def copied(self, script, actions, settle=2):
+        """Runs script, waits `settle` s, sends actions (bytes, or a number: seconds to wait),
+        then copies: the text copied, or None when nothing was selected."""
+        import base64, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "s")
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}", "reconnect=0", "font=monospace",
+                                "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            c = socket.socket(socket.AF_UNIX)
+            try:
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                c.settimeout(0.1)
+                buf = b""
+
+                def lines(wait):
+                    nonlocal buf
+                    out, end = [], time.time() + wait
+                    while time.time() < end:
+                        try:
+                            buf += c.recv(65536)
+                        except socket.timeout:
+                            continue
+                        *done, buf = buf.split(b"\n")
+                        out += done
+                    return out
+
+                lines(settle)
+                for a in actions:
+                    if isinstance(a, (int, float)):
+                        lines(a)
+                    else:
+                        c.sendall(a)
+                lines(0.3)
+                c.sendall(self.COPY)
+                for line in lines(1.5):
+                    if line.startswith(b"clip "):
+                        return base64.b64decode(line.split()[1]).decode()
+                return None
+            finally:
+                c.close()
+                p.kill()
+                p.wait()
+
+    LINE = "printf 'alpha beta-gamma delta\\n'; sleep 30"
+    CLICK = b"button 1 1 70 11\nbutton 1 0 70 11\n"  # on "beta-gamma", the first row
+
+    def test_a_double_click_selects_a_word(self):
+        self.assertEqual(self.copied(self.LINE, [self.CLICK * 2]), "beta-gamma")
+
+    def test_a_triple_click_selects_the_line(self):
+        self.assertEqual(self.copied(self.LINE, [self.CLICK * 3]), "alpha beta-gamma delta")
+
+    def test_a_single_click_after_it_starts_over(self):
+        # Past the repeat interval (500 ms): a new single click, nothing selected.
+        self.assertIsNone(self.copied(self.LINE, [self.CLICK * 2, 0.7, self.CLICK]))
+
+    def test_dragging_past_the_top_scrolls_into_the_history(self):
+        # 200 lines, the view at the bottom: a drag from the middle up to the top edge, held there,
+        # selects lines that were above the screen.
+        script = "i=0; while [ $i -lt 200 ]; do echo L$i; i=$((i+1)); done; sleep 30"
+        text = self.copied(script, [b"button 1 1 30 150\nmouse 30 80\nmouse 0 0\n", 1.0, b"button 1 0 0 0\n"])
+        self.assertIsNotNone(text)
+        first = int(text.split()[0][1:])
+        self.assertLess(first, 200 - 20, "the drag did not scroll: " + text.split()[0])
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Links(unittest.TestCase):
+    """Ghostty's links: with ctrl held, a URL in the text (its scheme pattern: no trailing . or ,,
+    a bracketed word kept, surrounding parentheses not) or an OSC 8 hyperlink is underlined and
+    told to the view (`link`); a ctrl+click asks for it to be opened (`open-url`). Not file:
+    (over SSH a path is the remote computer's)."""
+
+    CTRL_DOWN, CTRL_UP = b"key 1 29 65507\n", b"key 0 29 65507\n"
+
+    def said(self, output, actions):
+        """The view's lines after `actions`, with `output` (bytes, escapes and all) on the screen."""
+        import base64, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock, out = os.path.join(d, "s"), os.path.join(d, "out")
+            with open(out, "wb") as f:
+                f.write(output)
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg=cat {out}; sleep 30", "reconnect=0",
+                                "font=monospace", "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            c = socket.socket(socket.AF_UNIX)
+            try:
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                c.settimeout(0.1)
+                buf = b""
+
+                def lines(wait):
+                    nonlocal buf
+                    got, end = [], time.time() + wait
+                    while time.time() < end:
+                        try:
+                            buf += c.recv(65536)
+                        except socket.timeout:
+                            continue
+                        *done, buf = buf.split(b"\n")
+                        got += done
+                    return got
+
+                lines(2)
+                c.sendall(b"".join(actions))
+                said = []
+                for line in lines(1.5):
+                    word = line.split(b" ")[0]
+                    if word in (b"link", b"open-url"):
+                        arg = line.split(b" ")[1]
+                        said.append((word.decode(), "-" if arg == b"-" else base64.b64decode(arg).decode()))
+                    elif word == b"cursor-pointer":
+                        said.append(("cursor-pointer", ""))
+                return said
+            finally:
+                c.close()
+                p.kill()
+                p.wait()
+
+    def hover(self, x):
+        return [self.CTRL_DOWN, b"mouse %d 11\n" % x]
+
+    def test_a_url_with_ctrl_held(self):
+        url = "https://example.com/a_(b)"
+        said = self.said(b"see " + url.encode() + b". end\n", self.hover(90) + [b"button 1 1 90 11\nbutton 1 0 90 11\n", self.CTRL_UP])
+        self.assertEqual(said, [("link", url), ("cursor-pointer", ""), ("open-url", url), ("link", "-")])
+
+    def test_surrounding_parentheses_are_not_the_urls(self):
+        said = self.said(b"x (https://e.test/q) y\n", self.hover(90))
+        self.assertEqual(said[0], ("link", "https://e.test/q"))
+
+    def test_nothing_without_ctrl(self):
+        self.assertEqual(self.said(b"see https://example.com/ end\n", [b"mouse 90 11\n"]), [])
+
+    def test_an_osc_8_hyperlink(self):
+        said = self.said(b"\x1b]8;;https://x.test/p\x1b\\click here\x1b]8;;\x1b\\\n", self.hover(30))
+        self.assertEqual(said[0], ("link", "https://x.test/p"))
+
+    def test_not_a_file_link(self):
+        said = self.said(b"\x1b]8;;file:///etc/passwd\x1b\\click here\x1b]8;;\x1b\\ file:///etc/passwd\n",
+                         self.hover(30) + [b"mouse 120 11\n", b"button 1 1 120 11\nbutton 1 0 120 11\n"])
+        self.assertEqual(said, [])
 
 
 @unittest.skipUnless(os.path.exists(HELPER) and shutil.which("qml6") and shutil.which("magick"),

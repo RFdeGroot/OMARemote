@@ -24,6 +24,10 @@ Item {
             r.reconnecting = Format.statsParts(Format.parseStats("health=bad why=reconnecting"))
             r.odd = Format.parseStats("health=weird why=x").health
             r.noStats = Format.parseStats("")
+            r.links = ["https://example.com/a_(b)", "HTTP://x.test", "mailto:a@b.c", "gemini://g.test",
+                       "file:///etc/passwd", "javascript:alert(1)", "https://x.test/a b", "https://x.test/\u0007",
+                       "https://", "", "data:text/html,x", "https://" + "a".repeat(8200), null
+                      ].map(Format.openableLink)
             r.ports = Format.defaultPorts
             r.gliffAddress = Format.address({ protocol: "gliff", host: "pc.lan", port: 22 })
             var ran = { state: "ended", connectedAt: 1000, ended: 1005 }

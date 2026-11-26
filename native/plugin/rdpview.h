@@ -70,6 +70,9 @@ class RdpView : public QQuickItem
 	Q_PROPERTY(int scrollTotal READ scrollTotal NOTIFY scrollbarChanged)
 	Q_PROPERTY(int scrollOffset READ scrollOffset NOTIFY scrollbarChanged)
 	Q_PROPERTY(int scrollLength READ scrollLength NOTIFY scrollbarChanged)
+	// The link a terminal's ctrl points at (SSH, `link` lines): shown as Ghostty's link preview.
+	// A ctrl+click on it asks for it to be opened: openUrl (the UI decides).
+	Q_PROPERTY(QString hoveredLink READ hoveredLink NOTIFY hoveredLinkChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -97,6 +100,7 @@ public:
 	int scrollTotal() const { return m_scrollTotal; }
 	int scrollOffset() const { return m_scrollOffset; }
 	int scrollLength() const { return m_scrollLength; }
+	QString hoveredLink() const { return m_hoveredLink; }
 	void setTerminalAlpha(int alpha);
 	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
@@ -144,6 +148,8 @@ signals:
 	void offerAtConnectChanged();
 	void terminalAlphaChanged();
 	void scrollbarChanged();
+	void hoveredLinkChanged();
+	void openUrl(const QString& url);
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
 	void pasteDone(int job);
@@ -281,6 +287,8 @@ private:
 	int m_terminalAlpha = -1;
 	int m_scrollTotal = 0, m_scrollOffset = 0, m_scrollLength = 0;
 	void setScrollbar(int total, int offset, int length);
+	QString m_hoveredLink;
+	void setHoveredLink(const QString& url);
 	bool m_newNode = false; // the frame's format changed: the node reads it only when made
 	void sendOpacity();
 	Qt::MouseButtons m_buttons;

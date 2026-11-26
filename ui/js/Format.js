@@ -356,3 +356,13 @@ function failureReplaced(sessions, s) {
     }
     return false
 }
+
+// Whether an SSH tab may open a link (a ctrl+click, Ghostty's): only these schemes (Ghostty's URL
+// schemes, less file:, a path on the remote computer), nothing with spaces or control characters,
+// at most 8192 characters. The link is the remote side's text: an OSC 8 one can show other words
+// than where it leads, so the check is here, not only in omaremote-ssh.
+function openableLink(url) {
+    if (typeof url !== "string" || url.length > 8192 || /[\s\x00-\x1f\x7f]/.test(url))
+        return false
+    return /^(https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|ipfs:\/\/|ipns:\/\/|gemini:\/\/|gopher:\/\/|news:)./i.test(url)
+}

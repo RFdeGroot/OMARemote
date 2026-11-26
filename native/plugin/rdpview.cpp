@@ -137,6 +137,12 @@ void RdpView::tryAttach()
 	emit attachedChanged();
 	sendSize();
 	sendOpacity();
+	// Where the keyboard is, from the start: a view that already has it gets no focusInEvent to
+	// say so (SSH tells programs and draws its cursor by it, Gliff shares its clipboard only then).
+	if (hasActiveFocus())
+		send("focus " + QByteArray::number(kSyncNum));
+	else
+		send("blur");
 	// Gliff pictures straight from the decoder's surfaces, when the scene graph draws with OpenGL
 	// (EGL takes the dmabufs); other sessions ignore the line.
 	if (!m_gpuFailed && QQuickWindow::graphicsApi() == QSGRendererInterface::OpenGL &&
@@ -172,7 +178,16 @@ void RdpView::detach()
 	m_showTaken = true;
 	m_drawnSeq = 0;
 	setScrollbar(0, 0, 0);
+	setHoveredLink(QString());
 	emit attachedChanged();
+}
+
+void RdpView::setHoveredLink(const QString& url)
+{
+	if (url == m_hoveredLink)
+		return;
+	m_hoveredLink = url;
+	emit hoveredLinkChanged();
 }
 
 void RdpView::setScrollbar(int total, int offset, int length)
@@ -377,6 +392,12 @@ void RdpView::handleLine(const QByteArray& line)
 		const int length = int(std::clamp<long long>(w[3].toLongLong(), 0, total));
 		setScrollbar(total, int(std::clamp<long long>(w[2].toLongLong(), 0, total - length)), length);
 	}
+	else if (cmd == "link" && w.size() >= 2)
+		setHoveredLink(w[1] == "-" || w[1].size() > 16384 ? QString() : unb64(w[1]));
+	else if (cmd == "open-url" && w.size() >= 2 && w[1].size() <= 16384)
+		emit openUrl(unb64(w[1]));
+	else if (cmd == "cursor-pointer")
+		setCursor(Qt::PointingHandCursor);
 	else if (cmd == "cursor-default")
 		setCursor(Qt::ArrowCursor);
 	else if (cmd == "cursor-text")
@@ -1014,6 +1035,9 @@ void RdpView::hoverEnterEvent(QHoverEvent* e)
 void RdpView::hoverLeaveEvent(QHoverEvent* e)
 {
 	QQuickItem::hoverLeaveEvent(e);
+	// A terminal's link preview goes with the pointer.
+	send("mouse-leave");
+	setHoveredLink(QString());
 	m_pointerInside = false;
 	m_released = false;
 	const bool held = m_inhibit.held();

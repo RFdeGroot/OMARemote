@@ -256,6 +256,52 @@ Item {
         }
     }
 
+    // An SSH tab's links, as Ghostty's: ctrl over a URL or an OSC 8 hyperlink shows where it goes
+    // (the preview, bottom left; it moves right when the pointer is there), a ctrl+click opens it.
+    // Only these schemes, whatever the session says: a link is the remote side's text, and an
+    // OSC 8 one can show other words than where it leads.
+    function openLink(url) {
+        if (!Format.openableLink(url))
+            return false
+        Qt.openUrlExternally(url)
+        return true
+    }
+    Connections {
+        target: view
+        function onOpenUrl(url) { root.openLink(url) }
+    }
+    Rectangle {
+        id: linkPreview
+        readonly property string url: root.current ? view.hoveredLink : ""
+        visible: url !== ""
+        anchors.bottom: parent.bottom
+        anchors.margins: Theme.gap
+        // Out of the pointer's way, as Ghostty's: to the right while the pointer is on the left half.
+        readonly property bool aside: linkHover.point.position.x < parent.width / 2
+                                      && linkHover.point.position.y > parent.height - 3 * height
+        x: aside ? parent.width - width - Theme.gap : Theme.gap
+        width: Math.min(linkText.implicitWidth + 2 * Theme.padX, parent.width * 0.6)
+        height: linkText.implicitHeight + Theme.gap
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Util.alpha(Theme.foreground, 0.15)
+        Text {
+            id: linkText
+            anchors.fill: parent
+            anchors.leftMargin: Theme.padX
+            anchors.rightMargin: Theme.padX
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            elide: Text.ElideMiddle
+            text: linkPreview.url
+            color: Theme.foreground
+            font.family: Theme.font
+            font.pixelSize: Theme.small
+        }
+    }
+    HoverHandler { id: linkHover }
+
     // A paste from the remote that takes more than a second (Gliff): how far, and a way out.
     property var paste: null
     Rectangle {

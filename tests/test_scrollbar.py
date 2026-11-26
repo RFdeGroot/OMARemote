@@ -25,7 +25,7 @@ class TheView(unittest.TestCase):
             server.bind(path)
             server.listen(1)
             server.settimeout(10)
-            asked = []
+            asked, told = [], []
 
             def session():
                 conn, _ = server.accept()
@@ -45,6 +45,7 @@ class TheView(unittest.TestCase):
                             break
                         buf += data
                     asked.extend(l for l in buf.decode().splitlines() if l.startswith("scroll-to"))
+                    told.extend(l for l in buf.decode().splitlines() if l in ("blur",) or l.startswith("focus"))
 
             thread = threading.Thread(target=session, daemon=True)
             thread.start()
@@ -59,6 +60,8 @@ class TheView(unittest.TestCase):
         self.assertNotIn("timeout", result, p.stderr)
         self.assertEqual(result["seen"], [[1000, 900, 50], [5, 0, 5], [0, 0, 0]])
         self.assertEqual(asked, ["scroll-to 7"])
+        # Where the keyboard is, said at attach: this view does not have it.
+        self.assertEqual(told[:1], ["blur"])
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")

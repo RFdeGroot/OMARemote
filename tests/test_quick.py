@@ -41,6 +41,13 @@ class QuickCredential(unittest.TestCase):
         self.assertEqual(self.r["picked"], {"credential": "k1", "filledFor": ""})
         self.assertEqual(self.r["none"], {"credential": "custom", "filledFor": ""})
 
+    def test_which_links_an_ssh_tab_opens(self):
+        # The schemes, in any case; not file: (the remote computer's path), javascript:, data:;
+        # nothing with a space or a control character, an empty scheme, too long, or no string.
+        self.assertEqual(self.r["links"], [True, True, True, True,
+                                           False, False, False, False,
+                                           False, False, False, False, False])
+
     def test_one_port_table_equal_to_the_backend(self):
         # Gliff connections without a port of their own showed host:3389 (Store had no gliff).
         self.assertEqual(self.r["ports"], session.DEFAULT_PORTS)

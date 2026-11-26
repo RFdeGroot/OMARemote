@@ -82,16 +82,6 @@ struct Palette
 	QColor ansi[16];
 };
 
-// A cell position in the whole screen, scrollback included (Ghostty's "screen" points): row 0 is
-// the oldest line kept.
-struct Pos
-{
-	long line = 0;
-	int col = 0;
-	bool operator<(const Pos& o) const { return line < o.line || (line == o.line && col < o.col); }
-	bool operator==(const Pos& o) const { return line == o.line && col == o.col; }
-};
-
 // A symbol's glyph, from the terminal font or the fallback Qt picks, and how it is drawn in one or
 // two cells of room (Ghostty's constraint rules, glyph_constraint.hpp), worked out once.
 struct SymbolGlyph
@@ -169,10 +159,28 @@ struct Session
 	bool mouseTracking = false;
 	std::string title;
 
-	// Mouse selection, in screen positions; empty when anchor == head.
-	bool selecting = false;
-	Pos selAnchor, selHead;
+	// Mouse selection: Ghostty's own gestures (libghostty-vt's selection gesture: a click, a
+	// double click a word, a triple click a line, dragging extends by the same, past the top or
+	// bottom it scrolls). selFrom..selTo: the screen lines selected, redrawn when that changes.
+	GhosttySelectionGesture gesture = nullptr;
+	GhosttySelectionGestureEvent pressEv = nullptr, releaseEv = nullptr, dragEv = nullptr, tickEv = nullptr;
+	GhosttySelectionGestureAutoscroll autoscroll = GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
+	uint64_t lastTick = 0;
+	bool leftDown = false; // the left button held for a selection (not the program's)
+	int mouseX = 0, mouseY = 0;
+	bool mouseIn = false; // the pointer is over the view (`mouse` lines since the last `mouse-leave`)
+	bool linkClick = false; // the left button went down on a link: its release is ours too
+	// The view has the keyboard (`focus` / `blur`): programs that ask (mode 1004: vim, tmux) are
+	// told, and the cursor is a hollow block without it, as Ghostty's.
+	bool focused = true;
 	bool hasSelection = false;
+	long selFrom = 0, selTo = -1;
+
+	// The link under the pointer while ctrl is held (Ghostty's: a URL in the text, or an OSC 8
+	// hyperlink): underlined, the view told (`link`), opened by a ctrl+click (`open-url`).
+	struct LinkSpan { long line; int from, to; }; // screen line, columns from..to
+	std::vector<LinkSpan> linkSpans;
+	std::string linkUrl;
 	int mouseButtons = 0; // buttons held, for the remote program's mouse reporting
 
 	// Scrolling as Ghostty does it (Surface.zig scrollCallback): every wheel event in pixels, a
@@ -204,6 +212,7 @@ static constexpr size_t kMaxTitleBytes = 4096;
 static void term_write(const char* s, size_t len);
 // Draws what changed; announce: tell the UI (not for a buffer it does not have yet).
 static void flush(bool announce = true);
+static void update_link();
 
 // ---------------------------------------------------------------- theme
 
@@ -596,9 +605,17 @@ static bool draw_symbol(QPainter& painter, const DrawCell& c, int width)
 // Painted into g.strip from x = 0, y = 0. Backgrounds first, then the text, then lines and the
 // cursor: a glyph wider than its cell (an icon, an italic's overhang) is never painted over by
 // the next cell's background.
+// The cursor's style as drawn: a hollow block while the view does not have the keyboard
+// (Ghostty's renderer/cursor.zig).
+static GhosttyCursorStyle drawn_style(const GhosttyRenderStateCursor& cursor)
+{
+	return g.focused ? cursor.visual_style : GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW;
+}
+
 static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors& colors,
                      const GhosttyRenderStateCursor& cursor)
 {
+	const GhosttyCursorStyle style = drawn_style(cursor);
 	if (ghostty_render_state_row_get(g.rowIt, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &g.cells) != GHOSTTY_SUCCESS)
 		return;
 	const int y = 0;
@@ -644,7 +661,7 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 			c.bg = g.pal.selBg;
 		}
 		c.atCursor = cursorHere && cursor.viewport_x == col;
-		if (c.atCursor && cursor.visual_style == GHOSTTY_CURSOR_STYLE_BLOCK)
+		if (c.atCursor && style == GHOSTTY_CURSOR_STYLE_BLOCK)
 		{
 			c.fg = g.pal.cursorText;
 			c.bg = cursorColour;
@@ -707,10 +724,14 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 	}
 
 	const int thick = std::max(1, g.cellH / 14);
+	const long top = g.linkSpans.empty() ? 0 : long(scrollbar().offset);
 	for (const DrawCell& c : cells)
 	{
 		const QRect& box = c.box;
-		if (GHOSTTY_STYLE_UNDERLINE(c.style))
+		bool link = false; // under the link ctrl points at (update_link)
+		for (const auto& s : g.linkSpans)
+			link = link || (s.line == top + row && c.col >= s.from && c.col <= s.to);
+		if (GHOSTTY_STYLE_UNDERLINE(c.style) || link)
 			painter.fillRect(QRect(box.x(), y + g.ascent + thick, box.width(), thick), c.fg);
 		if (c.style.flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH)
 			painter.fillRect(QRect(box.x(), y + g.cellH / 2, box.width(), thick), c.fg);
@@ -718,11 +739,11 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 			painter.fillRect(QRect(box.x(), y, box.width(), thick), c.fg);
 		if (!c.atCursor)
 			continue;
-		if (cursor.visual_style == GHOSTTY_CURSOR_STYLE_UNDERLINE)
+		if (style == GHOSTTY_CURSOR_STYLE_UNDERLINE)
 			painter.fillRect(QRect(box.x(), y + g.cellH - 2 * thick, box.width(), 2 * thick), cursorColour);
-		if (cursor.visual_style == GHOSTTY_CURSOR_STYLE_BAR)
+		if (style == GHOSTTY_CURSOR_STYLE_BAR)
 			painter.fillRect(QRect(box.x(), y, 2 * thick, g.cellH), cursorColour);
-		if (cursor.visual_style == GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW)
+		if (style == GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW)
 		{
 			painter.setPen(cursorColour);
 			painter.drawRect(box.adjusted(0, 0, -1, -1));
@@ -746,7 +767,7 @@ static void flush(bool announce)
 	// The library does not mark a row dirty when only the cursor moves (left and right on the
 	// prompt): its column and style count as a change of their own.
 	const int cursorCol = cursorRow >= 0 ? int(cursor.viewport_x) : -1;
-	const int cursorStyle = int(cursor.visual_style);
+	const int cursorStyle = int(drawn_style(cursor));
 	if (dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && !g.full && cursorRow == g.cursorRow
 	    && cursorCol == g.cursorCol && cursorStyle == g.cursorStyle)
 		return;
@@ -952,35 +973,45 @@ static void cb_clipboard_write(GhosttyTerminal, void*, const GhosttyClipboardWri
 
 // ---------------------------------------------------------------- selection and clipboard
 
-// The terminal keeps the selection (it follows the text as the screen scrolls), from our anchor
-// and head: positions between cells, so the end is the cell before the head.
-static bool apply_selection()
+// The screen lines a selection covers (row 0 the oldest kept), or false when it has none there.
+static bool selection_lines(const GhosttySelection& sel, long& from, long& to)
 {
-	if (!g.hasSelection)
-	{
-		ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr);
+	GhosttySelection o = {};
+	if (ghostty_terminal_selection_ordered(g.term, &sel, GHOSTTY_SELECTION_ORDER_FORWARD, &o) != GHOSTTY_SUCCESS)
 		return false;
-	}
-	Pos a = g.selAnchor, b = g.selHead;
-	if (b < a)
-		std::swap(a, b);
-	if (b.col > 0)
-		b.col--;
-	else if (b.line > a.line)
-	{
-		b.line--;
-		b.col = g.cols - 1;
-	}
-	GhosttyPoint pa = {}, pb = {};
-	pa.tag = pb.tag = GHOSTTY_POINT_TAG_SCREEN;
-	pa.value.coordinate = { uint16_t(a.col), uint32_t(std::max(0L, a.line)) };
-	pb.value.coordinate = { uint16_t(b.col), uint32_t(std::max(0L, b.line)) };
-	GhosttySelection sel = {};
-	if (ghostty_terminal_grid_ref(g.term, pa, &sel.start) != GHOSTTY_SUCCESS ||
-	    ghostty_terminal_grid_ref(g.term, pb, &sel.end) != GHOSTTY_SUCCESS)
+	GhosttyPointCoordinate a = {}, b = {};
+	if (ghostty_terminal_point_from_grid_ref(g.term, &o.start, GHOSTTY_POINT_TAG_SCREEN, &a) != GHOSTTY_SUCCESS ||
+	    ghostty_terminal_point_from_grid_ref(g.term, &o.end, GHOSTTY_POINT_TAG_SCREEN, &b) != GHOSTTY_SUCCESS)
 		return false;
-	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SELECTION, &sel);
+	from = long(a.y);
+	to = long(b.y);
 	return true;
+}
+
+// Marks the screen lines from..to for the next flush.
+static void redraw_lines(long from, long to)
+{
+	if (from > to)
+		return;
+	if (g.redrawFrom > g.redrawTo)
+		g.redrawFrom = from, g.redrawTo = to;
+	else
+		g.redrawFrom = std::min(g.redrawFrom, from), g.redrawTo = std::max(g.redrawTo, to);
+}
+
+// The terminal keeps the selection (it follows the text as the screen scrolls); null clears it.
+// The lines it covered and now covers are drawn again.
+static void set_selection(const GhosttySelection* sel)
+{
+	long from = 0, to = -1;
+	if (sel && !selection_lines(*sel, from, to))
+		from = 0, to = -1;
+	redraw_lines(g.selFrom, g.selTo);
+	redraw_lines(from, to);
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SELECTION, sel);
+	g.hasSelection = sel != nullptr;
+	g.selFrom = from;
+	g.selTo = to;
 }
 
 static std::string selection_text()
@@ -1039,23 +1070,10 @@ static void paste()
 		to_pty(out.substr(0, written));
 }
 
-// Marks the screen lines from a to b (either order) for the next flush.
-static void redraw_lines(const Pos& a, const Pos& b)
-{
-	const long from = std::min(a.line, b.line), to = std::max(a.line, b.line);
-	if (g.redrawFrom > g.redrawTo)
-		g.redrawFrom = from, g.redrawTo = to;
-	else
-		g.redrawFrom = std::min(g.redrawFrom, from), g.redrawTo = std::max(g.redrawTo, to);
-}
-
 static void clear_selection()
 {
-	if (!g.hasSelection)
-		return;
-	g.hasSelection = false;
-	redraw_lines(g.selAnchor, g.selHead);
-	apply_selection();
+	if (g.hasSelection)
+		set_selection(nullptr);
 }
 
 // ---------------------------------------------------------------- input
@@ -1166,6 +1184,7 @@ static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 	if (is_modifier(sym))
 	{
 		encode_key(GHOSTTY_KEY_ACTION_PRESS, evdev, sym, {}); // the Kitty protocol may report it
+		update_link(); // ctrl: the link under the pointer
 		return;
 	}
 	g.typed = true;
@@ -1206,17 +1225,281 @@ static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 static void key_up(uint32_t evdev, uint32_t sym)
 {
 	g.held.erase(evdev);
+	if (is_modifier(sym))
+		update_link();
 	if (g.zoomKeys.erase(evdev))
 		return;
 	if (g.pty >= 0)
 		encode_key(GHOSTTY_KEY_ACTION_RELEASE, evdev, sym, {}); // nothing unless the program asked for releases
 }
 
-static Pos pos_at(int x, int y)
+// The cell under a point of the view (clamped to the grid), as a viewport coordinate and a grid
+// reference for the selection gestures.
+static bool cell_at(int x, int y, GhosttyPointCoordinate& vp, GhosttyGridRef& ref)
 {
-	const int col = std::clamp((x - g.pad) / std::max(1, g.cellW), 0, g.cols - 1);
-	const int row = std::clamp((y - g.pad) / std::max(1, g.cellH), 0, g.rows - 1);
-	return Pos{ long(scrollbar().offset) + row, col };
+	vp.x = uint16_t(std::clamp((x - g.pad) / std::max(1, g.cellW), 0, g.cols - 1));
+	vp.y = uint32_t(std::clamp((y - g.pad) / std::max(1, g.cellH), 0, g.rows - 1));
+	GhosttyPoint p = {};
+	p.tag = GHOSTTY_POINT_TAG_VIEWPORT;
+	p.value.coordinate = vp;
+	ref = {};
+	return ghostty_terminal_grid_ref(g.term, p, &ref) == GHOSTTY_SUCCESS;
+}
+
+// What the gestures need to know of the view. The height is one short: the view clamps the
+// pointer to the picture, so its last row is where Ghostty's "below the window" begins.
+static GhosttySelectionGestureGeometry gesture_geometry()
+{
+	GhosttySelectionGestureGeometry geo = {};
+	geo.columns = uint32_t(std::max(1, g.cols));
+	geo.cell_width = uint32_t(std::max(1, g.cellW));
+	geo.padding_left = uint32_t(g.pad);
+	geo.screen_height = uint32_t(std::max(2, g.pixelH - 1));
+	return geo;
+}
+
+// Ghostty's rectangle selection on Linux: ctrl (or super) and alt held while dragging.
+static bool rectangle_held()
+{
+	return ctrl_held() && alt_held();
+}
+
+// ---------------------------------------------------------------- links
+
+// The schemes a link may have: Ghostty's URL schemes, less file: (over SSH a path is the remote
+// computer's, not this one's). The view checks again before it opens anything.
+static bool link_scheme_allowed(const std::string& url)
+{
+	static const char* const schemes[] = { "http://", "https://", "mailto:", "ftp://", "ssh://", "git://", "tel:",
+		                                    "magnet:", "ipfs://", "ipns://", "gemini://", "gopher://", "news:" };
+	for (const char* scheme : schemes)
+		if (url.size() > strlen(scheme) && strncasecmp(url.c_str(), scheme, strlen(scheme)) == 0)
+			return true;
+	return false;
+}
+
+static bool url_word(char32_t c)
+{
+	return c == '_' || (c < 128 ? bool(isalnum(int(c))) : QChar::isLetterOrNumber(c));
+}
+
+// Ghostty's scheme URL pattern (config/url.zig, scheme_url_branch), without regex lookbehind:
+// a scheme, then URL characters, an IPv6 host in brackets, or a bracketed word ("Rust_(game)"),
+// not ending in . or ,. The URL around index `at` in text: [start, end), or false.
+static bool url_around(const std::u32string& text, size_t at, size_t& start, size_t& end)
+{
+	static const char* const schemes[] = { "https://", "http://", "mailto:", "ftp://", "file:", "ssh://", "ssh:",
+		                                    "git://", "tel:", "magnet:", "ipfs://", "ipns://", "gemini://",
+		                                    "gopher://", "news:" };
+	auto url_char = [](char32_t c) { return url_word(c) || (c < 128 && strchr("-.~:/?#@!$&*+,;=%", int(c)) && c); };
+	for (size_t p = 0; p < text.size() && p <= at; p++)
+		for (const char* scheme : schemes)
+		{
+			const size_t len = strlen(scheme);
+			if (p + len > text.size())
+				continue;
+			bool same = true;
+			for (size_t i = 0; i < len && same; i++)
+				same = char32_t(tolower(int(text[p + i] < 128 ? text[p + i] : 0))) == char32_t(scheme[i]);
+			if (!same)
+				continue;
+			size_t j = p + len;
+			for (;;)
+			{
+				const size_t before = j;
+				while (j < text.size() && url_char(text[j]))
+					j++;
+				if (j < text.size() && text[j] == '[')
+				{
+					// An IPv6 host: [hex and colons] and a port.
+					size_t k = j + 1;
+					while (k < text.size() && (text[k] == ':' || isxdigit(int(text[k] < 128 ? text[k] : 0))))
+						k++;
+					if (k < text.size() && text[k] == ']' && k > j + 1)
+					{
+						j = k + 1;
+						continue;
+					}
+				}
+				if (j < text.size() && (text[j] == '(' || text[j] == '['))
+				{
+					size_t k = j + 1;
+					while (k < text.size() && url_word(text[k]))
+						k++;
+					if (k < text.size() && (text[k] == ')' || text[k] == ']'))
+					{
+						j = k + 1;
+						continue;
+					}
+				}
+				if (j == before)
+					break;
+			}
+			while (j > p + len && (text[j - 1] == '.' || text[j - 1] == ','))
+				j--;
+			if (j > p + len && at >= p && at < j)
+			{
+				start = p;
+				end = j;
+				return true;
+			}
+			p = std::max(p, j ? j - 1 : 0); // the next URL starts after this one
+			break;
+		}
+	return false;
+}
+
+// The OSC 8 hyperlink of a cell, or "".
+static std::string hyperlink_of(const GhosttyGridRef& ref)
+{
+	size_t len = 0;
+	if (ghostty_grid_ref_hyperlink_uri(&ref, nullptr, 0, &len) != GHOSTTY_OUT_OF_SPACE || !len || len > 8192)
+		return {};
+	std::string uri(len, '\0');
+	if (ghostty_grid_ref_hyperlink_uri(&ref, reinterpret_cast<uint8_t*>(uri.data()), len, &len) != GHOSTTY_SUCCESS)
+		return {};
+	uri.resize(len);
+	return uri;
+}
+
+static bool screen_ref(long line, int col, GhosttyGridRef& ref)
+{
+	GhosttyPoint p = {};
+	p.tag = GHOSTTY_POINT_TAG_SCREEN;
+	p.value.coordinate = { uint16_t(col), uint32_t(std::max(0L, line)) };
+	ref = {};
+	return ghostty_terminal_grid_ref(g.term, p, &ref) == GHOSTTY_SUCCESS;
+}
+
+// The link at a point of the view: an OSC 8 hyperlink first, then a URL in the text of its line
+// (soft wraps followed, as Ghostty's line selection does), with the cells it covers.
+static std::string link_at(int x, int y, std::vector<Session::LinkSpan>& spans)
+{
+	spans.clear();
+	GhosttyPointCoordinate vp = {};
+	GhosttyGridRef ref = {};
+	if (!cell_at(x, y, vp, ref))
+		return {};
+	GhosttyTerminalSelectLineOptions lo = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectLineOptions);
+	lo.ref = ref;
+	const uint32_t none = 0;
+	lo.whitespace = &none; // nothing trimmed: the cells keep their columns
+	lo.whitespace_len = 1;
+	GhosttySelection line = {};
+	long from = 0, to = -1;
+	if (ghostty_terminal_select_line(g.term, &lo, &line) != GHOSTTY_SUCCESS || !selection_lines(line, from, to) ||
+	    to - from > 64)
+		return {};
+	const long here = long(scrollbar().offset) + long(vp.y);
+	// The line's text, a codepoint (or a cluster) a cell, and each one's cell.
+	std::u32string text;
+	std::vector<std::pair<long, int>> cellOf;
+	size_t at = std::u32string::npos;
+	std::string osc8;
+	for (long l = from; l <= to; l++)
+		for (int c = 0; c < g.cols; c++)
+		{
+			GhosttyGridRef r = {};
+			if (!screen_ref(l, c, r))
+				continue;
+			if (l == here && c == int(vp.x))
+			{
+				at = text.size();
+				osc8 = hyperlink_of(r);
+			}
+			uint32_t cps[16];
+			size_t n = 0;
+			if (ghostty_grid_ref_graphemes(&r, cps, 16, &n) != GHOSTTY_SUCCESS || !n)
+				cps[0] = ' ', n = 1;
+			for (size_t i = 0; i < n; i++)
+			{
+				text.push_back(char32_t(cps[i]));
+				cellOf.emplace_back(l, c);
+			}
+		}
+	if (at == std::u32string::npos)
+		return {};
+	size_t start = 0, end = 0;
+	std::string url;
+	if (!osc8.empty())
+	{
+		// The cells around it with the same hyperlink.
+		start = end = at;
+		auto same = [&](size_t i) {
+			GhosttyGridRef r = {};
+			return screen_ref(cellOf[i].first, cellOf[i].second, r) && hyperlink_of(r) == osc8;
+		};
+		while (start > 0 && same(start - 1))
+			start--;
+		while (end < text.size() && same(end))
+			end++;
+		url = osc8;
+	}
+	else if (url_around(text, at, start, end))
+		url = QString::fromUcs4(text.data() + start, qsizetype(end - start)).toStdString();
+	if (url.empty() || !link_scheme_allowed(url))
+		return {};
+	for (size_t i = start; i < end; i++)
+	{
+		const auto [l, c] = cellOf[i];
+		if (!spans.empty() && spans.back().line == l && spans.back().to >= c - 1)
+			spans.back().to = std::max(spans.back().to, c);
+		else
+			spans.push_back({ l, c, c });
+	}
+	return url;
+}
+
+// What ctrl and the pointer point at now: underlined, the view told, the pointing hand shown.
+static void update_link()
+{
+	std::vector<Session::LinkSpan> spans;
+	const std::string url = ctrl_held() && g.mouseIn ? link_at(g.mouseX, g.mouseY, spans) : std::string();
+	if (url == g.linkUrl)
+		return;
+	for (const auto& s : g.linkSpans)
+		redraw_lines(s.line, s.line);
+	for (const auto& s : spans)
+		redraw_lines(s.line, s.line);
+	g.linkSpans = std::move(spans);
+	g.linkUrl = url;
+	g.link.send(url.empty() ? std::string("link -") : "link " + b64(url));
+	if (url.empty())
+		send_cursor_shape();
+	else
+		g.link.send("cursor-pointer");
+}
+
+// After a drag or a tick: keep ticking while the gesture wants to scroll (past the top or bottom).
+static void follow_autoscroll()
+{
+	ghostty_selection_gesture_get(g.gesture, g.term, GHOSTTY_SELECTION_GESTURE_DATA_AUTOSCROLL, &g.autoscroll);
+}
+
+// One step of a drag's scroll past the top or bottom (Ghostty ticks every 15 ms).
+static void autoscroll_tick()
+{
+	GhosttyPointCoordinate vp = {};
+	GhosttyGridRef ref = {};
+	cell_at(g.mouseX, g.mouseY, vp, ref);
+	const GhosttySelectionGestureGeometry geo = gesture_geometry();
+	const GhosttySurfacePosition pos = { double(g.mouseX), double(g.mouseY) };
+	const bool rect = rectangle_held();
+	ghostty_selection_gesture_event_set(g.tickEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_VIEWPORT, &vp);
+	ghostty_selection_gesture_event_set(g.tickEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &geo);
+	ghostty_selection_gesture_event_set(g.tickEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &pos);
+	ghostty_selection_gesture_event_set(g.tickEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_RECTANGLE, &rect);
+	GhosttySelection sel = {};
+	if (ghostty_selection_gesture_event(g.gesture, g.term, g.tickEv, &sel) == GHOSTTY_SUCCESS)
+	{
+		g.full = true; // the view scrolled
+		set_selection(&sel);
+	}
+	follow_autoscroll();
+	uint8_t clicks = 0;
+	ghostty_selection_gesture_get(g.gesture, g.term, GHOSTTY_SELECTION_GESTURE_DATA_CLICK_COUNT, &clicks);
+	if (!clicks)
+		g.autoscroll = GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
 }
 
 // Whether the program in the terminal gets the mouse (shift keeps it for selecting).
@@ -1245,6 +1528,26 @@ static void send_mouse(GhosttyMouseAction action, int button, int x, int y)
 
 static void mouse_button(int button, bool down, int x, int y)
 {
+	// Ctrl+click on a link opens it (the view does, after its own check), as in Ghostty; the
+	// click goes nowhere else.
+	if (button == 1 && down && ctrl_held())
+	{
+		g.mouseX = x;
+		g.mouseY = y;
+		g.mouseIn = true;
+		update_link();
+		if (!g.linkUrl.empty())
+		{
+			g.link.send("open-url " + b64(g.linkUrl));
+			g.linkClick = true;
+			return;
+		}
+	}
+	if (button == 1 && !down && g.linkClick)
+	{
+		g.linkClick = false;
+		return;
+	}
 	// UI numbering: 1 left, 2 right, 3 middle; Ghostty's is the same.
 	if (program_mouse() && button >= 1 && button <= 3)
 	{
@@ -1257,15 +1560,57 @@ static void mouse_button(int button, bool down, int x, int y)
 	}
 	if (button == 1)
 	{
-		const Pos p = pos_at(x + g.cellW / 2, y); // the gap nearest the pointer
+		g.mouseX = x;
+		g.mouseY = y;
+		GhosttyPointCoordinate vp = {};
+		GhosttyGridRef ref = {};
+		const bool onCell = cell_at(x, y, vp, ref);
 		if (down)
 		{
-			clear_selection();
-			g.selecting = true;
-			g.selAnchor = g.selHead = p;
+			if (!onCell)
+				return;
+			g.leftDown = true;
+			// As Ghostty's Surface: repeats within 500 ms (click-repeat-interval) and a cell's
+			// width count as a double or triple click; ctrl+triple-click takes a command's output.
+			struct timespec ts = {};
+			clock_gettime(CLOCK_MONOTONIC, &ts);
+			const uint64_t now = uint64_t(ts.tv_sec) * 1000000000ULL + uint64_t(ts.tv_nsec);
+			const uint64_t interval = 500ULL * 1000000ULL;
+			const double distance = g.cellW;
+			const GhosttySurfacePosition pos = { double(x), double(y) };
+			const GhosttySelectionGestureBehaviors behaviors = {
+				GHOSTTY_SELECTION_GESTURE_BEHAVIOR_CELL, GHOSTTY_SELECTION_GESTURE_BEHAVIOR_WORD,
+				ctrl_held() ? GHOSTTY_SELECTION_GESTURE_BEHAVIOR_OUTPUT : GHOSTTY_SELECTION_GESTURE_BEHAVIOR_LINE
+			};
+			ghostty_selection_gesture_event_set(g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &ref);
+			ghostty_selection_gesture_event_set(g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &pos);
+			ghostty_selection_gesture_event_set(g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS, &now);
+			ghostty_selection_gesture_event_set(g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_INTERVAL_NS,
+			                                    &interval);
+			ghostty_selection_gesture_event_set(g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_DISTANCE,
+			                                    &distance);
+			ghostty_selection_gesture_event_set(g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_BEHAVIORS, &behaviors);
+			GhosttySelection sel = {};
+			if (ghostty_selection_gesture_event(g.gesture, g.term, g.pressEv, &sel) == GHOSTTY_SUCCESS)
+				set_selection(&sel);
+			else
+			{
+				// A single click starts over (Ghostty's Surface clears what was selected).
+				uint8_t clicks = 0;
+				ghostty_selection_gesture_get(g.gesture, g.term, GHOSTTY_SELECTION_GESTURE_DATA_CLICK_COUNT, &clicks);
+				if (clicks == 1)
+					clear_selection();
+			}
 		}
-		else
-			g.selecting = false;
+		else if (g.leftDown)
+		{
+			g.leftDown = false;
+			ghostty_selection_gesture_event_set(g.releaseEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF,
+			                                    onCell ? &ref : nullptr);
+			GhosttySelection none = {};
+			ghostty_selection_gesture_event(g.gesture, g.term, g.releaseEv, &none);
+			g.autoscroll = GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
+		}
 	}
 	else if (button == 3 && down)
 		paste();
@@ -1273,6 +1618,10 @@ static void mouse_button(int button, bool down, int x, int y)
 
 static void mouse_move(int x, int y)
 {
+	g.mouseX = x;
+	g.mouseY = y;
+	g.mouseIn = true;
+	update_link();
 	if (program_mouse())
 	{
 		// The encoder knows the tracking mode: motion only with a button, or always, or never.
@@ -1286,21 +1635,28 @@ static void mouse_move(int x, int y)
 		send_mouse(GHOSTTY_MOUSE_ACTION_MOTION, button, x, y);
 		return;
 	}
-	if (!g.selecting)
+	if (!g.leftDown)
 		return;
-	// Dragging past the top or bottom edge scrolls.
-	if (y < g.pad)
-		scroll_view(1);
-	else if (y >= g.pad + g.rows * g.cellH)
-		scroll_view(-1);
-	const Pos p = pos_at(x + g.cellW / 2, y);
-	if (p == g.selHead)
+	g.mouseX = x;
+	g.mouseY = y;
+	GhosttyPointCoordinate vp = {};
+	GhosttyGridRef ref = {};
+	if (!cell_at(x, y, vp, ref))
 		return;
-	// Only the lines between the old and the new end change.
-	redraw_lines(g.selHead, p);
-	g.selHead = p;
-	g.hasSelection = !(g.selAnchor == g.selHead);
-	apply_selection();
+	const GhosttySelectionGestureGeometry geo = gesture_geometry();
+	const GhosttySurfacePosition pos = { double(x), double(y) };
+	const bool rect = rectangle_held();
+	ghostty_selection_gesture_event_set(g.dragEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF, &ref);
+	ghostty_selection_gesture_event_set(g.dragEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &geo);
+	ghostty_selection_gesture_event_set(g.dragEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &pos);
+	ghostty_selection_gesture_event_set(g.dragEv, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_RECTANGLE, &rect);
+	GhosttySelection sel = {};
+	// Nothing selected yet (still on the pressed cell) clears, as in Ghostty.
+	if (ghostty_selection_gesture_event(g.gesture, g.term, g.dragEv, &sel) == GHOSTTY_SUCCESS)
+		set_selection(&sel);
+	else
+		clear_selection();
+	follow_autoscroll();
 }
 
 // How many whole steps of `unit` pixels the pending amount and this offset make; the rest waits.
@@ -1394,6 +1750,27 @@ static void handle_line(const std::string& line)
 			if (c >= 0x20 && c != 0x7f)
 				text += QString::fromUcs4(&c, 1).toStdString();
 		to_pty(text);
+	}
+	else if (cmd == "focus" || cmd == "blur")
+	{
+		const bool focused = cmd == "focus";
+		if (focused != g.focused)
+		{
+			g.focused = focused;
+			if (g.pty >= 0 && mode(1004))
+			{
+				uint8_t buf[8];
+				size_t n = 0;
+				if (ghostty_focus_encode(focused ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST, buf, sizeof(buf), &n) ==
+				    GHOSTTY_SUCCESS)
+					to_pty(std::string(reinterpret_cast<const char*>(buf), n));
+			}
+		}
+	}
+	else if (cmd == "mouse-leave")
+	{
+		g.mouseIn = false;
+		update_link();
 	}
 	else if (cmd == "mouse" && w.size() >= 3)
 		mouse_move(int(num(1)), int(num(2)));
@@ -1564,7 +1941,9 @@ static int run_ssh()
 		if (!g.reconnectLine.empty() && saidAt && oma::now_ms() - saidAt >= kAnsweredMs * g_pace / 1000)
 			show_reconnect("off");
 		pollfd fds[3] = { { g.pty, POLLIN, 0 }, { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
-		const int n = poll(fds, g.link.attached() ? 3 : 2, 500);
+		// A drag past the top or bottom scrolls on a 15 ms tick, as Ghostty's.
+		const bool scrolling = g.autoscroll != GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
+		const int n = poll(fds, g.link.attached() ? 3 : 2, scrolling ? 15 : 500);
 		if (n < 0 && errno != EINTR)
 			break;
 		if (fds[0].revents & (POLLIN | POLLHUP | POLLERR))
@@ -1591,6 +1970,11 @@ static int run_ssh()
 		}
 		for (const auto& l : g.link.poll())
 			handle_line(l);
+		if (g.autoscroll != GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE && oma::now_ms() - g.lastTick >= 15)
+		{
+			g.lastTick = oma::now_ms();
+			autoscroll_tick();
+		}
 		if (oma::now_ms() - lastThemeCheck > 1000)
 		{
 			lastThemeCheck = oma::now_ms();
@@ -1726,6 +2110,11 @@ int main(int argc, char** argv)
 	    ghostty_key_encoder_new(nullptr, &g.keys) != GHOSTTY_SUCCESS ||
 	    ghostty_key_event_new(nullptr, &g.keyEvent) != GHOSTTY_SUCCESS ||
 	    ghostty_mouse_encoder_new(nullptr, &g.mouse) != GHOSTTY_SUCCESS ||
+	    ghostty_selection_gesture_new(nullptr, &g.gesture) != GHOSTTY_SUCCESS ||
+	    ghostty_selection_gesture_event_new(nullptr, &g.pressEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS) != GHOSTTY_SUCCESS ||
+	    ghostty_selection_gesture_event_new(nullptr, &g.releaseEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE) != GHOSTTY_SUCCESS ||
+	    ghostty_selection_gesture_event_new(nullptr, &g.dragEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG) != GHOSTTY_SUCCESS ||
+	    ghostty_selection_gesture_event_new(nullptr, &g.tickEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_AUTOSCROLL_TICK) != GHOSTTY_SUCCESS ||
 	    ghostty_mouse_event_new(nullptr, &g.mouseEvent) != GHOSTTY_SUCCESS)
 	{
 		log("cannot start the terminal");
