@@ -3018,6 +3018,74 @@ class Files(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class BrowseWhereTheShellIs(unittest.TestCase):
+    """Browse files opens where the SSH tab's shell said it is (OSC 7, OSC 9;9, OSC 1337
+    CurrentDir), inside the mount only; anything else opens the remote home, as before."""
+
+    def test_what_the_shell_says_as_a_remote_path(self):
+        rp = session.remote_path
+        self.assertEqual(rp("file://srv/home/alice/proj"), "/home/alice/proj")
+        self.assertEqual(rp("file:///home/alice/my%20dir/"), "/home/alice/my dir")
+        self.assertEqual(rp("/var/log"), "/var/log")  # OSC 9;9, OSC 1337: a bare path
+        self.assertEqual(rp("file://srv/home/../../etc"), "/etc")
+        for bad in ("", None, "home/alice", "http://srv/x", "file://srv/a%0Ab", "/a\x1bb",
+                    "file://srv/%ff", "/" + "a" * 5000):
+            self.assertIsNone(rp(bad), bad)
+
+    def folder(self, cwd):
+        """browse_folder over a folder tree standing in for the mount of sftp://srv/."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "home", "alice", "proj"))
+            os.makedirs(os.path.join(root, "home", "alice", "my dir"))
+            open(os.path.join(root, "home", "alice", "notes.txt"), "w").close()
+            # The remote's own symlinks: one to its root, one that would be this computer's /etc.
+            os.symlink("/etc", os.path.join(root, "home", "alice", "out"))
+            os.symlink("proj", os.path.join(root, "home", "alice", "here"))
+
+            def new_for_uri(uri):
+                from urllib.parse import unquote
+                f = mock.Mock()
+                f.get_path.return_value = os.path.join(root, unquote(uri[len("sftp://srv/"):]))
+                return f
+
+            with mock.patch("gi.repository.Gio.File.new_for_uri", new_for_uri):
+                got = session.browse_folder("sftp://srv/", cwd)
+            return None if got is None else os.path.relpath(got, root)
+
+    def test_a_folder_in_the_mount(self):
+        self.assertEqual(self.folder("file://srv/home/alice/proj"), "home/alice/proj")
+        self.assertEqual(self.folder("file://srv/home/alice/my%20dir"), "home/alice/my dir")
+        self.assertEqual(self.folder("file://srv/home/alice/here"), "home/alice/here")  # stays inside
+
+    def test_nothing_out_of_the_mount_and_nothing_that_is_not_a_folder(self):
+        self.assertIsNone(self.folder("file://srv/home/alice/out"))  # resolves to this computer's /etc
+        self.assertIsNone(self.folder("file://srv/home/alice/notes.txt"))
+        self.assertIsNone(self.folder("file://srv/home/alice/gone"))
+        self.assertIsNone(self.folder("file://srv/../../../etc"))  # /etc: not in the stand-in
+        self.assertIsNone(self.folder("not a path"))
+
+    def test_browse_opens_there_or_else_the_home(self):
+        from unittest import mock
+        home = "/run/user/1000/gvfs/sftp:host=srv/home/alice"
+        for found, opened in (("/run/user/1000/gvfs/sftp:host=srv/srv/www", "/run/user/1000/gvfs/sftp:host=srv/srv/www"),
+                              (None, home)):
+            calls = []
+            mount = mock.Mock()
+            mount.get_default_location.return_value.get_path.return_value = home
+            conns = [{"id": "c1", "protocol": "ssh", "host": "srv"}]
+            with mock.patch.object(session, "load_connections", lambda *a: conns), \
+                 mock.patch.object(session, "gvfs_fuse_ready", lambda *a: True), \
+                 mock.patch.object(session, "_gio_mount", lambda uri: mount), \
+                 mock.patch.object(session, "browse_folder", lambda uri, cwd: found), \
+                 mock.patch.object(session.shutil, "which", lambda n: "/usr/bin/" + n), \
+                 mock.patch.object(session.glob, "glob", lambda p: [p]), \
+                 mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(list(args))), \
+                 mock.patch.object(session.os.path, "isdir", lambda p: True):
+                self.assertEqual(session.browse("c1", "file://srv/srv/www"), {"state": "opened"})
+            self.assertEqual(calls, [["xdg-open", opened]])
+
+
 class UnlockOnReturn(unittest.TestCase):
     def test_off_by_default(self):
         self.assertEqual(session.DEFAULTS["unlockAfter"], 0)

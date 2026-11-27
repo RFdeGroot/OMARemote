@@ -2579,9 +2579,53 @@ def files_mounted(conn):
         return False
 
 
-def browse(name):
-    """omaremote-session browse: an SSH connection's files in the default file manager. Prints JSON:
-    {"state": "opened" | "terminal" | "needs-fuse"} or {"error"}."""
+MAX_CWD = 4096
+
+
+def remote_path(cwd):
+    """Where the shell said it is, as a path on the remote computer, or None: OSC 7's
+    file://host/path (percent-encoded; the host is the shell's own name for its computer, so not
+    checked: a folder that is not there falls back to the home), or OSC 9;9's and OSC 1337's bare
+    path. Only absolute, normalised paths; nothing with a NUL or a control character."""
+    from urllib.parse import unquote, urlsplit
+    if not isinstance(cwd, str) or not cwd or len(cwd) > MAX_CWD:
+        return None
+    if cwd.startswith("file://"):
+        try:
+            path = unquote(urlsplit(cwd).path, errors="strict")
+        except (ValueError, UnicodeDecodeError):
+            return None
+    else:
+        path = cwd
+    if not path.startswith("/") or any(ord(c) < 0x20 or ord(c) == 0x7f for c in path):
+        return None
+    return os.path.normpath("/" + path.lstrip("/"))
+
+
+def browse_folder(uri, cwd):
+    """The local folder of the mount at uri for the remote path cwd said (remote_path), or None
+    when there is none: not a folder, or one that resolves out of the mount (a symlink there is
+    the remote's, and an absolute one would point at this computer's own folders)."""
+    from gi.repository import Gio
+    from urllib.parse import quote
+    path = remote_path(cwd)
+    root = Gio.File.new_for_uri(uri).get_path()
+    if not path or not root:
+        return None
+    folder = Gio.File.new_for_uri(uri + quote(path.lstrip("/"))).get_path()
+    if not folder:
+        return None
+    real, base = os.path.realpath(folder), os.path.realpath(root)
+    if real != base and not real.startswith(base.rstrip(os.sep) + os.sep):
+        return None
+    return folder if os.path.isdir(folder) else None
+
+
+def browse(name, cwd=None):
+    """omaremote-session browse: an SSH connection's files in the default file manager, at cwd
+    (where its terminal's shell said it is: OMAREMOTE_BROWSE_DIR, off the command line) when that
+    is a folder there, else the remote home. Prints JSON: {"state": "opened" | "terminal" |
+    "needs-fuse"} or {"error"}."""
     conn = find_connection(name, load_connections())
     if not conn:
         return {"error": "no such connection"}
@@ -2598,7 +2642,8 @@ def browse(name):
         return {"state": "needs-fuse"}
     if _gio_mount(uri) is None:
         # Keys and the agent sign in without a word; anything that asks (a password, a new host
-        # key) gets a terminal, where gio mount asks and OMARemote never sees the answer.
+        # key) gets a terminal, where gio mount asks and OMARemote never sees the answer. That
+        # browse opens the home: where the shell is would be on the terminal's command line.
         try:
             done = subprocess.run(["gio", "mount", uri], stdin=subprocess.DEVNULL, capture_output=True,
                                   timeout=30).returncode == 0
@@ -2613,6 +2658,8 @@ def browse(name):
             return {"state": "terminal"}
     mount = _gio_mount(uri)
     folder = mount.get_default_location().get_path() if mount else None  # the remote home
+    if folder and cwd:
+        folder = browse_folder(uri, cwd) or folder
     if not folder:
         return {"state": "needs-fuse"}
     # Only ever a folder: the default file manager, never whatever app a file would open in.
@@ -4872,7 +4919,7 @@ def main(argv):
         print(close_key())
         return 0
     if cmd == "browse" and rest:
-        print(json.dumps(browse(" ".join(rest))))
+        print(json.dumps(browse(" ".join(rest), os.environ.get("OMAREMOTE_BROWSE_DIR") or None)))
         return 0
     if cmd == "unmount" and rest:
         print(json.dumps(unmount_files(" ".join(rest))))

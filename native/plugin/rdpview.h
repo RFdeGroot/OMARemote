@@ -77,6 +77,9 @@ class RdpView : public QQuickItem
 	// (0 the newest, -1 none), from the session's `search-status` lines.
 	Q_PROPERTY(int searchTotal READ searchTotal NOTIFY searchChanged)
 	Q_PROPERTY(int searchSelected READ searchSelected NOTIFY searchChanged)
+	// Where a terminal's shell says it is (SSH, `cwd` lines: OSC 7's file:// URI as sent, or a bare
+	// path), "" until it says; Browse files opens it.
+	Q_PROPERTY(QString workingDirectory READ workingDirectory NOTIFY workingDirectoryChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -107,6 +110,7 @@ public:
 	QString hoveredLink() const { return m_hoveredLink; }
 	int searchTotal() const { return m_searchTotal; }
 	int searchSelected() const { return m_searchSelected; }
+	QString workingDirectory() const { return m_workingDirectory; }
 	void setTerminalAlpha(int alpha);
 	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
@@ -159,6 +163,7 @@ signals:
 	void scrollbarChanged();
 	void hoveredLinkChanged();
 	void searchChanged();
+	void workingDirectoryChanged();
 	void openUrl(const QString& url);
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
@@ -300,6 +305,8 @@ private:
 	QString m_hoveredLink;
 	int m_searchTotal = 0, m_searchSelected = -1;
 	void setSearch(int total, int selected);
+	QString m_workingDirectory;
+	void setWorkingDirectory(const QString& dir);
 	void setHoveredLink(const QString& url);
 	bool m_newNode = false; // the frame's format changed: the node reads it only when made
 	void sendOpacity();

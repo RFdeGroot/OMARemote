@@ -463,7 +463,11 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
 - **Files:** *Browse files* (`b` on an SSH connection, `ctrl+alt+b` in its session) opens the host's
   files in your own file manager, whichever it is (Flea, Nautilus, Dolphin, Thunar, yazi…): GVFS mounts
   `sftp://` with your ssh (its config, keys, agent and known hosts) and the files show up as an ordinary
-  folder. Copy or drag files in and out there; OMARemote moves no files itself. A host that asks for
+  folder. It opens in the folder your shell in the SSH tab is in when the shell reports it (OSC 7,
+  as Ghostty and other terminals use), and in your home otherwise. Most shells on a server don't by
+  default; in bash add `PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'` to its
+  `~/.bashrc`, in zsh `precmd() { printf '\e]7;file://%s%s\e\\' "$HOST" "$PWD" }` to `~/.zshrc`.
+  Copy or drag files in and out there; OMARemote moves no files itself. A host that asks for
   a password asks once in a small terminal. *Unmount files* disconnects them; when the last session
   to a host ends with its files still mounted, OMARemote asks (Settings › SSH: ask, unmount or keep).
   After a suspend, Omarchy can leave GVFS without its folder layer (omacom/omarchy#5214): OMARemote

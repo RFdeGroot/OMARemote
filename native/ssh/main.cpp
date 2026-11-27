@@ -158,6 +158,9 @@ struct Session
 	bool altScreen = false;
 	bool mouseTracking = false;
 	std::string title;
+	// Where the shell says it is (OSC 7 file://host/path; OSC 9;9 and OSC 1337 CurrentDir a bare
+	// path), as it said it: the view's Browse files opens it (bin/omaremote-session decodes it).
+	std::string cwd;
 
 	// Mouse selection: Ghostty's own gestures (libghostty-vt's selection gesture: a click, a
 	// double click a word, a triple click a line, dragging extends by the same, past the top or
@@ -959,6 +962,26 @@ static void cb_title(GhosttyTerminal, void*)
 		return;
 	g.title.assign(reinterpret_cast<const char*>(t.ptr), std::min(t.len, kMaxTitleBytes));
 	g.link.send("title " + b64(g.title));
+}
+
+static constexpr size_t kMaxCwdBytes = 4096;
+
+static void send_cwd()
+{
+	g.link.send(g.cwd.empty() ? std::string("cwd -") : "cwd " + b64(g.cwd));
+}
+
+static void cb_pwd(GhosttyTerminal, void*)
+{
+	GhosttyString t = {};
+	if (ghostty_terminal_get(g.term, GHOSTTY_TERMINAL_DATA_PWD, &t) != GHOSTTY_SUCCESS)
+		t = {};
+	// Longer than any path a computer takes: dropped, not cut to a different folder.
+	const std::string cwd = t.len <= kMaxCwdBytes ? std::string(reinterpret_cast<const char*>(t.ptr), t.len) : std::string();
+	if (cwd == g.cwd)
+		return;
+	g.cwd = cwd;
+	send_cwd();
 }
 
 // OSC 52 (and its newer cousins) from the remote program (tmux, Neovim): it sets our clipboard,
@@ -1990,6 +2013,8 @@ static void replay()
 	send_scrollbar(true);
 	if (!g.title.empty())
 		g.link.send("title " + b64(g.title));
+	if (!g.cwd.empty())
+		send_cwd();
 	if (!g.reconnectLine.empty())
 		g.link.send(g.reconnectLine);
 	g.held.clear();
@@ -2314,6 +2339,7 @@ int main(int argc, char** argv)
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, &apcMax);
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(&cb_write_pty));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, reinterpret_cast<const void*>(&cb_title));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, reinterpret_cast<const void*>(&cb_pwd));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(&cb_clipboard_write));
 	// Unicode grapheme clusters (mode 2027), as Ghostty itself runs: an emoji with a skin tone, a flag,
 	// a family is one character of the right width, not its parts side by side.

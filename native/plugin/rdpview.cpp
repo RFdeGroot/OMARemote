@@ -180,6 +180,7 @@ void RdpView::detach()
 	setScrollbar(0, 0, 0);
 	setHoveredLink(QString());
 	setSearch(0, -1);
+	setWorkingDirectory(QString());
 	emit attachedChanged();
 }
 
@@ -208,6 +209,14 @@ void RdpView::setSearch(int total, int selected)
 	m_searchTotal = total;
 	m_searchSelected = selected;
 	emit searchChanged();
+}
+
+void RdpView::setWorkingDirectory(const QString& dir)
+{
+	if (dir == m_workingDirectory)
+		return;
+	m_workingDirectory = dir;
+	emit workingDirectoryChanged();
 }
 
 void RdpView::search(const QString& needle)
@@ -420,6 +429,8 @@ void RdpView::handleLine(const QByteArray& line)
 		const long long selected = w[2].toLongLong();
 		setSearch(total, selected >= 0 && selected < total ? int(selected) : -1);
 	}
+	else if (cmd == "cwd" && w.size() >= 2)
+		setWorkingDirectory(w[1] == "-" || w[1].size() > 8192 ? QString() : unb64(w[1]));
 	else if (cmd == "link" && w.size() >= 2)
 		setHoveredLink(w[1] == "-" || w[1].size() > 16384 ? QString() : unb64(w[1]));
 	else if (cmd == "open-url" && w.size() >= 2 && w[1].size() <= 16384)

@@ -959,7 +959,7 @@ class Searching(unittest.TestCase):
             p.stdin.write(config)
             p.stdin.close()
             c = socket.socket(socket.AF_UNIX)
-            state = {"buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock}
+            state = {"buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock, "cwd": []}
             try:
                 for _ in range(100):
                     try:
@@ -990,6 +990,8 @@ class Searching(unittest.TestCase):
                                 os.close(fd)
                             elif w[:1] == [b"search-status"]:
                                 state["status"] = (int(w[1]), int(w[2]))
+                            elif w[:1] == [b"cwd"] and len(w) > 1:
+                                state["cwd"].append("-" if w[1] == b"-" else base64.b64decode(w[1]).decode())
                             elif w[:1] == [b"scrollbar"]:
                                 state["scrollbar"] = tuple(int(v) for v in w[1:4])
 
@@ -1101,6 +1103,48 @@ class Searching(unittest.TestCase):
                 if total == 20000:
                     break
             self.assertEqual(total, 20000)
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class CurrentDirectory(unittest.TestCase):
+    """Where the shell says it is (OSC 7, OSC 9;9, OSC 1337 CurrentDir) goes to the view as it
+    was said (`cwd <b64>`), again to a view that attaches later; one longer than any path is
+    dropped. Browse files opens it (bin/omaremote-session, test_session.py)."""
+
+    session = Searching.session
+
+    def said(self, printf):
+        with self.session(f"printf '{printf}'; sleep 30") as (send, search, status, row, state):
+            status(0.5)
+            return state["cwd"]
+
+    def test_osc_7_and_the_others(self):
+        self.assertEqual(self.said("\\033]7;file://srv/home/a%%20b\\033\\\\"), ["file://srv/home/a%20b"])
+        self.assertEqual(self.said("\\033]9;9;/var/log\\007"), ["/var/log"])
+        self.assertEqual(self.said("\\033]1337;CurrentDir=/tmp\\007"), ["/tmp"])
+
+    def test_cleared_and_said_again_to_a_view_that_attaches(self):
+        import socket, time
+        script = "printf '\\033]7;file://srv/etc\\007'; sleep 1; printf '\\033]7;file://srv/usr\\007'; sleep 30"
+        with self.session(script) as (send, search, status, row, state):
+            status(1.5)
+            self.assertEqual(state["cwd"], ["file://srv/etc", "file://srv/usr"])
+            again = socket.socket(socket.AF_UNIX)
+            again.connect(state["sock"])
+            again.settimeout(0.2)
+            buf, end = b"", time.time() + 3
+            while b"cwd " not in buf and time.time() < end:
+                try:
+                    buf += again.recv(65536)
+                except socket.timeout:
+                    pass
+            again.close()
+            import base64
+            self.assertIn(b"cwd " + base64.b64encode(b"file://srv/usr"), buf)
+
+    def test_one_longer_than_any_path_is_dropped(self):
+        long = "/" + "a" * 5000
+        self.assertEqual(self.said("\\033]7;file://srv" + long + "\\007"), [])
 
 
 @unittest.skipUnless(os.path.exists(HELPER) and shutil.which("qml6") and shutil.which("magick"),

@@ -187,10 +187,35 @@ Singleton {
 
     function isMounted(id) { return mountedFiles.indexOf(id) >= 0 }
 
-    function browse(id) {
+    // Where each SSH session's shell says it is (its view's workingDirectory: OSC 7), by session
+    // id: {connection, dir, at}. Browse files opens there; without one, the remote home.
+    property var cwds: ({})
+    function setCwd(sessionId, connectionId, dir) {
+        var next = Object.assign({}, cwds)
+        if (dir)
+            next[sessionId] = { connection: connectionId, dir: dir, at: Date.now() }
+        else
+            delete next[sessionId]
+        cwds = next
+    }
+    // The connection's session whose shell moved last.
+    function cwdFor(id) {
+        var best = null
+        for (var k in cwds)
+            if (cwds[k].connection === id && (!best || cwds[k].at > best.at))
+                best = cwds[k]
+        return best ? best.dir : ""
+    }
+
+    // dir: where to open (an SSH tab's own shell); left out, the connection's newest (cwdFor).
+    function browse(id, dir) {
         if (filesRunner.running)
             return
+        if (dir === undefined)
+            dir = cwdFor(id)
         filesRunner.connId = id
+        // Off the command line, which other accounts can read.
+        filesRunner.environment = dir ? { OMAREMOTE_BROWSE_DIR: dir } : { OMAREMOTE_BROWSE_DIR: null }
         filesRunner.command = [bin, "browse", id]
         filesRunner.running = true
     }

@@ -1,5 +1,6 @@
-"""An SSH tab's find bar: RdpView's half (what it asks omaremote-ssh, the counts it keeps). The
-session's half, the search itself, is tests/test_ssh.py's Searching."""
+"""An SSH tab's find bar and working directory: RdpView's half (what it asks omaremote-ssh, the
+counts and the directory it keeps). The session's half is tests/test_ssh.py's Searching and
+CurrentDirectory."""
 import base64
 import json
 import os
@@ -19,7 +20,7 @@ QML = shutil.which("qml6") or shutil.which("qml")
 @unittest.skipUnless(QML and os.path.isdir(os.path.join(PLUGIN, "OMARemote")),
                      "needs qml6 and the native build (ninja -C native/build)")
 class TheView(unittest.TestCase):
-    def test_what_it_asks_and_the_counts_kept_in_range(self):
+    def test_what_it_asks_the_counts_kept_in_range_and_the_working_directory(self):
         with tempfile.TemporaryDirectory() as folder:
             path = os.path.join(folder, "s")
             server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -41,6 +42,9 @@ class TheView(unittest.TestCase):
                     asked.extend(l for l in buf.decode().splitlines() if l.startswith("search"))
                     # A sane count, then one whose selected match is past the end, then nonsense.
                     conn.sendall(b"search-status 7 3\nsearch-status 5 9\nsearch-status -4 x\n")
+                    # Where the shell is: one, then one far too long (none), then one again.
+                    conn.sendall(b"cwd " + base64.b64encode(b"file://srv/home/a") + b"\ncwd " +
+                                 base64.b64encode(b"/" + b"x" * 9000) + b"\ncwd " + base64.b64encode(b"/tmp") + b"\n")
                     conn.recv(4096)  # until the view has read them
 
             thread = threading.Thread(target=session, daemon=True)
@@ -59,6 +63,8 @@ class TheView(unittest.TestCase):
         # The selected one past the end is none; nonsense is nothing; detached, nothing again
         # (already nothing: no change).
         self.assertEqual(result["seen"], [[7, 3], [5, -1], [0, -1]])
+        # Detached: none again.
+        self.assertEqual(result["dirs"], ["file://srv/home/a", "", "/tmp", ""])
 
 
 if __name__ == "__main__":

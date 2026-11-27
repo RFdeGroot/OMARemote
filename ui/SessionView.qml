@@ -342,6 +342,11 @@ Item {
         target: view
         // A session that ended or a view that attached again starts without one.
         function onAttachedChanged() { root.searching = false }
+        // Where the shell is (OSC 7), for Browse files from the list too.
+        function onWorkingDirectoryChanged() {
+            if (root.session && root.isSsh)
+                Sessions.setCwd(root.session.id, root.session.connection, view.workingDirectory)
+        }
     }
     Rectangle {
         id: findBar
@@ -492,7 +497,7 @@ Item {
         else if (event.key === Qt.Key_T && root.inWindow) root.navigate("tab")
         else if (event.key === Qt.Key_H && root.inWindow) root.navigate("hide")
         else if (event.key === Qt.Key_P) root.togglePinned()
-        else if (event.key === Qt.Key_B && root.isSsh) Sessions.browse(root.session.connection)
+        else if (event.key === Qt.Key_B && root.isSsh) Sessions.browse(root.session.connection, view.workingDirectory)
         else if (event.key === Qt.Key_R && live && root.session.protocol === "rdp") root.reconnectRequested()
         else if (event.key === Qt.Key_W) root.closeRequested()
         else return Keymap.sessionKeys === "rctrl"
