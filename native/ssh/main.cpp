@@ -88,6 +88,9 @@ struct Palette
 	QColor cursorText = QColor(0x1a, 0x1b, 0x26);
 	QColor ansi[16];
 	QColor accent; // the theme's (colors.toml beside the foot.ini; its blue without one, as Omarchy)
+	// Light or dark, for programs that ask (mode 2031, CSI ? 996 n): colors.toml's mode, or else
+	// how light the background is.
+	bool dark = true;
 };
 
 // A symbol's glyph, from the terminal font or the fallback Qt picks, and how it is drawn in one or
@@ -164,6 +167,7 @@ struct Session
 	bool output = false;                 // the terminal got output since the last flush
 
 	bool altScreen = false;
+	bool schemeReports = false; // mode 2031 (color scheme reports) as of the last write
 	bool mouseTracking = false;
 	std::string title;
 	// Where the shell says it is (OSC 7 file://host/path; OSC 9;9 and OSC 1337 CurrentDir a bare
@@ -243,6 +247,7 @@ static void term_write(const char* s, size_t len);
 // Draws what changed; announce: tell the UI (not for a buffer it does not have yet).
 static void flush(bool announce = true);
 static void update_link();
+static bool mode(uint16_t number);
 
 // ---------------------------------------------------------------- theme
 
@@ -259,6 +264,8 @@ static GhosttyColorRgb rgb(const QColor& q)
 
 // foot's colour file, the same Omarchy writes for every theme: foreground, background,
 // selection-*, cursor ("text cursor"), regular0-7 and bright0-7.
+static void report_color_scheme();
+
 static void load_theme()
 {
 	static const char* tokyo[16] = { "1a1b26", "f7768e", "9ece6a", "e0af68", "7aa2f7", "ad8ee6", "449dab", "a9b1d6",
@@ -306,6 +313,7 @@ static void load_theme()
 	// Omarchy's accent, for search matches: colors.toml in the same theme folder.
 	const size_t slash = g.themePath.rfind('/');
 	std::ifstream colors(slash == std::string::npos ? std::string() : g.themePath.substr(0, slash + 1) + "colors.toml");
+	std::string mode;
 	for (std::string l; std::getline(colors, l);)
 	{
 		const size_t eq = l.find('=');
@@ -318,9 +326,13 @@ static void load_theme()
 		if (key == "accent" && !value.empty() && value[0] == '#')
 			if (QColor c = hex(value.substr(1)); c.isValid())
 				p.accent = c;
+		if (key == "mode" && (value == "dark" || value == "light"))
+			mode = value;
 	}
 	if (!p.accent.isValid())
 		p.accent = p.ansi[4];
+	p.dark = mode.empty() ? p.bg.lightnessF() < 0.5 : mode == "dark";
+	const bool schemeChanged = p.dark != g.pal.dark;
 	g.pal = p;
 	if (!g.term)
 		return;
@@ -335,6 +347,8 @@ static void load_theme()
 	for (int i = 0; i < 16; i++)
 		palette[i] = rgb(p.ansi[i]);
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, &palette);
+	if (schemeChanged)
+		report_color_scheme();
 }
 
 // A theme switch rewrites the file: follow it.
@@ -521,6 +535,11 @@ static void after_write()
 		g.altScreen = alt;
 		g.full = true;
 	}
+	// Mode 2031 just turned on: the program hears the scheme at once, as Ghostty does.
+	const bool reports = mode(2031);
+	if (reports && !g.schemeReports)
+		report_color_scheme();
+	g.schemeReports = reports;
 }
 
 static bool mode(uint16_t number)
@@ -1057,6 +1076,26 @@ static void cb_notification(GhosttyTerminal, void*, const GhosttyTerminalDesktop
 		return;
 	g.link.send("notify " + (title.empty() ? std::string("-") : b64(title)) + " " +
 	            (body.empty() ? std::string("-") : b64(body)));
+}
+
+// Light or dark (Ghostty's color scheme reports, contour's protocol): a program that asks
+// (CSI ? 996 n) is answered, and one that set mode 2031 is told at once and again at every switch
+// between a light and a dark theme (vim, Neovim, Helix follow it).
+static bool cb_color_scheme(GhosttyTerminal, void*, GhosttyColorScheme* out)
+{
+	*out = g.pal.dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT;
+	return true;
+}
+
+static void report_color_scheme()
+{
+	if (!g.term || g.pty < 0 || !mode(2031))
+		return;
+	uint8_t buf[16];
+	size_t n = 0;
+	if (ghostty_color_scheme_report_encode(g.pal.dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT, buf,
+	                                       sizeof(buf), &n) == GHOSTTY_SUCCESS)
+		to_pty(std::string(reinterpret_cast<const char*>(buf), n));
 }
 
 // OSC 9;4 (ConEmu's progress): `progress <state> <percent>` to the view, which draws Ghostty's
@@ -2540,6 +2579,7 @@ int main(int argc, char** argv)
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_BELL, reinterpret_cast<const void*>(&cb_bell));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, reinterpret_cast<const void*>(&cb_notification));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, reinterpret_cast<const void*>(&cb_progress));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_COLOR_SCHEME, reinterpret_cast<const void*>(&cb_color_scheme));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(&cb_clipboard_write));
 	// Unicode grapheme clusters (mode 2027), as Ghostty itself runs: an emoji with a skin tone, a flag,
 	// a family is one character of the right width, not its parts side by side.

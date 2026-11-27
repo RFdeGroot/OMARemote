@@ -523,6 +523,8 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   bar, in your theme's accent: its red after an error, faded while paused, sliding while there is
   no percentage; it goes when
   the program stops reporting for 15 s. Your Ghostty's `progress-style` switches it off.
+  Programs that follow a light or dark terminal (Neovim, Helix and others, with mode 2031) are told
+  which your Omarchy theme is, and told again when you switch themes.
   `ctrl+shift+f` searches the whole scrollback, as Ghostty's find bar: every match is highlighted
   in your theme's accent as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
   back down), `escape` closes it; drag

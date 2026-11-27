@@ -586,15 +586,17 @@ class CursorBlink(unittest.TestCase):
 
 
 # Sets the terminal up ($2, with escapes), waits for the answer to a device attributes query (so
-# the setup was read), then records every byte it gets into $1 as it comes.
+# the setup was read), then records every byte it gets into $1 as it comes: what came with that
+# answer too (the terminal's reply to the setup), the answer itself left out.
 RECORDER = r"""
-import os, select, sys, tty
+import os, re, select, sys, tty
 tty.setraw(0)
 os.write(1, sys.argv[2].encode().decode("unicode_escape").encode("latin-1") + b"\x1b[c")
 got = b""
-while b"c" not in got:
+while not re.search(rb"\x1b\[\?[0-9;]*c", got):
     got += os.read(0, 64)
 with open(sys.argv[1] + ".tmp", "wb", buffering=0) as f:
+    f.write(re.sub(rb"\x1b\[\?[0-9;]*c", b"", got, count=1))
     os.rename(sys.argv[1] + ".tmp", sys.argv[1])
     while True:
         data = os.read(0, 4096)
@@ -737,6 +739,50 @@ class Scrolling(unittest.TestCase):
         with self.session(self.ALT) as (send, got):
             send("key 1 42 65505", "key 1 104 65365", "key 0 104 65365", "key 0 42 65505")
             self.assertEqual(got(6), b"\x1b[5;2~")
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class ColorScheme(unittest.TestCase):
+    """Light or dark, as Ghostty's color scheme reports: from colors.toml's mode (or how light the
+    background is). A program asking (CSI ? 996 n) is answered; one that sets mode 2031 is told at
+    once (CSI ? 997 ; 1 n dark, 2 light) and again when the theme switches."""
+
+    session = Scrolling.session
+    DARK, LIGHT = b"\x1b[?997;1n", b"\x1b[?997;2n"
+
+    def theme(self, d, background, mode=None):
+        with open(os.path.join(d, "foot.ini"), "w") as f:
+            f.write(f"[colors]\nforeground=808080\nbackground={background}\n")
+        with open(os.path.join(d, "colors.toml"), "w") as f:
+            f.write(f'mode = "{mode}"\n' if mode else "")
+        return "theme=" + os.path.join(d, "foot.ini")
+
+    def heard(self, setup, background, mode=None):
+        with tempfile.TemporaryDirectory() as d:
+            with self.session(setup, self.theme(d, background, mode)) as (send, got):
+                return got(len(self.DARK), wait=2)
+
+    def test_asked(self):
+        self.assertIn(self.DARK, self.heard(r"\x1b[?996n", "101010", "dark"))
+        self.assertIn(self.LIGHT, self.heard(r"\x1b[?996n", "101010", "light"))  # the theme says so
+        self.assertIn(self.LIGHT, self.heard(r"\x1b[?996n", "f0f0f0"))         # no mode: the background
+
+    def test_told_at_once_and_at_a_switch(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            with self.session(r"\x1b[?2031h", self.theme(d, "101010", "dark")) as (send, got):
+                self.assertTrue(got(len(self.DARK), wait=3).startswith(self.DARK), "not told when it asked")
+                time.sleep(1.1)  # a newer time on the theme file than the one the session saw
+                self.theme(d, "f0f0f0", "light")
+                self.assertIn(self.LIGHT, got(2 * len(self.DARK), wait=5))
+
+    def test_not_told_without_asking(self):
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            with self.session("", self.theme(d, "101010", "dark")) as (send, got):
+                time.sleep(1.1)
+                self.theme(d, "f0f0f0", "light")
+                self.assertEqual(got(1, wait=3), b"")
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
