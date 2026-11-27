@@ -37,7 +37,12 @@ Item {
             view.forceActiveFocus()
     }
 
-    onCurrentChanged: if (current) Qt.callLater(focusDesktop)
+    onCurrentChanged: {
+        if (current)
+            Qt.callLater(focusDesktop)
+        else
+            closeSearch() // another tab: the search ends, as the bar goes
+    }
 
     // In front of the user: the shown tab of the active manager window, or the active own or hotkey
     // window. Coming back after the connection's unlockAfter minutes away reconnects (RDP), so a
@@ -157,6 +162,12 @@ Item {
                 event.accepted = true
             } else if (root.chord(event)) {
                 view.releaseAllKeys()
+                event.accepted = true
+            } else if (root.isSsh && root.live && event.key === Qt.Key_F && root.onlyMods(event, Qt.ControlModifier | Qt.ShiftModifier)) {
+                root.openSearch() // Ghostty's find (ctrl+shift+f)
+                event.accepted = true
+            } else if (root.searching && event.key === Qt.Key_Escape && root.onlyMods(event, 0)) {
+                root.closeSearch() // Escape ends a search, as Ghostty's, before the terminal gets it
                 event.accepted = true
             }
         }
@@ -301,6 +312,128 @@ Item {
         }
     }
     HoverHandler { id: linkHover }
+
+    // An SSH tab's find bar, Ghostty's: ctrl+shift+f opens it (top right; drag it to another
+    // corner), typing highlights every match in the scrollback and goes to the newest (a
+    // browser's find; Ghostty waits for Enter), Enter goes to the next one up
+    // (older), shift+Enter down, Escape closes it (in the terminal too, while it is open). The
+    // session searches (omaremote-ssh, libghostty-vt's search) and says how many it found.
+    property bool searching: false
+    function onlyMods(event, want) {
+        return (event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier)) === want
+    }
+    function openSearch() {
+        view.releaseAllKeys() // ctrl and shift went to the session; their release goes to the field
+        searching = true
+        findField.forceActiveFocus()
+        findField.selectAll()
+        if (findField.text !== "")
+            view.search(findField.text)
+    }
+    function closeSearch() {
+        if (!searching)
+            return
+        searching = false
+        view.search("")
+        if (root.current)
+            root.focusDesktop()
+    }
+    Connections {
+        target: view
+        // A session that ended or a view that attached again starts without one.
+        function onAttachedChanged() { root.searching = false }
+    }
+    Rectangle {
+        id: findBar
+        objectName: "findBar" // for the tests
+        visible: root.searching && root.current
+        // Which corner, as Ghostty's: a drag ends in the nearest one.
+        property bool atRight: true
+        property bool atTop: true
+        readonly property real cornerX: atRight ? parent.width - width - Theme.gap : Theme.gap
+        readonly property real cornerY: atTop ? Theme.gap : parent.height - height - Theme.gap
+        x: cornerX
+        y: cornerY
+        z: 20
+        width: findRow.implicitWidth + 2 * Theme.gap
+        height: findRow.implicitHeight + Theme.gap
+        radius: Theme.radius
+        color: Theme.surface
+        border.width: 1
+        border.color: Util.alpha(Theme.foreground, 0.15)
+        DragHandler {
+            id: drag
+            target: findBar
+            // The drag moves it freely; let go, it goes to the corner nearest its middle.
+            onActiveChanged: if (!active) {
+                findBar.atRight = findBar.x + findBar.width / 2 > findBar.parent.width / 2
+                findBar.atTop = findBar.y + findBar.height / 2 < findBar.parent.height / 2
+                findBar.x = Qt.binding(function () { return findBar.cornerX })
+                findBar.y = Qt.binding(function () { return findBar.cornerY })
+            }
+        }
+        RowLayout {
+            id: findRow
+            anchors.centerIn: parent
+            spacing: Theme.gap
+            Input {
+                id: findField
+                objectName: "findField"
+                width: undefined
+                Layout.preferredWidth: 14 * Theme.small
+                maximumLength: Limits.standard // at most 768 bytes: the session takes 1 KiB
+                placeholderText: "Find…"
+                onTextChanged: if (root.searching) view.search(text)
+                Keys.onPressed: function (event) {
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        view.searchStep(!(event.modifiers & Qt.ShiftModifier))
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Escape) {
+                        root.closeSearch()
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier)
+                               && (event.modifiers & Qt.ShiftModifier)) {
+                        findField.selectAll()
+                        event.accepted = true
+                    }
+                }
+            }
+            Text {
+                objectName: "findCount"
+                // Ghostty's: the selected match of all of them (0: none yet).
+                text: (view.searchSelected >= 0 ? view.searchSelected + 1 : 0) + "/" + view.searchTotal
+                textFormat: Text.PlainText
+                color: Theme.muted
+                font.family: Theme.font
+                font.pixelSize: Theme.small
+                horizontalAlignment: Text.AlignRight
+                Layout.preferredWidth: Math.max(implicitWidth, 5 * Theme.small * 0.6)
+            }
+            Repeater {
+                // Up: the next match into the history (Enter); down: back toward the prompt.
+                model: [{ glyph: "\uf077", older: true }, { glyph: "\uf078", older: false }, { glyph: "\uf00d", close: true }]
+                delegate: Rectangle {
+                    required property var modelData
+                    implicitWidth: Theme.control
+                    implicitHeight: Theme.control
+                    radius: Theme.radius
+                    color: findButton.pressed ? Style.pressedFill : findButton.containsMouse ? Style.hoverFill : "transparent"
+                    Glyph {
+                        anchors.centerIn: parent
+                        text: parent.modelData.glyph
+                        size: Theme.small
+                    }
+                    MouseArea {
+                        id: findButton
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: parent.modelData.close ? root.closeSearch() : view.searchStep(parent.modelData.older)
+                    }
+                }
+            }
+        }
+    }
 
     // A paste from the remote that takes more than a second (Gliff): how far, and a way out.
     property var paste: null

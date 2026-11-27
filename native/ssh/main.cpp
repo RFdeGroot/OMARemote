@@ -17,7 +17,7 @@
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
 // click) pastes, shift+page up/down and the wheel scroll back, shift+home/end go to the top and
-// bottom, ctrl+shift+up/down jump between prompts. Remote programs that ask for the
+// bottom, ctrl+shift+up/down jump between prompts, ctrl+shift+f (the view's find bar) searches. Remote programs that ask for the
 // mouse (htop, vim with mouse=a) get it; shift+drag still selects. Ctrl+= / ctrl+- / ctrl+0 zoom the text.
 
 #include "../common/link.hpp"
@@ -182,6 +182,17 @@ struct Session
 	std::vector<LinkSpan> linkSpans;
 	std::string linkUrl;
 	int mouseButtons = 0; // buttons held, for the remote program's mouse reporting
+
+	// Searching the scrollback (the view's find bar, Ghostty's: ctrl+shift+f): libghostty-vt's
+	// search, worked a bounded slice at a time from the main loop. Its matches on the screen are
+	// drawn in Ghostty's search colours, the selected one in its own; the view is told the count.
+	GhosttySearch search = nullptr;
+	bool searching = false;   // a needle is set
+	bool searchBusy = false;  // more scrollback to go through: the loop comes back soon
+	bool searchPick = false;  // a new needle: its newest match is selected once one is found
+	struct SearchSpan { long line; int from, to; bool selected; }; // screen line, columns from..to
+	std::vector<SearchSpan> searchSpans;
+	std::string searchLine;   // the last `search-status` line sent
 
 	// Scrolling as Ghostty does it (Surface.zig scrollCallback): every wheel event in pixels, a
 	// row's worth makes a step. The multipliers come from the default terminal's config
@@ -607,6 +618,10 @@ static bool draw_symbol(QPainter& painter, const DrawCell& c, int width)
 // the next cell's background.
 // The cursor's style as drawn: a hollow block while the view does not have the keyboard
 // (Ghostty's renderer/cursor.zig).
+// Ghostty's search colours (search-foreground/-background, search-selected-*): black on golden
+// yellow, the selected match on soft peach.
+static const QColor kSearchFg(0, 0, 0), kSearchBg(0xFF, 0xE0, 0x82), kSearchSelBg(0xF2, 0xA5, 0x7E);
+
 static GhosttyCursorStyle drawn_style(const GhosttyRenderStateCursor& cursor)
 {
 	return g.focused ? cursor.visual_style : GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW;
@@ -624,6 +639,8 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 	painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
 	const bool cursorHere = cursor.visible && cursor.viewport_has_value && cursor.viewport_y == row && !scrolled_back();
 	const QColor cursorColour = colors.cursor_has_value ? qcolor(colors.cursor) : g.pal.cursor;
+	// The screen line of the view's top row: what link and search spans are kept in.
+	const long top = g.linkSpans.empty() && g.searchSpans.empty() ? 0 : long(scrollbar().offset);
 	uint32_t cps[32];
 	std::vector<DrawCell> cells;
 	cells.reserve(size_t(g.cols));
@@ -653,6 +670,14 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 			std::swap(c.fg, c.bg);
 		if (c.style.flags & GHOSTTY_STYLE_FLAG_FAINT)
 			c.fg = QColor((c.fg.red() + c.bg.red()) / 2, (c.fg.green() + c.bg.green()) / 2, (c.fg.blue() + c.bg.blue()) / 2);
+		// A search match: Ghostty's colours, the selected match's first (it is in the list twice).
+		for (const auto& s : g.searchSpans)
+			if (s.line == top + row && col >= s.from && col <= s.to)
+			{
+				c.fg = kSearchFg;
+				c.bg = s.selected ? kSearchSelBg : kSearchBg;
+				break;
+			}
 		bool selected = false;
 		ghostty_render_state_row_cells_get(g.cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected);
 		if (selected)
@@ -724,7 +749,6 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 	}
 
 	const int thick = std::max(1, g.cellH / 14);
-	const long top = g.linkSpans.empty() ? 0 : long(scrollbar().offset);
 	for (const DrawCell& c : cells)
 	{
 		const QRect& box = c.box;
@@ -1074,6 +1098,133 @@ static void clear_selection()
 {
 	if (g.hasSelection)
 		set_selection(nullptr);
+}
+
+// ---------------------------------------------------------------- search
+
+static constexpr size_t kMaxNeedleBytes = 1024;
+
+// A match as the screen lines and columns it covers (one span a line, a match can wrap).
+static void add_spans(const GhosttySelection& match, bool selected, std::vector<Session::SearchSpan>& out)
+{
+	GhosttySelection o = {};
+	if (ghostty_terminal_selection_ordered(g.term, &match, GHOSTTY_SELECTION_ORDER_FORWARD, &o) != GHOSTTY_SUCCESS)
+		return;
+	GhosttyPointCoordinate a = {}, b = {};
+	if (ghostty_terminal_point_from_grid_ref(g.term, &o.start, GHOSTTY_POINT_TAG_SCREEN, &a) != GHOSTTY_SUCCESS ||
+	    ghostty_terminal_point_from_grid_ref(g.term, &o.end, GHOSTTY_POINT_TAG_SCREEN, &b) != GHOSTTY_SUCCESS)
+		return;
+	for (long line = long(a.y); line <= long(b.y) && line - long(a.y) < 1000; line++)
+		out.push_back({ line, line == long(a.y) ? int(a.x) : 0, line == long(b.y) ? int(b.x) : g.cols - 1, selected });
+}
+
+// What the search found: the count to the view, the matches on the screen to draw (all of the
+// screen again when they moved: rare, a needle typed or the view scrolled).
+static void search_refresh()
+{
+	std::vector<Session::SearchSpan> spans;
+	size_t total = 0, index = 0;
+	bool hasIndex = false;
+	if (g.searching)
+	{
+		ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total);
+		hasIndex = ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX, &index) == GHOSTTY_SUCCESS;
+		GhosttySelection sel = {};
+		if (ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH, &sel) == GHOSTTY_SUCCESS)
+			add_spans(sel, true, spans);
+		GhosttySelectionBuffer buf = { nullptr, 0, 0 };
+		std::vector<GhosttySelection> matches;
+		if (ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_VIEWPORT_MATCHES, &buf) == GHOSTTY_OUT_OF_SPACE && buf.len)
+		{
+			matches.resize(std::min<size_t>(buf.len, 10000));
+			buf = { matches.data(), matches.size(), 0 };
+			if (ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_VIEWPORT_MATCHES, &buf) != GHOSTTY_SUCCESS)
+				buf.len = 0;
+			for (size_t i = 0; i < buf.len; i++)
+				add_spans(matches[i], false, spans);
+		}
+	}
+	auto same = [](const Session::SearchSpan& x, const Session::SearchSpan& y) {
+		return x.line == y.line && x.from == y.from && x.to == y.to && x.selected == y.selected;
+	};
+	if (!std::equal(spans.begin(), spans.end(), g.searchSpans.begin(), g.searchSpans.end(), same))
+	{
+		g.searchSpans = std::move(spans);
+		g.full = true;
+	}
+	const std::string line = "search-status " + std::to_string(total) + " " + (hasIndex ? std::to_string(index) : "-1");
+	if (line != g.searchLine)
+	{
+		g.searchLine = line;
+		g.link.send(line);
+	}
+}
+
+// A slice of searching, from the main loop: the terminal read again when it changed (output, the
+// view scrolled), then the scrollback a few milliseconds' worth at a time, so typing and output
+// never wait on a long history.
+static void search_pump()
+{
+	if (!g.searching)
+		return;
+	if (g.output || g.full)
+		ghostty_search_feed(g.search);
+	const uint64_t until = oma::now_ms() + 4;
+	GhosttySearchStatus status = GHOSTTY_SEARCH_STATUS_COMPLETE;
+	for (;;)
+	{
+		ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_STATUS, &status);
+		if (status == GHOSTTY_SEARCH_STATUS_COMPLETE || oma::now_ms() >= until)
+			break;
+		if (status == GHOSTTY_SEARCH_STATUS_RUNNING)
+			ghostty_search_tick(g.search, nullptr);
+		else
+			ghostty_search_feed(g.search);
+	}
+	g.searchBusy = status != GHOSTTY_SEARCH_STATUS_COMPLETE;
+	// As a browser's find, not Ghostty's (which waits for Enter): the newest match is selected
+	// as soon as there is one, and the view goes to it when it is only in the history. The
+	// scrollback is searched newest first, so the first found is the newest.
+	size_t total = 0;
+	ghostty_search_get(g.search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total);
+	if (g.searchPick && total)
+	{
+		g.searchPick = false;
+		if (ghostty_search_select_next(g.search) == GHOSTTY_SUCCESS)
+		{
+			g.full = true;
+			ghostty_search_feed(g.search); // the matches where the view went
+		}
+	}
+	search_refresh();
+}
+
+// The find bar's text; empty ends the search (the highlights go, the view stays where it is).
+static void set_needle(const std::string& needle)
+{
+	if (!g.search)
+		return;
+	const std::string n = needle.substr(0, kMaxNeedleBytes);
+	const GhosttyString s = { reinterpret_cast<const uint8_t*>(n.data()), n.size() };
+	ghostty_search_set(g.search, GHOSTTY_SEARCH_OPT_NEEDLE, n.empty() ? nullptr : &s);
+	g.searching = !n.empty();
+	g.searchBusy = g.searching;
+	g.searchPick = g.searching;
+	if (g.searching)
+		search_pump();
+	else
+		search_refresh();
+}
+
+// Enter in the find bar: the next match up into the history from the selected one (Ghostty's
+// "next"), shift+enter the one below; the view scrolls to it when it is out of sight.
+static void search_step(bool older)
+{
+	if (!g.searching)
+		return;
+	if ((older ? ghostty_search_select_next(g.search) : ghostty_search_select_prev(g.search)) == GHOSTTY_SUCCESS)
+		g.full = true; // the view may have moved; the feed after it finds the matches there
+	search_pump();
 }
 
 // ---------------------------------------------------------------- input
@@ -1767,6 +1918,10 @@ static void handle_line(const std::string& line)
 			}
 		}
 	}
+	else if (cmd == "search" && w.size() >= 2)
+		set_needle(w[1] == "-" || w[1].size() > 4 * kMaxNeedleBytes ? std::string() : unb64(w[1]));
+	else if (cmd == "search-next" || cmd == "search-prev")
+		search_step(cmd == "search-next");
 	else if (cmd == "mouse-leave")
 	{
 		g.mouseIn = false;
@@ -1838,6 +1993,10 @@ static void replay()
 	if (!g.reconnectLine.empty())
 		g.link.send(g.reconnectLine);
 	g.held.clear();
+	// A view comes without a find bar: a search left from one before ends.
+	set_needle({});
+	g.searchLine.clear();
+	search_refresh();
 }
 
 // How long a session that lost its connection keeps trying, and how long an ssh must have run
@@ -1943,7 +2102,8 @@ static int run_ssh()
 		pollfd fds[3] = { { g.pty, POLLIN, 0 }, { g.link.listenFd(), POLLIN, 0 }, { g.link.clientFd(), POLLIN, 0 } };
 		// A drag past the top or bottom scrolls on a 15 ms tick, as Ghostty's.
 		const bool scrolling = g.autoscroll != GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
-		const int n = poll(fds, g.link.attached() ? 3 : 2, scrolling ? 15 : 500);
+		// A search still going through the scrollback comes back at once.
+		const int n = poll(fds, g.link.attached() ? 3 : 2, g.searchBusy ? 0 : scrolling ? 15 : 500);
 		if (n < 0 && errno != EINTR)
 			break;
 		if (fds[0].revents & (POLLIN | POLLHUP | POLLERR))
@@ -1980,6 +2140,7 @@ static int run_ssh()
 			lastThemeCheck = oma::now_ms();
 			check_theme();
 		}
+		search_pump();
 		flush();
 	}
 	flush();
@@ -2115,7 +2276,8 @@ int main(int argc, char** argv)
 	    ghostty_selection_gesture_event_new(nullptr, &g.releaseEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE) != GHOSTTY_SUCCESS ||
 	    ghostty_selection_gesture_event_new(nullptr, &g.dragEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG) != GHOSTTY_SUCCESS ||
 	    ghostty_selection_gesture_event_new(nullptr, &g.tickEv, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_AUTOSCROLL_TICK) != GHOSTTY_SUCCESS ||
-	    ghostty_mouse_event_new(nullptr, &g.mouseEvent) != GHOSTTY_SUCCESS)
+	    ghostty_mouse_event_new(nullptr, &g.mouseEvent) != GHOSTTY_SUCCESS ||
+	    ghostty_search_new(nullptr, &g.search, g.term) != GHOSTTY_SUCCESS)
 	{
 		log("cannot start the terminal");
 		return 1;

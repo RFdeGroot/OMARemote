@@ -934,6 +934,175 @@ class Links(unittest.TestCase):
         self.assertEqual(said, [])
 
 
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Searching(unittest.TestCase):
+    """Ghostty's search (libghostty-vt's), from the view's find bar: `search <b64>` finds every
+    match in the scrollback (ASCII letters in any case) and says how many (`search-status <total>
+    <selected>`, -1 none selected); the newest is selected at once, as a browser's find (Ghostty
+    waits for Enter), the view going to it when it is only in the history; `search-next` selects
+    the next one up, `search-prev` the one below. Matches on the screen are drawn in Ghostty's
+    search colours. A view that attaches again starts without a search."""
+
+    @contextlib.contextmanager
+    def session(self, script):
+        """Runs script (400x300, offscreen); yields (send, search, status, row, state): send a line,
+        search for a needle, the last `search-status` (total, selected) once it settled, the
+        frame's colours along a row, and the last `scrollbar` (state["scrollbar"])."""
+        import base64, mmap, socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "s")
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}", "reconnect=0", "font=monospace",
+                                "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            c = socket.socket(socket.AF_UNIX)
+            state = {"buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock}
+            try:
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 400 300 100\n")
+                c.settimeout(0.1)
+
+                def read(wait):
+                    end = time.time() + wait
+                    while time.time() < end:
+                        try:
+                            data, fds, _, _ = socket.recv_fds(c, 65536, 4)
+                        except socket.timeout:
+                            continue
+                        if not data:
+                            return
+                        state["buf"] += data
+                        *done, state["buf"] = state["buf"].split(b"\n")
+                        for line in done:
+                            w = line.split()
+                            if w[:1] == [b"frame"] and fds:
+                                width, h, stride = (int(v) for v in w[1:4])
+                                fd = fds.pop(0)
+                                state["frame"] = (mmap.mmap(fd, stride * h, mmap.MAP_SHARED, mmap.PROT_READ), stride)
+                                os.close(fd)
+                            elif w[:1] == [b"search-status"]:
+                                state["status"] = (int(w[1]), int(w[2]))
+                            elif w[:1] == [b"scrollbar"]:
+                                state["scrollbar"] = tuple(int(v) for v in w[1:4])
+
+                def send(line):
+                    c.sendall(line.encode() + b"\n")
+
+                def search(needle):
+                    send("search " + (base64.b64encode(needle.encode()).decode() if needle else "-"))
+
+                def status(wait=1.5):
+                    read(wait)
+                    return state["status"]
+
+                def row(y):
+                    """The frame's (r, g, b) along a pixel row, once what was sent is drawn."""
+                    read(0.3)
+                    fb, stride = state["frame"]
+                    return [tuple(fb[y * stride + x * 4:y * stride + x * 4 + 3][::-1]) for x in range(400)]
+
+                read(2)
+                yield send, search, status, row, state
+            finally:
+                c.close()
+                p.kill()
+                p.wait()
+
+    # 300 lines, every 30th says NEEDLE (10 of them; most far up in the history), then a prompt.
+    HISTORY = ("i=0; while [ $i -lt 300 ]; do if [ $((i % 30)) -eq 0 ]; then echo \"line $i NEEDLE\"; "
+               "else echo \"line $i\"; fi; i=$((i+1)); done; sleep 30")
+
+    def test_it_counts_the_matches_in_the_whole_history(self):
+        with self.session(self.HISTORY) as (send, search, status, row, state):
+            search("needle")  # any case
+            self.assertEqual(status(), (10, 0))
+            search("no such text")
+            self.assertEqual(status(), (0, -1))
+
+    def test_enter_goes_up_into_the_history_and_the_view_follows(self):
+        with self.session(self.HISTORY) as (send, search, status, row, state):
+            search("NEEDLE")
+            self.assertEqual(status(), (10, 0))  # the newest, at once
+            bottom = state["scrollbar"][1]
+            for _ in range(9):
+                send("search-next")
+            self.assertEqual(status(), (10, 9))  # the oldest: line 0, the top of the history
+            self.assertLess(state["scrollbar"][1], bottom, "the view did not scroll up to it")
+            self.assertEqual(state["scrollbar"][1], 0)
+            send("search-next")
+            self.assertEqual(status(), (10, 0))  # round again to the newest
+            send("search-prev")
+            self.assertEqual(status(), (10, 9))  # shift+enter, past the newest: the oldest
+
+    def test_matches_on_the_screen_are_drawn_in_ghosttys_colours(self):
+        with self.session("printf 'one NEEDLE two\\n'; sleep 30") as (send, search, status, row, state):
+            # Along the first row of text, wherever the cells fall.
+            before = row(12)
+            self.assertNotIn((0xFF, 0xE0, 0x82), before)
+            search("needle")
+            status()
+            after = row(12)
+            self.assertIn((0xF2, 0xA5, 0x7E), after)  # search-selected-background: the one match
+            self.assertNotIn((0xFF, 0xE0, 0x82), after)
+        with self.session("printf 'one NEEDLE two NEEDLE\\n'; sleep 30") as (send, search, status, row, state):
+            search("needle")
+            status()
+            both = row(12)
+            self.assertIn((0xF2, 0xA5, 0x7E), both)  # the newest (the last on the row): selected
+            self.assertIn((0xFF, 0xE0, 0x82), both)  # the other: search-background
+            search("")
+            self.assertEqual(status(), (0, -1))
+            cleared = row(12)
+            self.assertNotIn((0xF2, 0xA5, 0x7E), cleared)
+            self.assertNotIn((0xFF, 0xE0, 0x82), cleared)
+
+    def test_a_match_only_in_the_history_is_gone_to_at_once(self):
+        with self.session(self.HISTORY) as (send, search, status, row, state):
+            status()
+            bottom = state["scrollbar"][1]
+            search("line 30 NEEDLE")  # one match, far above the screen
+            self.assertEqual(status(), (1, 0))
+            self.assertLess(state["scrollbar"][1], bottom, "the view did not go to it")
+
+    def test_a_view_that_attaches_again_starts_without_one(self):
+        import socket, time
+        with self.session(self.HISTORY) as (send, search, status, row, state):
+            search("NEEDLE")
+            self.assertEqual(status(), (10, 0))
+            again = socket.socket(socket.AF_UNIX)
+            again.connect(state["sock"])
+            again.settimeout(0.2)
+            buf, end = b"", time.time() + 3
+            while b"search-status" not in buf and time.time() < end:
+                try:
+                    buf += again.recv(65536)
+                except socket.timeout:
+                    pass
+            again.close()
+            self.assertIn(b"search-status 0 -1", buf)
+
+    def test_a_long_history_does_not_hold_up_the_terminal(self):
+        # 20000 matching lines: found a slice at a time, all of them in the end.
+        script = "i=0; while [ $i -lt 20000 ]; do echo \"hit $i\"; i=$((i+1)); done; sleep 30"
+        with self.session(script) as (send, search, status, row, state):
+            status(3)
+            search("hit")
+            total = 0
+            for _ in range(20):
+                total = status(1)[0]
+                if total == 20000:
+                    break
+            self.assertEqual(total, 20000)
+
+
 @unittest.skipUnless(os.path.exists(HELPER) and shutil.which("qml6") and shutil.which("magick"),
                      "needs the native build, qml6 and ImageMagick")
 class SeeThroughInTheView(unittest.TestCase):

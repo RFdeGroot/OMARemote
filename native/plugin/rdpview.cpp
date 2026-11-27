@@ -179,6 +179,7 @@ void RdpView::detach()
 	m_drawnSeq = 0;
 	setScrollbar(0, 0, 0);
 	setHoveredLink(QString());
+	setSearch(0, -1);
 	emit attachedChanged();
 }
 
@@ -198,6 +199,27 @@ void RdpView::setScrollbar(int total, int offset, int length)
 	m_scrollOffset = offset;
 	m_scrollLength = length;
 	emit scrollbarChanged();
+}
+
+void RdpView::setSearch(int total, int selected)
+{
+	if (total == m_searchTotal && selected == m_searchSelected)
+		return;
+	m_searchTotal = total;
+	m_searchSelected = selected;
+	emit searchChanged();
+}
+
+void RdpView::search(const QString& needle)
+{
+	// At most 1 KiB of it, as the session takes.
+	const QByteArray bytes = needle.toUtf8().left(1024);
+	send("search " + (bytes.isEmpty() ? QByteArray("-") : bytes.toBase64()));
+}
+
+void RdpView::searchStep(bool older)
+{
+	send(older ? "search-next" : "search-prev");
 }
 
 void RdpView::scrollToRow(int row)
@@ -391,6 +413,12 @@ void RdpView::handleLine(const QByteArray& line)
 		const int total = int(std::clamp<long long>(w[1].toLongLong(), 0, INT_MAX));
 		const int length = int(std::clamp<long long>(w[3].toLongLong(), 0, total));
 		setScrollbar(total, int(std::clamp<long long>(w[2].toLongLong(), 0, total - length)), length);
+	}
+	else if (cmd == "search-status" && w.size() >= 3)
+	{
+		const int total = int(std::clamp<long long>(w[1].toLongLong(), 0, INT_MAX));
+		const long long selected = w[2].toLongLong();
+		setSearch(total, selected >= 0 && selected < total ? int(selected) : -1);
 	}
 	else if (cmd == "link" && w.size() >= 2)
 		setHoveredLink(w[1] == "-" || w[1].size() > 16384 ? QString() : unb64(w[1]));

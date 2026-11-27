@@ -86,6 +86,7 @@ Singleton {
         { group: "In a session", context: "session", action: "releaseSuper", keys: ["ctrl+alt+escape"], label: "Gliff: stop sending Super and Hyprland's shortcuts", run: false },
         { group: "In a session", context: "session", action: "sessionQuick", keys: ["ctrl+alt+n"], label: "Quick connect (the session stays)", run: false },
         { group: "In a session", context: "session", action: "sshCopy", keys: ["ctrl+shift+c", "super+c"], label: "SSH: copy the selection (drag, double-click a word, triple-click a line)", run: false },
+        { group: "In a session", context: "session", action: "sshFind", keys: ["ctrl+shift+f"], label: "SSH: find in the scrollback (Enter older, shift+Enter newer, Escape closes)", run: false },
         { group: "In a session", context: "session", action: "sshLink", keys: ["ctrl+click"], label: "SSH: open the link (hold ctrl to see where it goes)", run: false },
         { group: "In a session", context: "session", action: "sshPaste", keys: ["ctrl+shift+v", "super+v"], label: "SSH: paste (shift+insert, middle click too)", run: false },
         { group: "In a session", context: "session", action: "sshZoom", keys: ["ctrl+=", "ctrl+-", "ctrl+0"], label: "SSH: bigger or smaller text, ctrl+0 back (this tab)", run: false },

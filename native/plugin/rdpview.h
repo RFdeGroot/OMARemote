@@ -73,6 +73,10 @@ class RdpView : public QQuickItem
 	// The link a terminal's ctrl points at (SSH, `link` lines): shown as Ghostty's link preview.
 	// A ctrl+click on it asks for it to be opened: openUrl (the UI decides).
 	Q_PROPERTY(QString hoveredLink READ hoveredLink NOTIFY hoveredLinkChanged)
+	// A terminal's search (SSH, the find bar): the matches found so far, and which one is selected
+	// (0 the newest, -1 none), from the session's `search-status` lines.
+	Q_PROPERTY(int searchTotal READ searchTotal NOTIFY searchChanged)
+	Q_PROPERTY(int searchSelected READ searchSelected NOTIFY searchChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -101,6 +105,8 @@ public:
 	int scrollOffset() const { return m_scrollOffset; }
 	int scrollLength() const { return m_scrollLength; }
 	QString hoveredLink() const { return m_hoveredLink; }
+	int searchTotal() const { return m_searchTotal; }
+	int searchSelected() const { return m_searchSelected; }
 	void setTerminalAlpha(int alpha);
 	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
@@ -130,6 +136,9 @@ public:
 	// Hyprland's shortcuts back, while the pointer stays on the picture (the session keys + Esc).
 	Q_INVOKABLE void releaseShortcuts();
 	Q_INVOKABLE void scrollToRow(int row);
+	// The find bar: search for this (empty ends the search), the next match up (older), down.
+	Q_INVOKABLE void search(const QString& needle);
+	Q_INVOKABLE void searchStep(bool older);
 	Q_INVOKABLE int cachedCursors() const { return int(m_cursors.size()); } // for tests
 	Q_INVOKABLE QRectF pictureOnScreen() const; // for tests: in screen pixels
 
@@ -149,6 +158,7 @@ signals:
 	void terminalAlphaChanged();
 	void scrollbarChanged();
 	void hoveredLinkChanged();
+	void searchChanged();
 	void openUrl(const QString& url);
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);
@@ -288,6 +298,8 @@ private:
 	int m_scrollTotal = 0, m_scrollOffset = 0, m_scrollLength = 0;
 	void setScrollbar(int total, int offset, int length);
 	QString m_hoveredLink;
+	int m_searchTotal = 0, m_searchSelected = -1;
+	void setSearch(int total, int selected);
 	void setHoveredLink(const QString& url);
 	bool m_newNode = false; // the frame's format changed: the node reads it only when made
 	void sendOpacity();

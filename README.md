@@ -502,6 +502,10 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   (web, mail and the like; not `file:`, which would be a path on the server). Programs that ask
   are told when the tab gains or loses the keyboard (vim's `FocusGained`, tmux `focus-events`);
   without it the cursor is a hollow block, as in Ghostty.
+  `ctrl+shift+f` searches the whole scrollback, as Ghostty's find bar: every match is highlighted
+  as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
+  back down), `escape` closes it; drag
+  the bar to another corner when it is in the way.
   Remote programs can set your clipboard (OSC 52, as tmux and Neovim do). The `ctrl+alt` keys stay
   OMARemote's, as in every session.
 - **Reconnects by itself** (*Reconnect*, on by default): when a working connection drops (the host
