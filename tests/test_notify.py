@@ -1,5 +1,5 @@
 """A terminal's desktop notifications through native/plugin/notifier.cpp: what goes to the
-notification server over D-Bus (the body escaped only for a server that reads markup), which
+notification server over D-Bus (never markup, whatever the server reads: &, < and > as look-alikes), which
 clicks come back, and taking them back. On a private bus with a stand-in server, never the
 desktop's own."""
 import json
@@ -120,12 +120,12 @@ class Notifier(unittest.TestCase):
     def test_sent_clicked_and_taken_back(self):
         result, calls = self.run_with("body,body-markup,actions")
         notes = [c for c in calls if c["call"] == "Notify"]
-        self.assertEqual(len(notes), 2)
-        build, click = notes
+        self.assertEqual(len(notes), 3)
+        build, click, _ = notes
         self.assertEqual((build["app"], build["icon"], build["entry"]), ("OMARemote", "omaremote", "omaremote"))
         self.assertEqual(build["summary"], "Build")
-        # Markup read as text, the bell character gone.
-        self.assertEqual(build["body"], "a &lt;b&gt;&amp;c&lt;/b&gt; done")
+        # Markup as look-alikes, the bell character gone.
+        self.assertEqual(build["body"], "a \u2039b\u203a\uff06c\u2039/b\u203a done")
         self.assertEqual(build["actions"], ["default", "Show"])
         self.assertEqual((build["expire"], click["expire"]), (-1, 3000))
         # Only its own click: not someone else's notification's.
@@ -133,10 +133,41 @@ class Notifier(unittest.TestCase):
         # Taking back s1's: its id, and only that one.
         self.assertEqual([c["id"] for c in calls if c["call"] == "CloseNotification"], [build["id"]])
 
-    def test_a_server_without_markup_gets_the_text_as_it_is(self):
-        _, calls = self.run_with("body,actions")
-        build = next(c for c in calls if c["call"] == "Notify")
-        self.assertEqual(build["body"], "a <b>&c</b> done")
+    def test_no_markup_reaches_any_server(self):
+        """Escaping was not enough: Omarchy's shell decodes entities (three passes) and then lets
+        <b> and <a href> through, so an escaped link from the remote side came back clickable, with
+        a label of its choosing, in a toast from OMARemote. No &, < or > leave at all, in the title
+        too, and no control or bidirectional characters (a right-to-left override flips a toast)."""
+        for caps in ("body,body-markup,actions", "body,actions"):
+            _, calls = self.run_with(caps)
+            evil = [c for c in calls if c["call"] == "Notify"][2]
+            for field in ("summary", "body"):
+                self.assertFalse(set(evil[field]) & set("<>&"), (caps, field, evil[field]))
+                self.assertFalse(re.search("[\u0080-\u009f\u202a-\u202e\u2066-\u2069]", evil[field]), evil[field])
+            self.assertIn("evil", evil["body"])  # the words themselves stay
+        markup = "/usr/share/omarchy/shell/plugins/notifications/Markup.js"
+        node = shutil.which("node")
+        if not (node and os.path.exists(markup)):
+            return
+        # Through the Omarchy shell's own renderer: no tag survives.
+        script = """
+const fs = require("fs"), path = require("path");
+const load = (file, deps) => {
+  let text = fs.readFileSync(file, "utf8").replace(/^\\.pragma.*$/m, "").replace(/^\\.import.*$/mg, "");
+  const names = Object.keys(deps);
+  const body = text + "\\nreturn {" + (text.match(/^function (\\w+)/mg) || []).map(f => f.slice(9)).join(",") + "};";
+  return new Function(...names, body)(...names.map(n => deps[n]));
+};
+const dir = path.dirname(process.argv[1]);
+const Security = load(path.join(dir, "Security.js"), {});
+const Markup = load(process.argv[1], { Security });
+process.stdout.write(Markup.render(process.argv[2]));
+"""
+        rendered = subprocess.run([node, "-e", script, markup, evil["body"]], capture_output=True, text=True,
+                                  timeout=30)
+        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+        self.assertNotIn("<a", rendered.stdout)
+        self.assertNotIn("<b>", rendered.stdout)
 
 
 if __name__ == "__main__":

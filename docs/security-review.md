@@ -193,6 +193,20 @@ an audit after two sync findings in a row found six more), and add the class her
   and then `open()`. Our own files at fixed names are written by replacing them (`write_private`,
   `write_user_file`) or created new (`O_EXCL`), never with `open(path, "w")`. (0.9.13; the
   omarchy-plugin-security skill's grep audit finds the rest of this class)
+- **A path says more than its name.** Browse files opened the mounted folder with `xdg-open <path>`,
+  and with 0.11.0's Browse where the shell is that path holds the remote folders the shell reported
+  (OSC 7), on a world-readable command line. Folders now go to the file manager over D-Bus
+  (`FileManager1.ShowFolders`), or to xdg-open as a link named by the connection's id in our
+  runtime folder (lstat-checked: ours, a folder, not a link). Host and user stay on `ssh` and
+  `gio mount sftp://…` command lines: those cannot take them otherwise (documented above), so a
+  pass need not chase them. A link a remote program shows goes to xdg-open on a ctrl+click (Qt's
+  openUrlExternally), URL on its command line, as in Ghostty; the user chose to open it. (0.11.0)
+- **Escaping is not plain text.** A notification body escaped for a server that reads markup came
+  back as markup on Omarchy's shell, which decodes entities before it lets `<b>` and `<a href>`
+  through: a remote program could put a clickable link with its own label in a toast from
+  OMARemote. Text from the other side has no `&`, `<` or `>` at all (look-alikes instead), in the
+  title too, whatever the server says it reads, and no C1 or bidirectional controls. tests/test_notify.py
+  runs it through the shell's own Markup.js when it is there. (0.11.0)
 - **No file read on the UI thread, and the window does not wait for one forever.** A FileView with
   `blockLoading` on a file that is not ours (Omarchy's theme) froze the window for as long as the
   read took; the theme files now load in the background, text over 64 K characters is not parsed,

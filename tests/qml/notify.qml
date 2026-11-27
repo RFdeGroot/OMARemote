@@ -16,6 +16,7 @@ Item {
         onTriggered: {
             notifier.notify("s1", "Build", "a <b>&c</b>\u0007 done", -1)
             notifier.notify("s2", "click me", "", 3000)
+            notifier.notify("s3", "<b>OMARemote</b> &amp;", "<b>urgent</b> &lt;a href=\"https://evil.example/update\"&gt;Click&lt;/a&gt; <a href=\"https://evil.example/x\">Reconnect</a> \u202eevil\u0085x\u2066y", 3000)
             later.start()
         }
     }

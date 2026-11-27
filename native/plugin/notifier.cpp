@@ -12,23 +12,27 @@ const QString Path = QStringLiteral("/org/freedesktop/Notifications");
 const QString Interface = QStringLiteral("org.freedesktop.Notifications");
 constexpr int MaxTitle = 256, MaxBody = 4096, MaxShowing = 64;
 
-// Plain text, whatever the server makes of markup: &, < and > as entities, no control characters
-// but line breaks and tabs, at most `max` characters.
-QString plain(const QString& text, int max, bool escape)
+// Plain text, whatever the server makes of markup: no &, < or >, but look-alikes (‹ › ＆). Escaping is
+// not enough: Omarchy's shell decodes entities (three passes) before it escapes, then lets <b>, <a
+// href> and the like through, so an escaped tag from the remote side came back as a working link
+// with a label of its choosing. No control characters but line breaks and tabs (C0, DEL, C1), no
+// bidirectional controls (a right-to-left override flips how a toast reads); at most `max` characters.
+QString plain(const QString& text, int max)
 {
 	QString out;
 	for (const QChar c : text.left(max))
 	{
-		if (c.unicode() < 0x20 && c != '\n' && c != '\t')
+		const char16_t u = c.unicode();
+		if ((u < 0x20 && u != '\n' && u != '\t') || (u >= 0x7f && u <= 0x9f))
 			continue;
-		if (c.unicode() == 0x7f)
+		if ((u >= 0x202a && u <= 0x202e) || (u >= 0x2066 && u <= 0x2069) || u == 0x200e || u == 0x200f || u == 0x061c)
 			continue;
-		if (escape && c == '&')
-			out += QStringLiteral("&amp;");
-		else if (escape && c == '<')
-			out += QStringLiteral("&lt;");
-		else if (escape && c == '>')
-			out += QStringLiteral("&gt;");
+		if (u == '&')
+			out += QChar(0xff06);
+		else if (u == '<')
+			out += QChar(0x2039);
+		else if (u == '>')
+			out += QChar(0x203a);
 		else
 			out += c;
 	}
@@ -42,14 +46,6 @@ Notifier::Notifier(QObject* parent) : QObject(parent)
 	bus.connect(Service, Path, Interface, QStringLiteral("ActionInvoked"), this,
 	            SLOT(onActionInvoked(uint, QString)));
 	bus.connect(Service, Path, Interface, QStringLiteral("NotificationClosed"), this, SLOT(onClosed(uint, uint)));
-	auto* caps = new QDBusPendingCallWatcher(
-		bus.asyncCall(QDBusMessage::createMethodCall(Service, Path, Interface, QStringLiteral("GetCapabilities"))), this);
-	connect(caps, &QDBusPendingCallWatcher::finished, this, [this, caps] {
-		QDBusPendingReply<QStringList> reply = *caps;
-		if (reply.isValid())
-			m_markup = reply.value().contains(QStringLiteral("body-markup"));
-		caps->deleteLater();
-	});
 }
 
 void Notifier::notify(const QString& key, const QString& title, const QString& body, int expireMs)
@@ -59,8 +55,8 @@ void Notifier::notify(const QString& key, const QString& title, const QString& b
 	QDBusMessage call = QDBusMessage::createMethodCall(Service, Path, Interface, QStringLiteral("Notify"));
 	QVariantMap hints;
 	hints.insert(QStringLiteral("desktop-entry"), QStringLiteral("omaremote"));
-	call << QStringLiteral("OMARemote") << uint(0) << QStringLiteral("omaremote") << plain(title, MaxTitle, false)
-	     << plain(body, MaxBody, m_markup) << QStringList{ QStringLiteral("default"), QStringLiteral("Show") } << hints
+	call << QStringLiteral("OMARemote") << uint(0) << QStringLiteral("omaremote") << plain(title, MaxTitle)
+	     << plain(body, MaxBody) << QStringList{ QStringLiteral("default"), QStringLiteral("Show") } << hints
 	     << qint32(expireMs < -1 ? -1 : expireMs);
 	auto* watcher = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(call), this);
 	connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, key] {

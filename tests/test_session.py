@@ -672,6 +672,17 @@ class Ssh(unittest.TestCase):
         with mock.patch.object(session, "terminal_ligatures", return_value=(True, "")):
             lines = session.build_ssh_config(self.ssh())
         self.assertIn("ligatures=1", lines)
+        # At most 64 features, over all lines.
+        import tempfile
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                with open(session.GHOSTTY_CONFIG, "w") as f:
+                    f.write("".join(f"font-feature = t{i:03d}\n" for i in range(500)))
+                self.assertEqual(len(session.terminal_ligatures("ghostty")[1].split(",")), 64)
+        finally:
+            session.GHOSTTY_CONFIG = saved
         self.assertFalse(any(l.startswith("fontFeatures=") for l in lines))
         with mock.patch.object(session, "terminal_ligatures", return_value=(False, "calt=0")):
             lines = session.build_ssh_config(self.ssh())
@@ -3108,9 +3119,15 @@ class Files(unittest.TestCase):
         self.assertFalse(session.gvfs_fuse_ready("proc /proc proc rw 0 0\n"))
         self.assertFalse(session.gvfs_fuse_ready(f"other {fuse} tmpfs rw 0 0\n"))
 
-    def run_browse(self, fuse=True, mounted_after=True, gio_ok=True, isdir=True):
+    def run_browse(self, fuse=True, mounted_after=True, gio_ok=True, isdir=True, dbus=True):
         from unittest import mock
+        import tempfile
         calls = []
+        shown = []
+
+        def show(folder):
+            shown.append(folder)
+            return dbus
         mount = mock.Mock()
         mount.get_default_location.return_value.get_path.return_value = "/run/user/1000/gvfs/sftp:host=srv/home/alice"
         state = {"mounted": False}
@@ -3132,13 +3149,44 @@ class Files(unittest.TestCase):
              mock.patch.object(session.glob, "glob", lambda p: [p]), \
              mock.patch.object(session.subprocess, "run", run), \
              mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(list(args))), \
+             mock.patch.object(session, "_show_folders", show), \
+             mock.patch.object(session, "RUNTIME_DIR", tempfile.mkdtemp()), \
              mock.patch.object(session.os.path, "isdir", lambda p: isdir):
-            return session.browse("c1"), calls
+            out = session.browse("c1")
+        self.shown = shown
+        return out, calls
 
     def test_mounted_files_open_in_the_default_file_manager(self):
+        # Over D-Bus (FileManager1.ShowFolders): the gvfs path names the host and user, and the
+        # remote folders, so it is never on a command line.
         out, calls = self.run_browse()
         self.assertEqual(out, {"state": "opened"})
-        self.assertIn(["xdg-open", "/run/user/1000/gvfs/sftp:host=srv/home/alice"], calls)
+        self.assertEqual(self.shown, ["/run/user/1000/gvfs/sftp:host=srv/home/alice"])
+        self.assertFalse(any(c[0] == "xdg-open" for c in calls))
+
+    def test_without_a_file_manager_on_d_bus_xdg_open_gets_a_link_named_by_id(self):
+        out, calls = self.run_browse(dbus=False)
+        self.assertEqual(out, {"state": "opened"})
+        opened = [c for c in calls if c[0] == "xdg-open"]
+        self.assertEqual(len(opened), 1)
+        link = opened[0][1]
+        self.assertEqual(os.path.basename(link), "c1")
+        self.assertNotIn("srv", link)
+        self.assertEqual(os.readlink(link), "/run/user/1000/gvfs/sftp:host=srv/home/alice")
+
+    def test_the_link_folder_must_be_our_own(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as elsewhere:
+            os.symlink(elsewhere, os.path.join(d, "browse"))  # planted
+            calls = []
+            with mock.patch.object(session, "RUNTIME_DIR", d), \
+                 mock.patch.object(session, "_show_folders", lambda f: False), \
+                 mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(args)):
+                with self.assertRaises(OSError):
+                    session.open_folder("/srv/x", "c1")
+            self.assertEqual(calls, [])
+            self.assertEqual(os.listdir(elsewhere), [])
 
     def test_a_host_that_asks_gets_a_terminal(self):
         out, calls = self.run_browse(gio_ok=False)
@@ -3171,6 +3219,7 @@ class Files(unittest.TestCase):
         out, calls = self.run_browse(isdir=False)
         self.assertIn("error", out)
         self.assertFalse(any(c[0] == "xdg-open" for c in calls))
+        self.assertEqual(self.shown, [])
 
     def test_without_the_folder_layer_nothing_is_mounted_and_the_ui_asks(self):
         out, calls = self.run_browse(fuse=False)
@@ -3216,7 +3265,8 @@ class BrowseWhereTheShellIs(unittest.TestCase):
     def test_a_folder_in_the_mount(self):
         self.assertEqual(self.folder("file://srv/home/alice/proj"), "home/alice/proj")
         self.assertEqual(self.folder("file://srv/home/alice/my%20dir"), "home/alice/my dir")
-        self.assertEqual(self.folder("file://srv/home/alice/here"), "home/alice/here")  # stays inside
+        # A link that stays inside: the folder it resolves to (what was checked is what opens).
+        self.assertEqual(self.folder("file://srv/home/alice/here"), "home/alice/proj")
 
     def test_nothing_out_of_the_mount_and_nothing_that_is_not_a_folder(self):
         self.assertIsNone(self.folder("file://srv/home/alice/out"))  # resolves to this computer's /etc
@@ -3241,9 +3291,10 @@ class BrowseWhereTheShellIs(unittest.TestCase):
                  mock.patch.object(session.shutil, "which", lambda n: "/usr/bin/" + n), \
                  mock.patch.object(session.glob, "glob", lambda p: [p]), \
                  mock.patch.object(session.subprocess, "Popen", lambda args, **k: calls.append(list(args))), \
+                 mock.patch.object(session, "_show_folders", lambda folder: calls.append(folder) or True), \
                  mock.patch.object(session.os.path, "isdir", lambda p: True):
                 self.assertEqual(session.browse("c1", "file://srv/srv/www"), {"state": "opened"})
-            self.assertEqual(calls, [["xdg-open", opened]])
+            self.assertEqual(calls, [opened])
 
 
 class UnlockOnReturn(unittest.TestCase):

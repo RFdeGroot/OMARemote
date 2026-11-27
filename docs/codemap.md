@@ -27,7 +27,7 @@ Sections, in order (`# ------- <name>` lines):
 | keyring | secret-tool calls, labels by id |
 | scaling | monitor scale, desktop scale |
 | hotkey windows | `toggle`, `place_window` (also `fullscreen_mode`: an RDP Fullscreen window is made fullscreen or maximised), `hide_window`, `hang_rect`/`hang_steps`/`show_hotkey` (hotkey windows hang from the top edge, placed in one batch before the slide), `terminal_tag`, `find_window` (`_hyprctl_json` via `capped_output`), `hypr_dispatch`, `hypr_hotkeys_sync`, `close_key` |
-| files over SFTP | `browse`, `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
+| files over SFTP | `browse` (`open_folder`: FileManager1.ShowFolders over D-Bus, else xdg-open on a link named by id: a gvfs path names the host), `sftp_uri`, `unmount_files`, `mounted_files`, `restart_gvfs`, `files_after_session` |
 | arguments | `build_args` (FreeRDP), `build_vnc_config`, `build_ssh_command` (and `build_ssh_config`: the terminal's font size and, from Ghostty's config via `ghostty_settings`, `terminal_scroll`, `terminal_scrollback` and `terminal_ligatures`), `build_gliff_command`, `gateway_element`, `check_host`, `check_lines` |
 | ssh keys and ~/.ssh/omaremote.conf | `ssh-keys`, the opt-in ssh config block |
 | import from other clients | `parse_rdp`, `parse_remmina`, `parse_1remote`, `parse_ssh_config`, `scan_foreign` (status per entry: new, here, trashed, twice, invalid), `import_foreign` (adds only); bounds `IMPORT_MAX_*`, `_Problems` |
@@ -83,7 +83,7 @@ The manager window:
 | plugin/shortcutinhibit.cpp | keyboard-shortcuts-inhibit for Gliff tabs (`captureShortcuts`, release key in rdpview.cpp `keyPressEvent`) |
 | plugin/clipread.cpp | `oma::watchClipboard`: wl-paste --watch, state only (a clear, or a copy while unfocused, takes back what the host was offered: `RdpView::clipboardChanged`, `withdrawClipboard`). `oma::readClipboard`: the only way the UI reads the clipboard (wl-paste in its own process, size and time limits); never `QClipboard::text()` (tests/test_clipboard.py checks) |
 | plugin/pasteguard.cpp | `PasteGuard.guard` (cuts a field loose from clipboard changes), `paste` (wl-paste, 16 KiB, 2 s, one line; refused whole when it does not fit `maximumLength`) |
-| plugin/notifier.cpp | `Notifier`: desktop notifications over D-Bus (a terminal's OSC 9/777: never on a command line, the body escaped for a server that reads markup), `activated(key)` on a click, `close(key)`; tests/test_notify.py on a private bus with a stand-in server |
+| plugin/notifier.cpp | `Notifier`: desktop notifications over D-Bus (a terminal's OSC 9/777: never on a command line, never markup: &, < and > as look-alikes in title and body, no C1 or bidirectional controls), `activated(key)` on a click, `close(key)`; tests/test_notify.py on a private bus with a stand-in server |
 | rdp/main.cpp | FreeRDP client: `handle_line` (UI lines: key, mouse, clip, size), `rdp_scancode`; `log_stats` (a `stats:` log line a second while the picture changes) |
 | rdp/gfxguard.cpp | `oma::guard_gfx`: wraps FreeRDP's RDPGFX CreateSurface (8192 a side, 2 GiB for all surfaces with their progressive tiles) and SurfaceToCache (128 MiB of cache, read back from gdi's entries); gfxguard-test.cpp = rdp-gfx-test |
 | vnc/main.cpp | libvncclient client; `log_stats` (a `stats:` log line a second while the picture changes); `server_clipboard` (Gliff's rules for the server's text) |

@@ -6,9 +6,9 @@
 
 // Desktop notifications over D-Bus (org.freedesktop.Notifications), straight from this process:
 // what a program in a terminal asks to show (OSC 9, OSC 777) is the remote side's text, so it never
-// goes on a command line (notify-send's argv), and the body never reads as markup: escaped for a
-// server that says it takes markup (body-markup), which would otherwise take links and tags from
-// the remote side; as it is for one that shows text as text. Until the server has said, escaped.
+// goes on a command line (notify-send's argv), and neither title nor body can read as markup: &, <
+// and > become look-alikes for every server (escaping is not enough: Omarchy's shell decodes
+// entities before it lets tags and links through), control and bidirectional characters are left out.
 //
 // notify(key, …): key groups notifications (a session id); a click on one emits activated(key);
 // close(key) takes back every notification of that key still showing.
@@ -33,5 +33,4 @@ private slots:
 
 private:
 	QHash<uint, QString> m_keys; // notification id -> key, while it shows
-	bool m_markup = true;        // the server reads markup in a body (GetCapabilities)
 };
