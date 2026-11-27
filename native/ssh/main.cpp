@@ -7,7 +7,8 @@
 //
 // Settings arrive as key=value lines on stdin:
 //   arg        the command to run, one line per argument (ssh and its arguments)
-//   font       font family (default: monospace, which Omarchy points at its terminal font)
+//   font       font family (default: monospace, which Omarchy points at its terminal font; a new one chosen
+//              with omarchy-font-set is followed, as the theme is)
 //   fontSize   in points at scale 100 (default 9)
 //   theme      a foot.ini with the theme's terminal colours, followed when it changes
 //   scrollbackBytes how much is kept above the screen (default 50 MB, Ghostty's; at most 1 GiB)
@@ -28,6 +29,8 @@
 // mouse (htop, vim with mouse=a) get it; shift+drag still selects. Ctrl+= / ctrl+- / ctrl+0 zoom the text.
 
 #include "../common/link.hpp"
+
+#include <fontconfig/fontconfig.h>
 
 #include <QFont>
 #include <QFontMetricsF>
@@ -156,6 +159,8 @@ struct Session
 	Palette pal;
 	std::string themePath;
 	struct timespec themeTime = {};
+	QStringList families;              // what the font stands for in fontconfig's config now
+	struct timespec fontsTime = {};    // the user's fonts.conf, as last seen (omarchy-font-set writes it)
 
 	// The whole picture must be redrawn (a resize, a theme, the view scrolled); otherwise the
 	// render state says which rows changed.
@@ -369,12 +374,72 @@ static void check_theme()
 
 // ---------------------------------------------------------------- font and size
 
+// The families the font (monospace: Omarchy's terminal font) stands for in fontconfig's config files as they
+// are now, the first one installed is drawn. Qt keeps the config it read at start, so a font chosen since
+// (omarchy-font-set) would not show: this reads the files again, into a config of its own.
+static QStringList resolve_families(const std::string& name)
+{
+	QStringList out;
+	FcConfig* config = FcInitLoadConfig();
+	FcPattern* pattern = FcPatternCreate();
+	if (config && pattern && FcPatternAddString(pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>(name.c_str())) &&
+	    FcConfigSubstitute(config, pattern, FcMatchPattern))
+	{
+		FcChar8* family = nullptr;
+		for (int i = 0; out.size() < 16 && FcPatternGetString(pattern, FC_FAMILY, i, &family) == FcResultMatch; i++)
+			if (!out.contains(QString::fromUtf8(reinterpret_cast<const char*>(family))))
+				out << QString::fromUtf8(reinterpret_cast<const char*>(family));
+	}
+	if (pattern)
+		FcPatternDestroy(pattern);
+	if (config)
+		FcConfigDestroy(config);
+	if (out.isEmpty())
+		out << QString::fromStdString(name);
+	return out;
+}
+
+static std::string fonts_conf()
+{
+	const char* xdg = getenv("XDG_CONFIG_HOME");
+	const char* home = getenv("HOME");
+	if (xdg && *xdg == '/')
+		return std::string(xdg) + "/fontconfig/fonts.conf";
+	return home && *home ? std::string(home) + "/.config/fontconfig/fonts.conf" : std::string();
+}
+
+static void resize(int w, int h, int scale, bool fontChanged = false);
+
+// A new font chosen (fonts.conf written): every tab follows, as Ghostty does on omarchy-font-set.
+static void check_fonts()
+{
+	struct stat st = {};
+	const std::string path = fonts_conf();
+	if (path.empty() || stat(path.c_str(), &st) != 0)
+		st.st_mtim = {};
+	if (st.st_mtim.tv_sec == g.fontsTime.tv_sec && st.st_mtim.tv_nsec == g.fontsTime.tv_nsec)
+		return;
+	g.fontsTime = st.st_mtim;
+	const QStringList families = resolve_families(g.get("font", "monospace"));
+	if (families == g.families)
+		return;
+	g.families = families;
+	if (g.frame.data)
+	{
+		resize(g.pixelW, g.pixelH, g.scale, true);
+		g.full = true;
+	}
+}
+
 static void setup_font()
 {
 	const double points = std::clamp(strtod(g.get("fontSize", "9").c_str(), nullptr) + g.zoom, 4.0, 48.0);
 	// Points at 96 dpi, times the screen's scale: what a terminal shows on the same screen.
 	const int px = std::max(6, int(std::lround(points * 96.0 / 72.0 * g.scale / 100.0)));
-	g.font = QFont(QString::fromStdString(g.get("font", "monospace")));
+	if (g.families.isEmpty())
+		g.families = resolve_families(g.get("font", "monospace"));
+	g.font = QFont(g.families.first());
+	g.font.setFamilies(g.families);
 	g.font.setStyleHint(QFont::Monospace);
 	g.font.setPixelSize(px);
 	g.font.setKerning(false);
@@ -433,7 +498,7 @@ static void set_mouse_size()
 
 // The view's size in pixels, and the screen scale: a new framebuffer that size, as many cells as
 // fit. The terminal (which reflows) and the program in it follow.
-static void resize(int w, int h, int scale, bool fontChanged = false)
+static void resize(int w, int h, int scale, bool fontChanged)
 {
 	w = std::clamp(w, 64, 16384);
 	h = std::clamp(h, 32, 16384);
@@ -2375,6 +2440,7 @@ static int run_ssh()
 		{
 			lastThemeCheck = oma::now_ms();
 			check_theme();
+			check_fonts();
 		}
 		if (blinking && oma::now_ms() - g.blinkAt >= kBlinkMs)
 		{

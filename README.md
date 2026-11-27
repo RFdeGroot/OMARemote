@@ -490,7 +490,8 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   only passed when the connection sets them, so jump hosts, keys and users from your config still
   work. *Extra ssh options* are passed to ssh as-is (for example `-J jump.example.com`).
 - **Looks like your terminal**: Omarchy's terminal font (fontconfig's `monospace`) at your default
-  terminal's size, in the theme's terminal colours, following a theme switch live. The terminal is
+  terminal's size, in the theme's terminal colours, following a theme switch and a new font
+  (`omarchy-font-set`) live. The terminal is
   Ghostty's own (libghostty-vt), and Nerd Font icons are sized and placed by Ghostty's rules.
   `ctrl+=` / `ctrl+-` make the text bigger or smaller in that tab, `ctrl+0` resets it.
 - **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select, as in

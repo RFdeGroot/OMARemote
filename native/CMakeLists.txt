@@ -37,6 +37,7 @@ target_compile_options(omaremote-vnc PRIVATE -Wall -Wextra -Wno-unused-parameter
 # GHOSTTY_VT_PREFIX (an install of it: include/ghostty, lib/libghostty-vt.a), ghostty-vt/build.sh
 # builds it here, once, with the Zig it needs (both pinned by version and sha256).
 pkg_check_modules(XKB REQUIRED IMPORTED_TARGET xkbcommon)
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui)
 set(GHOSTTY_VT_PREFIX "" CACHE PATH "libghostty-vt install prefix (empty: built by ghostty-vt/build.sh)")
 set(ghostty_vt ${GHOSTTY_VT_PREFIX})
@@ -66,7 +67,7 @@ add_executable(omaremote-ssh ssh/main.cpp)
 add_dependencies(omaremote-ssh ghostty-nerd-font)
 target_include_directories(omaremote-ssh PRIVATE ${ghostty_vt}/include ${CMAKE_BINARY_DIR}/generated)
 target_compile_definitions(omaremote-ssh PRIVATE GHOSTTY_STATIC)
-target_link_libraries(omaremote-ssh PRIVATE omaremote-link Qt6::Gui PkgConfig::XKB ${ghostty_vt}/lib/libghostty-vt.a)
+target_link_libraries(omaremote-ssh PRIVATE omaremote-link Qt6::Gui PkgConfig::XKB PkgConfig::FONTCONFIG ${ghostty_vt}/lib/libghostty-vt.a)
 # ssh-glyph-test: the icon rules against Ghostty's own test cases (tests/test_ssh.py).
 add_executable(ssh-glyph-test ssh/glyph_test.cpp)
 add_dependencies(ssh-glyph-test ghostty-nerd-font)

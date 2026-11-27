@@ -1324,6 +1324,82 @@ class DesktopNotifications(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class FontFollowsOmarchy(unittest.TestCase):
+    """The font is fontconfig's monospace, which omarchy-font-set points at the chosen font (in
+    ~/.config/fontconfig/fonts.conf): a new one is followed while the session runs, as Ghostty
+    follows it, so the grid (the program's size) changes with the font's cells."""
+
+    NARROW, WIDE = "iA Writer Mono S", "Nimbus Mono PS"
+
+    @staticmethod
+    def choose(d, family):
+        os.makedirs(os.path.join(d, "fontconfig"), exist_ok=True)
+        with open(os.path.join(d, "fontconfig", "fonts.conf"), "w") as f:
+            f.write('<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig>'
+                    '<match target="pattern"><test name="family" qual="any"><string>monospace</string></test>'
+                    '<edit name="family" mode="prepend_first" binding="strong">'
+                    f'<string>{family}</string></edit></match></fontconfig>')
+
+    def size_with(self, first, then=None):
+        import socket, time
+        with tempfile.TemporaryDirectory() as d:
+            sock, out = os.path.join(d, "s"), os.path.join(d, "size")
+            self.choose(d, first)
+            script = f"while :; do stty size > {out}.new && mv {out}.new {out}; sleep 0.2; done"
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}", "reconnect=0", "font=monospace",
+                                "fontSize=10"]) + "\n"
+            env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen", XDG_CONFIG_HOME=d)
+            p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, text=True, env=env)
+            p.stdin.write(config)
+            p.stdin.close()
+            c = socket.socket(socket.AF_UNIX)
+
+            def size(after=0.0, differs_from=None):
+                deadline = time.time() + max(after, 5)
+                time.sleep(after)
+                seen = None
+                while time.time() < deadline:
+                    try:
+                        with open(out) as f:
+                            seen = f.read().split()
+                    except OSError:
+                        pass
+                    if seen and seen != differs_from:
+                        return seen
+                    time.sleep(0.1)
+                return seen
+            try:
+                for _ in range(100):
+                    try:
+                        c.connect(sock)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                c.sendall(b"size 800 300 100\n")
+                before = size(1.0)
+                if then is None:
+                    return before, None
+                self.choose(d, then)
+                return before, size(0, differs_from=before)
+            finally:
+                c.close()
+                p.kill()
+                p.wait()
+
+    @unittest.skipUnless(all(subprocess.run(["fc-list", f"{f}:spacing=mono", "family"], capture_output=True,
+                                            text=True).stdout.strip() for f in (NARROW, WIDE)),
+                         "needs two installed monospace fonts of different widths")
+    def test_a_new_font_is_followed(self):
+        narrow, _ = self.size_with(self.NARROW)
+        wide, _ = self.size_with(self.WIDE)
+        self.assertNotEqual(narrow, wide, "the two fonts give the same grid: no way to tell them apart")
+        before, after = self.size_with(self.NARROW, self.WIDE)
+        self.assertEqual(before, narrow)
+        self.assertEqual(after, wide)
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
 class Progress(unittest.TestCase):
     """OSC 9;4 (ConEmu's progress) goes to the view as `progress <state> <percent>`, again to a
     view that attaches while it shows, never with progress=0 (Ghostty's progress-style)."""
