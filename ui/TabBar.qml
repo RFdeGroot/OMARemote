@@ -5,7 +5,7 @@ import qs.Commons
 // caption-size titles, fixed-width tabs, an accent edge under the current one.
 Item {
     id: root
-    // [{id, title, state}] for the session tabs.
+    // [{id, title, state, ringing}] for the session tabs (ringing: its bell rang, Sessions.ringing).
     property var tabs: []
     property string current: "home"
     signal picked(string id)
@@ -28,6 +28,7 @@ Item {
         property real markSize: Theme.caption
         property bool closable: false
         property bool last: false
+        property bool ringing: false // Ghostty's tab that needs attention: coloured until selected
         readonly property bool on: root.current === tabId
         height: root.height
 
@@ -71,7 +72,7 @@ Item {
             text: tab.title
             elide: Text.ElideRight
             textFormat: Text.PlainText
-            color: tab.on ? Theme.foreground : Theme.muted
+            color: tab.on ? Theme.foreground : tab.ringing ? Theme.accent : Theme.muted
             font.family: Theme.font
             font.pixelSize: Theme.caption
         }
@@ -136,6 +137,7 @@ Item {
                          : modelData.state === "connecting" ? Theme.warning
                          : modelData.state === "failed" ? Theme.urgent : Theme.muted
                 closable: true
+                ringing: !!modelData.ringing
                 last: index === root.tabs.length - 1
             }
         }

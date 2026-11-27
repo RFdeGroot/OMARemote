@@ -187,6 +187,38 @@ Singleton {
 
     function isMounted(id) { return mountedFiles.indexOf(id) >= 0 }
 
+    // An SSH session's bell (Ghostty's bell-features), while its tab rings: by session id,
+    // {title: bool} (title: 🔔 before its name; ringing at all colours an unselected tab, as
+    // Ghostty marks a tab that needs attention). Its SessionView sets and clears it.
+    property var ringing: ({})
+    function setRinging(sessionId, features) {
+        var next = Object.assign({}, ringing)
+        if (features)
+            next[sessionId] = { title: features.indexOf("title") >= 0 }
+        else
+            delete next[sessionId]
+        ringing = next
+    }
+    function bellTitle(sessionId, name) {
+        return ringing[sessionId] && ringing[sessionId].title ? "🔔 " + name : name
+    }
+    // Ghostty's system and audio bells: the desktop's bell sound (libcanberra's, when there),
+    // the configured file (PipeWire's pw-play). At most one of each every 300 ms.
+    property real bellSoundAt: 0
+    function bellSound(features, audio, volume) {
+        if (Date.now() - bellSoundAt < 300)
+            return
+        bellSoundAt = Date.now()
+        if (features.indexOf("audio") >= 0 && audio.charAt(0) === "/" && !bellAudio.running) {
+            bellAudio.command = ["pw-play", "--volume=" + Math.max(0, Math.min(1, volume)), "--", audio]
+            bellAudio.running = true
+        }
+        if (features.indexOf("system") >= 0 && !bellSystem.running)
+            bellSystem.running = true
+    }
+    Process { id: bellAudio }
+    Process { id: bellSystem; command: ["canberra-gtk-play", "-i", "bell", "-d", "OMARemote"] }
+
     // Where each SSH session's shell says it is (its view's workingDirectory: OSC 7), by session
     // id: {connection, dir, at}. Browse files opens there; without one, the remote home.
     property var cwds: ({})

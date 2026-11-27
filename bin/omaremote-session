@@ -3040,6 +3040,55 @@ def terminal_cursor(terminal=None):
     return style, blink
 
 
+BELL_FEATURES = ("system", "audio", "attention", "title", "border")
+BELL_DEFAULT = ("attention", "title")  # Ghostty's BellFeatures defaults
+
+
+def _bell_features(value):
+    """One bell-features value as Ghostty parses it: true or false for all of them, else a comma
+    list of names or no-names over the defaults. ValueError for anything else."""
+    if value in ("true", "false"):
+        return set(BELL_FEATURES) if value == "true" else set()
+    on = set(BELL_DEFAULT)
+    for part in value.split(","):
+        part = part.strip()
+        name = part[3:] if part.startswith("no-") else part
+        if name not in BELL_FEATURES:
+            raise ValueError(part)
+        (on.discard if part.startswith("no-") else on.add)(name)
+    return on
+
+
+def terminal_bell(terminal=None):
+    """(features, audio, volume) for an SSH tab's bell: Ghostty's bell-features (a set of
+    BELL_FEATURES), bell-audio-path (an absolute path, or None) and bell-audio-volume (0 to 1,
+    default 0.5) when Ghostty is the default terminal; the last line wins, a value Ghostty would
+    refuse is left out. A relative path is the config folder's, as Ghostty's; a leading ? (an
+    optional file) is dropped."""
+    features, audio, volume = set(BELL_DEFAULT), None, 0.5
+    keys = ["bell-features", "bell-audio-path", "bell-audio-volume"]
+    for key, value in ghostty_settings(terminal, keys):
+        try:
+            if key == "bell-features":
+                features = set(BELL_DEFAULT) if value == "" else _bell_features(value)
+            elif key == "bell-audio-path":
+                path = value[1:] if value.startswith("?") else value
+                path = path.strip('"')
+                if not path:
+                    audio = None
+                elif not CONTROL_RE.search(path):
+                    path = os.path.expanduser(path)
+                    audio = os.path.normpath(os.path.join(os.path.dirname(GHOSTTY_CONFIG), path))
+            else:
+                v = 0.5 if value == "" else float(value)
+                if not math.isfinite(v):
+                    raise ValueError(value)
+                volume = min(1.0, max(0.0, v))
+        except ValueError:
+            continue
+    return features, audio, volume
+
+
 # Omarchy's see-through terminals: the opacity each terminal's theme file sets. In Glassy windows
 # omarchy-theme-set-glass writes 0.65 there, or keeps the theme's own value; the user's choice of
 # default terminal decides which file counts.
@@ -3493,10 +3542,13 @@ def build_ssh_config(conn):
     wheel, touch = terminal_scroll(terminal)
     size, rows = terminal_scrollback(terminal)
     cursor, blink = terminal_cursor(terminal)
+    bell, audio, volume = terminal_bell(terminal)
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
               f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
               *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
               f"cursorStyle={cursor}", *([f"cursorBlink={int(blink)}"] if blink is not None else []),
+              "bell=" + (",".join(f for f in BELL_FEATURES if f in bell) or "none"),
+              *([f"bellAudio={audio}", f"bellVolume={volume:g}"] if audio else []),
               f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)

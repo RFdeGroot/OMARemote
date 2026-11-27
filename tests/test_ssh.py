@@ -1009,22 +1009,23 @@ class Searching(unittest.TestCase):
     search colours. A view that attaches again starts without a search."""
 
     @contextlib.contextmanager
-    def session(self, script):
-        """Runs script (400x300, offscreen); yields (send, search, status, row, state): send a line,
+    def session(self, script, *settings):
+        """Runs script (400x300, offscreen; settings: extra config lines); yields (send, search,
+        status, row, state): send a line,
         search for a needle, the last `search-status` (total, selected) once it settled, the
         frame's colours along a row, and the last `scrollbar` (state["scrollbar"])."""
         import base64, mmap, socket, time
         with tempfile.TemporaryDirectory() as d:
             sock = os.path.join(d, "s")
             config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}", "reconnect=0", "font=monospace",
-                                "fontSize=10"]) + "\n"
+                                "fontSize=10", *settings]) + "\n"
             env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
             p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, text=True, env=env)
             p.stdin.write(config)
             p.stdin.close()
             c = socket.socket(socket.AF_UNIX)
-            state = {"buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock, "cwd": []}
+            state = {"bells": [], "buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock, "cwd": []}
             try:
                 for _ in range(100):
                     try:
@@ -1055,6 +1056,8 @@ class Searching(unittest.TestCase):
                                 os.close(fd)
                             elif w[:1] == [b"search-status"]:
                                 state["status"] = (int(w[1]), int(w[2]))
+                            elif w[:1] == [b"bell"]:
+                                state["bells"].append([v.decode() for v in w[1:]])
                             elif w[:1] == [b"cwd"] and len(w) > 1:
                                 state["cwd"].append("-" if w[1] == b"-" else base64.b64decode(w[1]).decode())
                             elif w[:1] == [b"scrollbar"]:
@@ -1168,6 +1171,36 @@ class Searching(unittest.TestCase):
                 if total == 20000:
                     break
             self.assertEqual(total, 20000)
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Bell(unittest.TestCase):
+    """A BEL rings the view's bell (`bell` and Ghostty's bell-features words: attention and title
+    unless the config says otherwise), at most every 100 ms; `audio` carries its file."""
+
+    session = Searching.session
+
+    def bells(self, printf, *settings):
+        # After the view is there: a ring with no view is no one's.
+        with self.session(f"sleep 2.5; printf '{printf}'; sleep 30", *settings) as (send, search, status, row, state):
+            status(1.5)
+            return state["bells"]
+
+    def test_ghosttys_defaults(self):
+        self.assertEqual(self.bells("ding\\007"), [["attention", "title"]])
+
+    def test_the_configured_features(self):
+        self.assertEqual(self.bells("\\007", "bell=border,system"), [["border", "system"]])
+        self.assertEqual(self.bells("\\007", "bell=none"), [[]])
+        import base64
+        audio = self.bells("\\007", "bell=audio", "bellAudio=/usr/share/sounds/x.oga", "bellVolume=0.3")
+        self.assertEqual(audio, [["audio=" + base64.b64encode(b"/usr/share/sounds/x.oga").decode() + ":0.3"]])
+        # Only an absolute path.
+        self.assertEqual(self.bells("\\007", "bell=audio", "bellAudio=x.oga"), [[]])
+
+    def test_a_flood_rings_once_a_tenth_of_a_second(self):
+        # A thousand at once (a binary file on the screen): one ring.
+        self.assertEqual(len(self.bells("\\007" * 1000)), 1)
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")

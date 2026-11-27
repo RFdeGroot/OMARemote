@@ -45,6 +45,11 @@ class TheView(unittest.TestCase):
                     # Where the shell is: one, then one far too long (none), then one again.
                     conn.sendall(b"cwd " + base64.b64encode(b"file://srv/home/a") + b"\ncwd " +
                                  base64.b64encode(b"/" + b"x" * 9000) + b"\ncwd " + base64.b64encode(b"/tmp") + b"\n")
+                    # Bells: known words once each, the sound only as an absolute path, its volume
+                    # kept to 0..1.
+                    snd = base64.b64encode(b"/s/bell.oga")
+                    conn.sendall(b"bell title bogus title attention\nbell audio=" + snd + b":7\n"
+                                 b"bell audio=" + base64.b64encode(b"rel.oga") + b":0.2\nbell\n")
                     conn.recv(4096)  # until the view has read them
 
             thread = threading.Thread(target=session, daemon=True)
@@ -65,6 +70,8 @@ class TheView(unittest.TestCase):
         self.assertEqual(result["seen"], [[7, 3], [5, -1], [0, -1]])
         # Detached: none again.
         self.assertEqual(result["dirs"], ["file://srv/home/a", "", "/tmp", ""])
+        self.assertEqual(result["bells"], [[["title", "attention"], "", 0.5], [["audio"], "/s/bell.oga", 1],
+                                           [[], "", 0.5], [[], "", 0.5]])
 
 
 if __name__ == "__main__":

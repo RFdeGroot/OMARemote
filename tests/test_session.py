@@ -645,6 +645,16 @@ class Ssh(unittest.TestCase):
         self.assertFalse(any(l.startswith("cursorBlink=") for l in lines))
         with mock.patch.object(session, "terminal_cursor", return_value=("block", False)):
             self.assertIn("cursorBlink=0", session.build_ssh_config(self.ssh()))
+        # Ghostty's bell: its features always (none as "none"), the sound only when there is one.
+        with mock.patch.object(session, "terminal_bell", return_value=({"title", "audio"}, "/s/b.oga", 0.25)):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("bell=audio,title", lines)
+        self.assertIn("bellAudio=/s/b.oga", lines)
+        self.assertIn("bellVolume=0.25", lines)
+        with mock.patch.object(session, "terminal_bell", return_value=(set(), None, 0.5)):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("bell=none", lines)
+        self.assertFalse(any(l.startswith("bellAudio=") for l in lines))
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -779,6 +789,35 @@ class Ssh(unittest.TestCase):
                 self.assertEqual(session.terminal_scroll(""), (3.0, 1.0))
                 os.unlink(session.GHOSTTY_CONFIG)
                 self.assertEqual(session.terminal_scroll("ghostty"), (3.0, 1.0))
+        finally:
+            session.GHOSTTY_CONFIG = saved
+
+    def test_the_bell_from_ghosttys_config(self):
+        import tempfile
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                home = os.path.expanduser("~")
+                cases = {
+                    "": ({"attention", "title"}, None, 0.5),               # Ghostty's defaults
+                    "bell-features = border\n": ({"attention", "title", "border"}, None, 0.5),  # over them
+                    "bell-features = no-title,no-attention,system\n": ({"system"}, None, 0.5),
+                    "bell-features = false\n": (set(), None, 0.5),
+                    "bell-features = true\n": ({"system", "audio", "attention", "title", "border"}, None, 0.5),
+                    "bell-features = border\nbell-features = loud\n": ({"attention", "title", "border"}, None, 0.5),
+                    "bell-features = false\nbell-features =\n": ({"attention", "title"}, None, 0.5),
+                    "bell-audio-path = ding.oga\n": ({"attention", "title"}, os.path.join(d, "ding.oga"), 0.5),
+                    'bell-audio-path = "?~/s/ding.oga"\n': ({"attention", "title"}, os.path.join(home, "s/ding.oga"), 0.5),
+                    "bell-audio-path = /a.oga\nbell-audio-path =\n": ({"attention", "title"}, None, 0.5),
+                    "bell-audio-volume = 0.2\n": ({"attention", "title"}, None, 0.2),
+                    "bell-audio-volume = 3\nbell-audio-volume = nan\n": ({"attention", "title"}, None, 1.0),
+                }
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_bell("ghostty"), expected, text)
+                self.assertEqual(session.terminal_bell("foot"), ({"attention", "title"}, None, 0.5))
         finally:
             session.GHOSTTY_CONFIG = saved
 

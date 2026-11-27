@@ -429,6 +429,35 @@ void RdpView::handleLine(const QByteArray& line)
 		const long long selected = w[2].toLongLong();
 		setSearch(total, selected >= 0 && selected < total ? int(selected) : -1);
 	}
+	else if (cmd == "bell")
+	{
+		// Only the words there are; the sound only as an absolute path.
+		static const QStringList known = { "attention", "title", "border", "system" };
+		QStringList features;
+		QString audio;
+		double volume = 0.5;
+		for (int i = 1; i < w.size() && i < 16; i++)
+		{
+			const QString word = QString::fromLatin1(w[i]);
+			if (known.contains(word) && !features.contains(word))
+				features << word;
+			else if (w[i].startsWith("audio=") && w[i].size() <= 8192)
+			{
+				const QByteArray v = w[i].mid(6);
+				const int colon = v.lastIndexOf(':');
+				const QString path = unb64(colon < 0 ? v : v.left(colon));
+				bool ok = false;
+				const double vol = colon < 0 ? 0.5 : v.mid(colon + 1).toDouble(&ok);
+				if (path.startsWith('/') && !path.contains(QChar(0)))
+				{
+					audio = path;
+					volume = ok || colon < 0 ? std::clamp(vol, 0.0, 1.0) : 0.5;
+					features << "audio";
+				}
+			}
+		}
+		emit bell(features, audio, volume);
+	}
 	else if (cmd == "cwd" && w.size() >= 2)
 		setWorkingDirectory(w[1] == "-" || w[1].size() > 8192 ? QString() : unb64(w[1]));
 	else if (cmd == "link" && w.size() >= 2)

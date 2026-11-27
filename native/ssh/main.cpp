@@ -16,6 +16,8 @@
 //   scrollTouch how far a trackpad's pixels go (default 1; Ghostty's precision multiplier)
 //   cursorStyle block, bar, underline or block_hollow (default block; Ghostty's cursor-style)
 //   cursorBlink 1 or 0 (default: blinks unless a program says not; Ghostty's cursor-style-blink)
+//   bell       what a BEL does, comma-separated (default attention,title; Ghostty's bell-features)
+//   bellAudio  an absolute path to the sound `audio` plays; bellVolume 0 to 1 (default 0.5)
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
 // click) pastes, shift+page up/down and the wheel scroll back, shift+home/end go to the top and
@@ -990,6 +992,27 @@ static void cb_title(GhosttyTerminal, void*)
 		return;
 	g.title.assign(reinterpret_cast<const char*>(t.ptr), std::min(t.len, kMaxTitleBytes));
 	g.link.send("title " + b64(g.title));
+}
+
+// BEL (0x07): the view rings it with the features Ghostty's bell-features gives (`bell`: words
+// from attention title border system audio), at most every 100 ms: a binary file sent to the
+// screen is full of them. A bellAudio file is told to the view with each ring.
+static uint64_t g_bellAt = 0;
+
+static void cb_bell(GhosttyTerminal, void*)
+{
+	const uint64_t now = oma::now_ms();
+	if (g_bellAt && now - g_bellAt < 100)
+		return;
+	g_bellAt = now;
+	std::string line = "bell";
+	std::istringstream words(g.get("bell", "attention,title"));
+	for (std::string w; std::getline(words, w, ',');)
+		if (w == "attention" || w == "title" || w == "border" || w == "system")
+			line += " " + w;
+		else if (w == "audio" && !g.get("bellAudio").empty() && g.get("bellAudio")[0] == '/')
+			line += " audio=" + b64(g.get("bellAudio")) + ":" + g.get("bellVolume", "0.5");
+	g.link.send(line);
 }
 
 static constexpr size_t kMaxCwdBytes = 4096;
@@ -2400,6 +2423,7 @@ int main(int argc, char** argv)
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(&cb_write_pty));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, reinterpret_cast<const void*>(&cb_title));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, reinterpret_cast<const void*>(&cb_pwd));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_BELL, reinterpret_cast<const void*>(&cb_bell));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(&cb_clipboard_write));
 	// Unicode grapheme clusters (mode 2027), as Ghostty itself runs: an emoji with a skin tone, a flag,
 	// a family is one character of the right width, not its parts side by side.

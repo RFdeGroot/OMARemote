@@ -22,7 +22,7 @@ FocusScope {
         return null
     }
     readonly property bool live: !!session && Sessions.isActive(session)
-    readonly property string title: session ? session.name : "OMARemote"
+    readonly property string title: session ? Sessions.bellTitle(session.id, session.name) : "OMARemote"
     readonly property string launcher: Sessions.bin.replace(/omaremote-session$/, "omaremote")
 
     property bool movingToTab: false

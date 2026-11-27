@@ -1056,7 +1056,9 @@ FocusScope {
                     Layout.fillHeight: true
                     clip: true
                     current: root.currentTab
-                    tabs: root.tabSessions.map(function (s) { return { id: s.id, title: s.name, state: s.state } })
+                    tabs: root.tabSessions.map(function (s) {
+                        return { id: s.id, title: Sessions.bellTitle(s.id, s.name), state: s.state, ringing: !!Sessions.ringing[s.id] }
+                    })
                     onPicked: function (id) { root.showTab(id) }
                     onClosed: function (id) { root.closeTab(id) }
                 }

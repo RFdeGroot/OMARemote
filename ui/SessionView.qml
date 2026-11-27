@@ -53,6 +53,8 @@ Item {
     // is away from the start.
     Component.onCompleted: if (!present) awaySince = Date.now()
     onPresentChanged: {
+        if (present && view.activeFocus)
+            stopRinging()
         if (!present) {
             awaySince = Date.now()
             return
@@ -170,6 +172,7 @@ Item {
                 root.closeSearch() // Escape ends a search, as Ghostty's, before the terminal gets it
                 event.accepted = true
             }
+            root.stopRinging() // any key in the tab, as Ghostty's
         }
         Keys.onReleased: function (event) {
             if (root.hostKey(event, false))
@@ -313,6 +316,39 @@ Item {
     }
     HoverHandler { id: linkHover }
 
+    // An SSH tab's bell, Ghostty's (bell-features, from omaremote-ssh's `bell` lines): every ring
+    // asks for attention when the window is not active (Hyprland marks it urgent) and plays a
+    // sound when configured; a tab that is not in front rings until it is, or until a key in it:
+    // 🔔 before its name (title), a border round it (border), an unselected tab coloured.
+    property bool ringing: false
+    property bool bellBorder: false
+    function ringBell(features, audio, volume) {
+        Sessions.bellSound(features, audio, volume)
+        if (features.indexOf("attention") >= 0 && !Window.active && Window.window)
+            Window.window.alert(0)
+        if (root.present && view.activeFocus)
+            return
+        root.ringing = true
+        root.bellBorder = features.indexOf("border") >= 0
+        if (root.session)
+            Sessions.setRinging(root.session.id, features)
+    }
+    function stopRinging() {
+        if (!ringing)
+            return
+        ringing = false
+        if (root.session)
+            Sessions.setRinging(root.session.id, null)
+    }
+    Rectangle {
+        anchors.fill: parent
+        z: 15
+        visible: root.ringing && root.bellBorder && root.current
+        color: "transparent"
+        border.width: 2
+        border.color: Theme.accent
+    }
+
     // An SSH tab's find bar, Ghostty's: ctrl+shift+f opens it (top right; drag it to another
     // corner), typing highlights every match in the scrollback and goes to the newest (a
     // browser's find; Ghostty waits for Enter), Enter goes to the next one up
@@ -341,7 +377,16 @@ Item {
     Connections {
         target: view
         // A session that ended or a view that attached again starts without one.
-        function onAttachedChanged() { root.searching = false }
+        function onAttachedChanged() {
+            root.searching = false
+            if (!view.attached)
+                root.stopRinging()
+        }
+        function onBell(features, audio, volume) { root.ringBell(features, audio, volume) }
+        function onActiveFocusChanged() {
+            if (view.activeFocus && root.present)
+                root.stopRinging()
+        }
         // Where the shell is (OSC 7), for Browse files from the list too.
         function onWorkingDirectoryChanged() {
             if (root.session && root.isSsh)

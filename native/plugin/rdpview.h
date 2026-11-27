@@ -164,6 +164,9 @@ signals:
 	void hoveredLinkChanged();
 	void searchChanged();
 	void workingDirectoryChanged();
+	// A terminal's bell (SSH, `bell` lines): what Ghostty's bell-features say it does (attention,
+	// title, border, system, audio), and for audio the sound file (absolute) and its volume (0..1).
+	void bell(const QStringList& features, const QString& audio, double volume);
 	void openUrl(const QString& url);
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);

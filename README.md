@@ -508,6 +508,10 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   without it the cursor is a hollow block, as in Ghostty. The cursor takes your Ghostty's
   `cursor-style` and `cursor-style-blink` (Omarchy's: a steady block) and blinks as Ghostty's when
   that or a program asks for it.
+  The bell rings as Ghostty's does, by your Ghostty's `bell-features`: by default an OMARemote
+  window in the background asks for attention (Hyprland marks it urgent), and a tab not in front
+  gets 🔔 before its name until you look at it; `border`, `system` (the desktop's bell sound) and
+  `audio` (your `bell-audio-path`, at `bell-audio-volume`) work too.
   `ctrl+shift+f` searches the whole scrollback, as Ghostty's find bar: every match is highlighted
   as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
   back down), `escape` closes it; drag

@@ -11,6 +11,7 @@ Window {
     readonly property var args: Qt.application.arguments
     property var seen: []
     property var dirs: [] // workingDirectory as it changes
+    property var bells: [] // [features, audio, volume] each ring
 
     RdpView {
         id: view
@@ -28,12 +29,13 @@ Window {
         }
         onSearchChanged: seen.push([searchTotal, searchSelected])
         onWorkingDirectoryChanged: dirs.push(workingDirectory)
+        onBell: function (features, audio, volume) { bells.push([features, audio, volume]) }
     }
     Timer {
         id: done
         interval: 50
         onTriggered: {
-            console.log("RESULT " + JSON.stringify({ seen: seen, dirs: dirs }))
+            console.log("RESULT " + JSON.stringify({ seen: seen, dirs: dirs, bells: bells }))
             Qt.exit(0)
         }
     }
