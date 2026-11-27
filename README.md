@@ -43,7 +43,7 @@ desktop.
 
 ## Install
 
-> **Early development.** OMARemote 0.10.1 works day to day, but it is young: expect rough edges,
+> **Early development.** OMARemote 0.11.0 works day to day, but it is young: expect rough edges,
 > and please [report what you run into](https://github.com/RFdeGroot/OMARemote/issues).
 
 ### From a release (recommended)
