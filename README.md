@@ -505,7 +505,9 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   Hold `ctrl` over a URL or a link a program made (OSC 8) to see where it goes, `ctrl`+click opens it
   (web, mail and the like; not `file:`, which would be a path on the server). Programs that ask
   are told when the tab gains or loses the keyboard (vim's `FocusGained`, tmux `focus-events`);
-  without it the cursor is a hollow block, as in Ghostty.
+  without it the cursor is a hollow block, as in Ghostty. The cursor takes your Ghostty's
+  `cursor-style` and `cursor-style-blink` (Omarchy's: a steady block) and blinks as Ghostty's when
+  that or a program asks for it.
   `ctrl+shift+f` searches the whole scrollback, as Ghostty's find bar: every match is highlighted
   as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
   back down), `escape` closes it; drag

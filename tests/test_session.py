@@ -638,6 +638,13 @@ class Ssh(unittest.TestCase):
         self.assertFalse(any(l.startswith("scrollback=") for l in lines))
         with mock.patch.object(session, "terminal_scrollback", return_value=(1000, 300)):
             self.assertIn("scrollback=300", session.build_ssh_config(self.ssh()))
+        # Ghostty's cursor: its style always, its blink only when the config sets one.
+        with mock.patch.object(session, "terminal_cursor", return_value=("bar", None)):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("cursorStyle=bar", lines)
+        self.assertFalse(any(l.startswith("cursorBlink=") for l in lines))
+        with mock.patch.object(session, "terminal_cursor", return_value=("block", False)):
+            self.assertIn("cursorBlink=0", session.build_ssh_config(self.ssh()))
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -772,6 +779,29 @@ class Ssh(unittest.TestCase):
                 self.assertEqual(session.terminal_scroll(""), (3.0, 1.0))
                 os.unlink(session.GHOSTTY_CONFIG)
                 self.assertEqual(session.terminal_scroll("ghostty"), (3.0, 1.0))
+        finally:
+            session.GHOSTTY_CONFIG = saved
+
+    def test_the_cursor_from_ghosttys_config(self):
+        import tempfile
+        cases = {
+            "": ("block", None),                                     # Ghostty's: a block, blinking
+            'cursor-style = "block"\ncursor-style-blink = false\n': ("block", False),  # Omarchy's
+            "cursor-style = bar\ncursor-style-blink = true\n": ("bar", True),
+            "cursor-style = underline\ncursor-style = block_hollow\n": ("block_hollow", None),  # the last
+            "cursor-style = bar\ncursor-style =\n": ("block", None),             # empty: reset
+            "cursor-style-blink = false\ncursor-style-blink =\n": ("block", None),
+            "cursor-style = beam\ncursor-style-blink = maybe\n": ("block", None),  # refused
+        }
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_cursor("ghostty"), expected, text)
+                self.assertEqual(session.terminal_cursor("foot"), ("block", None))
         finally:
             session.GHOSTTY_CONFIG = saved
 

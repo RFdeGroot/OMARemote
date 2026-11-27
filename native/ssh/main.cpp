@@ -14,6 +14,8 @@
 //   scrollback lines kept above the screen (default: no line limit, as Ghostty)
 //   scrollWheel lines a wheel notch scrolls (default 3; Ghostty's mouse-scroll-multiplier discrete)
 //   scrollTouch how far a trackpad's pixels go (default 1; Ghostty's precision multiplier)
+//   cursorStyle block, bar, underline or block_hollow (default block; Ghostty's cursor-style)
+//   cursorBlink 1 or 0 (default: blinks unless a program says not; Ghostty's cursor-style-blink)
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
 // click) pastes, shift+page up/down and the wheel scroll back, shift+home/end go to the top and
@@ -176,6 +178,14 @@ struct Session
 	// The view has the keyboard (`focus` / `blur`): programs that ask (mode 1004: vim, tmux) are
 	// told, and the cursor is a hollow block without it, as Ghostty's.
 	bool focused = true;
+	// The cursor's blink, Ghostty's (renderer/Thread.zig): on and off every 600 ms while the
+	// terminal says it blinks (DECSCUSR, mode 12) and the view has the keyboard; output and keys
+	// show it again and start the interval over (Ghostty throttles that to every 500 ms, a message
+	// to its renderer thread each time; here it costs nothing, and the throttle let the cursor
+	// flicker off under steady output when a tick fell just before the next reset).
+	bool cursorBlinks = false; // as of the last flush
+	bool blinkShown = true;
+	uint64_t blinkAt = 0;
 	bool hasSelection = false;
 	long selFrom = 0, selTo = -1;
 
@@ -625,6 +635,21 @@ static bool draw_symbol(QPainter& painter, const DrawCell& c, int width)
 // yellow, the selected match on soft peach.
 static const QColor kSearchFg(0, 0, 0), kSearchBg(0xFF, 0xE0, 0x82), kSearchSelBg(0xF2, 0xA5, 0x7E);
 
+static constexpr uint64_t kBlinkMs = 600;
+
+// The cursor shown again, its interval started over: output, keys, the keyboard back.
+static void show_cursor()
+{
+	g.blinkShown = true;
+	g.blinkAt = oma::now_ms();
+}
+
+// Blinked off now: focused and blinking only (unfocused it is the hollow block, always there).
+static bool blinked_off(const GhosttyRenderStateCursor& cursor)
+{
+	return g.focused && cursor.blinking && !g.blinkShown;
+}
+
 static GhosttyCursorStyle drawn_style(const GhosttyRenderStateCursor& cursor)
 {
 	return g.focused ? cursor.visual_style : GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW;
@@ -640,7 +665,8 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 	painter.setCompositionMode(QPainter::CompositionMode_Source);
 	painter.fillRect(QRect(0, y, g.cols * g.cellW, g.cellH), background(colors.background));
 	painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-	const bool cursorHere = cursor.visible && cursor.viewport_has_value && cursor.viewport_y == row && !scrolled_back();
+	const bool cursorHere = cursor.visible && cursor.viewport_has_value && cursor.viewport_y == row && !scrolled_back()
+	                        && !blinked_off(cursor);
 	const QColor cursorColour = colors.cursor_has_value ? qcolor(colors.cursor) : g.pal.cursor;
 	// The screen line of the view's top row: what link and search spans are kept in.
 	const long top = g.linkSpans.empty() && g.searchSpans.empty() ? 0 : long(scrollbar().offset);
@@ -794,7 +820,9 @@ static void flush(bool announce)
 	// The library does not mark a row dirty when only the cursor moves (left and right on the
 	// prompt): its column and style count as a change of their own.
 	const int cursorCol = cursorRow >= 0 ? int(cursor.viewport_x) : -1;
-	const int cursorStyle = int(drawn_style(cursor));
+	// Blinked off counts as a style of its own: the row is drawn again without it.
+	const int cursorStyle = blinked_off(cursor) ? -2 : int(drawn_style(cursor));
+	g.cursorBlinks = cursor.blinking;
 	if (dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE && !g.full && cursorRow == g.cursorRow
 	    && cursorCol == g.cursorCol && cursorStyle == g.cursorStyle)
 		return;
@@ -1362,6 +1390,7 @@ static void key_down(uint32_t evdev, uint32_t sym, const std::string& text)
 		return;
 	}
 	g.typed = true;
+	show_cursor();
 	const bool shift = shift_held(), ctrl = ctrl_held();
 
 	// The terminal's own keys.
@@ -1931,6 +1960,7 @@ static void handle_line(const std::string& line)
 		if (focused != g.focused)
 		{
 			g.focused = focused;
+			show_cursor();
 			if (g.pty >= 0 && mode(1004))
 			{
 				uint8_t buf[8];
@@ -1994,6 +2024,7 @@ static void term_write(const char* s, size_t len)
 {
 	ghostty_terminal_vt_write(g.term, reinterpret_cast<const uint8_t*>(s), len);
 	g.output = true;
+	show_cursor();
 	after_write();
 }
 
@@ -2128,7 +2159,11 @@ static int run_ssh()
 		// A drag past the top or bottom scrolls on a 15 ms tick, as Ghostty's.
 		const bool scrolling = g.autoscroll != GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
 		// A search still going through the scrollback comes back at once.
-		const int n = poll(fds, g.link.attached() ? 3 : 2, g.searchBusy ? 0 : scrolling ? 15 : 500);
+		int wait = g.searchBusy ? 0 : scrolling ? 15 : 500;
+		const bool blinking = g.cursorBlinks && g.focused;
+		if (blinking)
+			wait = std::min<int>(wait, int(std::min<uint64_t>(kBlinkMs, g.blinkAt + kBlinkMs - std::min(oma::now_ms(), g.blinkAt + kBlinkMs))));
+		const int n = poll(fds, g.link.attached() ? 3 : 2, wait);
 		if (n < 0 && errno != EINTR)
 			break;
 		if (fds[0].revents & (POLLIN | POLLHUP | POLLERR))
@@ -2164,6 +2199,11 @@ static int run_ssh()
 		{
 			lastThemeCheck = oma::now_ms();
 			check_theme();
+		}
+		if (blinking && oma::now_ms() - g.blinkAt >= kBlinkMs)
+		{
+			g.blinkShown = !g.blinkShown;
+			g.blinkAt = oma::now_ms();
 		}
 		search_pump();
 		flush();
@@ -2321,6 +2361,26 @@ int main(int argc, char** argv)
 	{
 		const size_t scrollback = size_t(count(g.get("scrollback", ""), SIZE_MAX));
 		ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback);
+	}
+	// Ghostty's cursor-style and cursor-style-blink (`cursorStyle`, `cursorBlink`): the cursor a
+	// program's CSI 0 q goes back to. Blinking starts on (mode 12) unless the config turns it off,
+	// as Ghostty's Termio does; programs still change it (DECSCUSR).
+	{
+		const std::string style = g.get("cursorStyle", "block");
+		const GhosttyCursorStyle cs = style == "bar" ? GHOSTTY_CURSOR_STYLE_BAR
+		                            : style == "underline" ? GHOSTTY_CURSOR_STYLE_UNDERLINE
+		                            : style == "block_hollow" ? GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW
+		                                                      : GHOSTTY_CURSOR_STYLE_BLOCK;
+		ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE, &cs);
+		const std::string blink = g.get("cursorBlink", "");
+		if (blink == "0" || blink == "1")
+		{
+			const bool on = blink == "1";
+			ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &on);
+		}
+		// CSI 0 q takes the defaults just set; mode 12 the blink.
+		const std::string start = std::string("\x1b[0 q") + (blink == "0" ? "\x1b[?12l" : "\x1b[?12h");
+		ghostty_terminal_vt_write(g.term, reinterpret_cast<const uint8_t*>(start.data()), start.size());
 	}
 	// Ghostty's bounds for its scroll multipliers; anything not a number keeps its default.
 	const auto multiplier = [](const std::string& v, double fallback) {

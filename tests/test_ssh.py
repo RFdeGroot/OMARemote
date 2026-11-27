@@ -423,15 +423,16 @@ class CursorMoves(unittest.TestCase):
     prompt): the library marks no row dirty for it, so the session must redraw it by itself."""
 
     @contextlib.contextmanager
-    def watch(self, script):
+    def watch(self, script, *settings):
         """Runs script in omaremote-ssh (400x300, offscreen) and yields light(): the left edge and
         width of the light run on the first row (the default cursor is light on a dark ground),
-        or None when there is none."""
+        or None when there is none. Settings: extra config lines (default: the cursor does not
+        blink, so it is always there to see)."""
         import mmap, socket, time
         with tempfile.TemporaryDirectory() as d:
             sock = os.path.join(d, "s")
-            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}",
-                                "reconnect=0", "font=monospace", "fontSize=10"]) + "\n"
+            config = "\n".join(["arg=/bin/sh", "arg=-c", f"arg={script}", "reconnect=0", "font=monospace",
+                                "fontSize=10", *(settings or ("cursorBlink=0",))]) + "\n"
             env = dict(os.environ, OMAREMOTE_SOCKET=sock, QT_QPA_PLATFORM="offscreen")
             p = subprocess.Popen([HELPER], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, text=True, env=env)
@@ -518,6 +519,70 @@ class CursorMoves(unittest.TestCase):
             self.assertIsNotNone(changed, "the cursor vanished")
             self.assertLess(changed[1], first[1], "the block did not become a bar")
             self.assertLessEqual(abs(changed[0] - first[0]), 1, "the cursor moved")
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class CursorBlink(unittest.TestCase):
+    """Ghostty's blink (renderer/Thread.zig): every 600 ms while the terminal says the cursor
+    blinks, which it does unless cursorBlink=0 (Ghostty's cursor-style-blink); a program can ask
+    for it either way (DECSCUSR); not without the keyboard (the hollow block stays); output shows
+    it again. cursorStyle is the cursor a program's CSI 0 q goes back to."""
+
+    watch = CursorMoves.watch
+    settle = CursorMoves.settle
+
+    def seen(self, light, seconds=2.5):
+        """light() every 50 ms for a while: how often the cursor went away and came back."""
+        import time
+        flips, last, end = 0, light(), time.time() + seconds
+        while time.time() < end:
+            time.sleep(0.05)
+            now = light()
+            flips += (now is None) != (last is None)
+            last = now
+        return flips
+
+    def ready(self, light):
+        self.settle(light, lambda s: s is not None and s[0] >= 20)
+
+    def test_it_blinks_by_default(self):
+        with self.watch("printf '    '; sleep 30", "cursorStyle=block") as light:
+            self.ready(light)
+            self.assertGreaterEqual(self.seen(light), 3)
+
+    def test_not_when_the_config_says_so(self):
+        with self.watch("printf '    '; sleep 30", "cursorBlink=0") as light:
+            self.ready(light)
+            self.assertEqual(self.seen(light), 0)
+
+    def test_a_program_asks_for_it_anyway(self):
+        # DECSCUSR 1: a blinking block.
+        with self.watch("printf '    \\033[1 q'; sleep 30", "cursorBlink=0") as light:
+            self.ready(light)
+            self.assertGreaterEqual(self.seen(light), 3)
+
+    def test_not_without_the_keyboard(self):
+        with self.watch("printf '    '; sleep 30", "cursorBlink=1") as light:
+            self.ready(light)
+            light.send(b"blur\n")
+            self.settle(light, lambda s: s is not None and s[1] < 4)  # the hollow block
+            self.assertEqual(self.seen(light, 2), 0)
+
+    def test_output_keeps_it_shown(self):
+        # Something every 200 ms that draws nothing (a colour reset): the cursor never goes away.
+        script = "printf '    '; while :; do printf '\\033[0m'; sleep 0.2; done"
+        with self.watch(script, "cursorBlink=1") as light:
+            self.ready(light)
+            self.assertEqual(self.seen(light, 2), 0)
+
+    def test_the_configured_style(self):
+        with self.watch("printf '    '; sleep 30", "cursorBlink=0") as light:
+            self.ready(light)
+            block = light()
+        with self.watch("printf '    '; sleep 30", "cursorBlink=0", "cursorStyle=bar") as light:
+            self.ready(light)
+            bar = light()
+        self.assertLess(bar[1], block[1] / 2)
 
 
 # Sets the terminal up ($2, with escapes), waits for the answer to a device attributes query (so

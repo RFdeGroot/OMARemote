@@ -3020,6 +3020,26 @@ def terminal_scrollback(terminal=None):
     return size, lines
 
 
+CURSOR_STYLES = ("block", "bar", "underline", "block_hollow")
+
+
+def terminal_cursor(terminal=None):
+    """(style, blink) for an SSH tab's cursor: Ghostty's cursor-style (default block) and
+    cursor-style-blink (True, False, or None when not set: Ghostty then blinks unless a program
+    says otherwise) when Ghostty is the default terminal; the last line wins, a value Ghostty
+    would refuse is left out."""
+    style, blink = "block", None
+    for key, value in ghostty_settings(terminal, ["cursor-style", "cursor-style-blink"]):
+        if key == "cursor-style":
+            if value == "":
+                style = "block"
+            elif value in CURSOR_STYLES:
+                style = value
+        elif value in ("", "true", "false"):
+            blink = None if value == "" else value == "true"
+    return style, blink
+
+
 # Omarchy's see-through terminals: the opacity each terminal's theme file sets. In Glassy windows
 # omarchy-theme-set-glass writes 0.65 there, or keeps the theme's own value; the user's choice of
 # default terminal decides which file counts.
@@ -3472,9 +3492,11 @@ def build_ssh_config(conn):
     terminal = default_terminal()
     wheel, touch = terminal_scroll(terminal)
     size, rows = terminal_scrollback(terminal)
+    cursor, blink = terminal_cursor(terminal)
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
               f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
               *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
+              f"cursorStyle={cursor}", *([f"cursorBlink={int(blink)}"] if blink is not None else []),
               f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)
