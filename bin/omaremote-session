@@ -3062,6 +3062,33 @@ def terminal_progress(terminal=None):
     return _ghostty_switch(terminal, "progress-style")
 
 
+# Terminals that draw ligatures (Ghostty and Kitty shape text; Alacritty and foot do not).
+NO_LIGATURES = ("alacritty", "foot")
+FEATURE_RE = re.compile(r"^([+-]?)([A-Za-z0-9]{4})(?:=(\d{1,5})|\s+(on|off))?$")
+
+
+def terminal_ligatures(terminal=None):
+    """(ligatures, features) for an SSH tab, like the default terminal: no ligatures when it draws none
+    (Alacritty, foot), and Ghostty's font-feature lines (tag, +tag, -tag, tag=N, "tag on|off"; several
+    a line, comma-separated; an empty line starts over) as "tag=N,..." when Ghostty is it."""
+    terminal = terminal if terminal is not None else default_terminal()
+    features = {}
+    for _key, value in ghostty_settings(terminal, ["font-feature"]):
+        if not value:
+            features = {}
+            continue
+        for part in value.split(","):
+            m = FEATURE_RE.match(part.strip())
+            if not m:
+                continue
+            sign, tag, number, onoff = m.groups()
+            features[tag] = (0 if sign == "-" or onoff == "off" else
+                             int(number) if number is not None else 1)
+            if len(features) > 64:
+                break
+    return terminal not in NO_LIGATURES, ",".join(f"{t}={v}" for t, v in features.items())
+
+
 COPY_ON_SELECT = {"none": "none", "primary": "primary", "clipboard": "clipboard", "both": "both",
                   "true": "primary", "false": "none"}  # true is primary on Linux
 MIDDLE_CLICK = ("primary-paste", "clipboard-paste", "ignore")
@@ -3589,6 +3616,7 @@ def build_ssh_config(conn):
     copy, middle = terminal_copy(terminal)
     notifications = terminal_notifications(terminal)
     progress = terminal_progress(terminal)
+    ligatures, features = terminal_ligatures(terminal)
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
               f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
               *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
@@ -3596,7 +3624,8 @@ def build_ssh_config(conn):
               "bell=" + (",".join(f for f in BELL_FEATURES if f in bell) or "none"),
               *([f"bellAudio={audio}", f"bellVolume={volume:g}"] if audio else []),
               f"copyOnSelect={copy}", f"middleClick={middle}", f"notifications={int(notifications)}",
-              f"progress={int(progress)}",
+              f"progress={int(progress)}", f"ligatures={int(ligatures)}",
+              *([f"fontFeatures={features}"] if features else []),
               f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)

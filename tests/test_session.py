@@ -668,6 +668,15 @@ class Ssh(unittest.TestCase):
         self.assertIn("progress=1", lines)
         with mock.patch.object(session, "terminal_progress", return_value=False):
             self.assertIn("progress=0", session.build_ssh_config(self.ssh()))
+        # Ligatures as the default terminal draws them, with Ghostty's font-feature lines.
+        with mock.patch.object(session, "terminal_ligatures", return_value=(True, "")):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("ligatures=1", lines)
+        self.assertFalse(any(l.startswith("fontFeatures=") for l in lines))
+        with mock.patch.object(session, "terminal_ligatures", return_value=(False, "calt=0")):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("ligatures=0", lines)
+        self.assertIn("fontFeatures=calt=0", lines)
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -822,6 +831,31 @@ class Ssh(unittest.TestCase):
                     with open(session.GHOSTTY_CONFIG, "w") as f:
                         f.write(text.replace("desktop-notifications", "progress-style"))
                     self.assertEqual(session.terminal_progress("ghostty"), expected, text)
+        finally:
+            session.GHOSTTY_CONFIG = saved
+
+    def test_ligatures_like_the_default_terminal(self):
+        import tempfile
+        cases = {
+            "": "",
+            "font-feature = -calt\n": "calt=0",
+            "font-feature = +liga, ss01 ,cv02=3\n": "liga=1,ss01=1,cv02=3",
+            "font-feature = calt off\nfont-feature = dlig on\n": "calt=0,dlig=1",
+            "font-feature = -calt\nfont-feature =\nfont-feature = ss02\n": "ss02=1",   # an empty line starts over
+            "font-feature = toolong\nfont-feature = c\"lt\nfont-feature = $(x)\n": "",  # refused
+        }
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_ligatures("ghostty"), (True, expected), text)
+                # Terminals that draw none; Kitty does; Ghostty's lines only for Ghostty.
+                self.assertEqual(session.terminal_ligatures("alacritty"), (False, ""))
+                self.assertEqual(session.terminal_ligatures("foot"), (False, ""))
+                self.assertEqual(session.terminal_ligatures("kitty"), (True, ""))
         finally:
             session.GHOSTTY_CONFIG = saved
 

@@ -491,7 +491,9 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   work. *Extra ssh options* are passed to ssh as-is (for example `-J jump.example.com`).
 - **Looks like your terminal**: Omarchy's terminal font (fontconfig's `monospace`) at your default
   terminal's size, in the theme's terminal colours, following a theme switch and a new font
-  (`omarchy-font-set`) live. The terminal is
+  (`omarchy-font-set`) live. Ligatures (`->`, `!=`, `===` in JetBrains Mono) are drawn as Ghostty and
+  Kitty draw them, never under the cursor; not when your default terminal is Alacritty or foot, which
+  have none. Ghostty's `font-feature` lines count (`font-feature = -calt` turns them off). The terminal is
   Ghostty's own (libghostty-vt), and Nerd Font icons are sized and placed by Ghostty's rules.
   `ctrl+=` / `ctrl+-` make the text bigger or smaller in that tab, `ctrl+0` resets it.
 - **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select, as in

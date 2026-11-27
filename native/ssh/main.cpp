@@ -10,6 +10,8 @@
 //   font       font family (default: monospace, which Omarchy points at its terminal font; a new one chosen
 //              with omarchy-font-set is followed, as the theme is)
 //   fontSize   in points at scale 100 (default 9)
+//   ligatures  0: no ligatures (default 1: runs of text shaped, as Ghostty does)
+//   fontFeatures OpenType features for that shaping, tag=value comma-separated (Ghostty's font-feature)
 //   theme      a foot.ini with the theme's terminal colours, followed when it changes
 //   scrollbackBytes how much is kept above the screen (default 50 MB, Ghostty's; at most 1 GiB)
 //   scrollback lines kept above the screen (default: no line limit, as Ghostty)
@@ -149,6 +151,12 @@ struct Session
 	int cellW = 8, cellH = 16, ascent = 12;
 	std::vector<uint32_t> rowCps;                       // draw_row's, kept to reuse
 	std::unordered_map<uint64_t, SymbolGlyph> symbols; // by codepoint and style; emptied with the font
+	// Ligatures (Ghostty shapes runs of text with HarfBuzz): a run's glyphs by style and text, empty when
+	// shaping changes nothing there. Emptied with the font.
+	struct ShapedGlyph { quint32 index; int cell; QPointF offset; };
+	std::unordered_map<QString, std::vector<ShapedGlyph>> shaped;
+	QRawFont shapedFace[4]; // the faces the shaped glyphs are from (the terminal font's, as raw)
+	bool ligatures = true;          // ligatures=0: text drawn cell by cell (a default terminal that has none)
 	int zoom = 0;                   // points added to fontSize (ctrl+= / ctrl+- / ctrl+0), this tab only
 	std::set<uint32_t> zoomKeys;    // their keys held: the release is ours too
 	int pad = 6; // margin around the cells, in pixels
@@ -468,6 +476,20 @@ static void setup_font()
 	gm.iconHeight = gm.faceHeight;
 	gm.iconHeightSingle = (2 * cap + gm.faceHeight) / 3;
 	g.symbols.clear();
+	g.shaped.clear();
+	// Ghostty's font-feature lines (fontFeatures: tag=value, comma-separated), for shaping.
+	for (const QString& f : QString::fromStdString(g.get("fontFeatures")).split(QLatin1Char(','), Qt::SkipEmptyParts))
+	{
+		const QStringList kv = f.split(QLatin1Char('='));
+		const QByteArray tag = kv[0].toLatin1();
+		bool ok = kv.size() == 2;
+		const uint value = ok ? kv[1].toUInt(&ok) : 0;
+		const std::optional<QFont::Tag> t = QFont::Tag::fromString(tag);
+		if (ok && t)
+			g.font.setFeature(*t, value);
+	}
+	for (int i = 0; i < 4; i++)
+		g.shapedFace[i] = g.raw[i];
 }
 
 static void set_pty_size()
@@ -768,6 +790,58 @@ static GhosttyCursorStyle drawn_style(const GhosttyRenderStateCursor& cursor)
 	return g.focused ? cursor.visual_style : GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW;
 }
 
+// Ligatures: a run of cells (printable ASCII, one style, none under the cursor, as Ghostty's
+// font-shaping-break = cursor) shaped as a whole, each glyph in the cell its text came from. Empty when
+// shaping gives what drawing cell by cell does (most text), or when Qt fell back to another font.
+static const std::vector<Session::ShapedGlyph>& shape_run(const QString& text, int variant)
+{
+	if (g.shaped.size() > 4096)
+		g.shaped.clear();
+	const QString key = QChar(u'0' + variant) + text;
+	auto it = g.shaped.find(key);
+	if (it != g.shaped.end())
+		return it->second;
+	std::vector<Session::ShapedGlyph>& out = g.shaped[key];
+	QFont f = g.font;
+	f.setBold(variant & 1);
+	f.setItalic(variant & 2);
+	QTextLayout layout(text, f);
+	layout.setCacheEnabled(false);
+	layout.beginLayout();
+	QTextLine line = layout.createLine();
+	layout.endLayout();
+	const QList<QGlyphRun> runs = layout.glyphRuns(-1, -1, QTextLayout::RetrieveGlyphIndexes |
+	                                                   QTextLayout::RetrieveGlyphPositions |
+	                                                   QTextLayout::RetrieveStringIndexes);
+	if (runs.size() != 1 || !line.isValid())
+		return out;
+	const QList<quint32> glyphs = runs[0].glyphIndexes();
+	const QList<QPointF> positions = runs[0].positions();
+	const QList<qsizetype> indexes = runs[0].stringIndexes();
+	const QRawFont& face = g.raw[variant];
+	if (glyphs.size() != positions.size() || glyphs.size() != indexes.size() || runs[0].rawFont() != face)
+		return out;
+	// Where each cell's text starts in the shaped line: a glyph sits that far from it in its cell.
+	std::vector<double> start(size_t(text.size()), -1);
+	for (qsizetype k = 0; k < glyphs.size(); k++)
+		if (indexes[k] >= 0 && indexes[k] < text.size() && start[size_t(indexes[k])] < 0)
+			start[size_t(indexes[k])] = positions[k].x();
+	if (glyphs == face.glyphIndexesForString(text))
+		return out; // nothing changed: drawn cell by cell
+	const double baseline = line.ascent();
+	for (qsizetype k = 0; k < glyphs.size(); k++)
+	{
+		const qsizetype cell = indexes[k];
+		if (cell < 0 || cell >= text.size())
+		{
+			out.clear();
+			return out;
+		}
+		out.push_back({ glyphs[k], int(cell), QPointF(positions[k].x() - start[size_t(cell)], positions[k].y() - baseline) });
+	}
+	return out;
+}
+
 static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors& colors,
                      const GhosttyRenderStateCursor& cursor)
 {
@@ -857,10 +931,44 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 	for (const DrawCell& c : cells)
 		g.rowCps[size_t(c.col)] = c.first;
 
+	// Ligatures, as Ghostty draws them: runs of text shaped as a whole; their cells are drawn here.
+	std::vector<char> drawn(cells.size(), 0);
+	auto shapeable = [&](const DrawCell& c) {
+		return !c.atCursor && c.span == 1 && c.text.size() == 1 && c.first > 0x20 && c.first < 0x7f;
+	};
+	for (size_t i = 0; g.ligatures && i < cells.size();)
+	{
+		const int variant = (cells[i].bold ? 1 : 0) | (cells[i].italic ? 2 : 0);
+		size_t j = i;
+		QString text;
+		while (j < cells.size() && shapeable(cells[j]) && ((cells[j].bold ? 1 : 0) | (cells[j].italic ? 2 : 0)) == variant &&
+		       (j == i || cells[j].col == cells[j - 1].col + 1))
+			text += cells[j++].text;
+		if (j - i < 2)
+		{
+			i = std::max(j, i + 1);
+			continue;
+		}
+		const std::vector<Session::ShapedGlyph>& glyphs = shape_run(text, variant);
+		for (const Session::ShapedGlyph& sg : glyphs)
+		{
+			const DrawCell& c = cells[i + size_t(sg.cell)];
+			QGlyphRun run;
+			run.setRawFont(g.shapedFace[variant]);
+			run.setGlyphIndexes({ sg.index });
+			run.setPositions({ QPointF(c.box.x(), y + g.ascent) + sg.offset });
+			painter.setPen(c.fg);
+			painter.drawGlyphRun(QPointF(0, 0), run);
+		}
+		if (!glyphs.empty())
+			std::fill(drawn.begin() + long(i), drawn.begin() + long(j), 1);
+		i = j;
+	}
+
 	for (size_t i = 0; i < cells.size(); i++)
 	{
 		const DrawCell& c = cells[i];
-		if (c.text.isEmpty())
+		if (c.text.isEmpty() || drawn[i])
 			continue;
 		const QRawFont& rawFont = g.raw[(c.bold ? 1 : 0) | (c.italic ? 2 : 0)];
 		painter.setPen(c.fg);
@@ -2565,6 +2673,7 @@ int main(int argc, char** argv)
 	QGuiApplication app(argc, argv);
 
 	g.themePath = g.get("theme");
+	g.ligatures = g.get("ligatures", "1") != "0";
 	if (!g.link.listen(getenv("OMAREMOTE_SOCKET")))
 		return 136;
 	g.link.onAttach = replay;

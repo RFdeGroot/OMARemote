@@ -1323,6 +1323,39 @@ class DesktopNotifications(unittest.TestCase):
         self.assertEqual(self.notes("\\033]9;build done\\007", "notifications=0"), [])
 
 
+JETBRAINS = "JetBrainsMono Nerd Font"
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+@unittest.skipUnless(shutil.which("fc-list") and subprocess.run(["fc-list", JETBRAINS, "family"], capture_output=True,
+                                                               text=True).stdout.strip(), "needs JetBrains Mono (Omarchy's)")
+class Ligatures(unittest.TestCase):
+    """Ligatures as Ghostty draws them: runs of text shaped as a whole (-> as an arrow in JetBrains
+    Mono), each glyph in its own cell; not under the cursor (Ghostty's font-shaping-break = cursor);
+    off with ligatures=0 (a default terminal without them) or Ghostty's font-feature = -calt."""
+
+    def picture(self, text, *settings):
+        script = f"printf '{text}'; sleep 30"
+        with Searching.session(self, script, f"font={JETBRAINS}", "cursorBlink=0", *settings) as (send, search, status, row, state):
+            row(0)
+            fb, stride = state["frame"]
+            return bytes(fb[:stride * 30])
+
+    def test_an_arrow_is_one(self):
+        self.assertNotEqual(self.picture("a -> b"), self.picture("a -> b", "ligatures=0"))
+
+    def test_plain_text_is_drawn_as_before(self):
+        self.assertEqual(self.picture("abc xyz 123"), self.picture("abc xyz 123", "ligatures=0"))
+
+    def test_not_under_the_cursor(self):
+        # The cursor on the >: the - and > are drawn on their own.
+        self.assertEqual(self.picture("x ->\\b"), self.picture("x ->\\b", "ligatures=0"))
+        self.assertNotEqual(self.picture("x ->\\n"), self.picture("x ->\\n", "ligatures=0"))
+
+    def test_ghosttys_font_feature_turns_them_off(self):
+        self.assertEqual(self.picture("a -> b", "fontFeatures=calt=0"), self.picture("a -> b", "ligatures=0"))
+
+
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
 class FontFollowsOmarchy(unittest.TestCase):
     """The font is fontconfig's monospace, which omarchy-font-set points at the chosen font (in
