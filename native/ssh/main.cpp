@@ -19,8 +19,9 @@
 //   bell       what a BEL does, comma-separated (default attention,title; Ghostty's bell-features)
 //   bellAudio  an absolute path to the sound `audio` plays; bellVolume 0 to 1 (default 0.5)
 //
-// Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert, or a middle
-// click) pastes, shift+page up/down and the wheel scroll back, shift+home/end go to the top and
+// Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert) pastes, a
+// selection goes to the desktop's primary selection and a middle click pastes that (Ghostty's copy-on-select and
+// middle-click-action, `copyOnSelect` and `middleClick`), shift+page up/down and the wheel scroll back, shift+home/end go to the top and
 // bottom, ctrl+shift+up/down jump between prompts, ctrl+shift+f (the view's find bar) searches. Remote programs that ask for the
 // mouse (htop, vim with mouse=a) get it; shift+drag still selects. Ctrl+= / ctrl+- / ctrl+0 zoom the text.
 
@@ -1152,11 +1153,10 @@ static void copy_selection()
 // Pasted text goes to the program as typed, bracketed when it asks for that (shells and editors
 // then do not run or indent it line by line). Ghostty's encoder also takes out what could end
 // the bracket early.
-static void paste()
+static void paste_text(std::string text) // a copy: the encoder takes things out of it in place
 {
-	if (g.localClip.empty() || g.pty < 0)
+	if (text.empty() || g.pty < 0)
 		return;
-	std::string text = g.localClip;
 	scroll_to_bottom();
 	const bool bracketed = mode(2004);
 	size_t need = 0;
@@ -1166,6 +1166,43 @@ static void paste()
 	if (ghostty_paste_encode(text.data(), text.size(), bracketed, reinterpret_cast<uint8_t*>(out.data()), out.size(),
 	                         &written) == GHOSTTY_SUCCESS)
 		to_pty(out.substr(0, written));
+}
+
+static void paste()
+{
+	paste_text(g.localClip);
+}
+
+// Ghostty's copy-on-select (`copyOnSelect`: primary by default on Linux, clipboard, both or
+// none): a selection made with the mouse is copied when the button comes up. Primary is the
+// desktop's selection, which a middle click pastes anywhere (`primary` lines to the view).
+static void copy_on_select()
+{
+	const std::string mode = g.get("copyOnSelect", "primary");
+	if (mode != "primary" && mode != "clipboard" && mode != "both")
+		return;
+	const std::string text = selection_text();
+	if (text.empty())
+		return;
+	if (mode != "clipboard")
+		g.link.send("primary " + b64(text));
+	if (mode != "primary")
+	{
+		g.localClip = text;
+		g.link.send("clip " + b64(text));
+	}
+}
+
+// A middle click, Ghostty's middle-click-action (`middleClick`): primary-paste (the default)
+// asks the view for the desktop's selection, which comes back as `primary-paste`;
+// clipboard-paste pastes the clipboard; ignore does nothing.
+static void middle_click()
+{
+	const std::string action = g.get("middleClick", "primary-paste");
+	if (action == "clipboard-paste")
+		paste();
+	else if (action == "primary-paste")
+		g.link.send("want-primary");
 }
 
 static void clear_selection()
@@ -1836,10 +1873,12 @@ static void mouse_button(int button, bool down, int x, int y)
 			GhosttySelection none = {};
 			ghostty_selection_gesture_event(g.gesture, g.term, g.releaseEv, &none);
 			g.autoscroll = GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_NONE;
+			if (g.hasSelection)
+				copy_on_select();
 		}
 	}
 	else if (button == 3 && down)
-		paste();
+		middle_click();
 }
 
 static void mouse_move(int x, int y)
@@ -1993,6 +2032,12 @@ static void handle_line(const std::string& line)
 					to_pty(std::string(reinterpret_cast<const char*>(buf), n));
 			}
 		}
+	}
+	else if (cmd == "primary-paste" && w.size() >= 2)
+	{
+		// The desktop's selection, asked for by a middle click (middle_click).
+		if (w[1] != "-" && w[1].size() <= (oma::kMaxClipBytes + 2) / 3 * 4)
+			paste_text(unb64(w[1]));
 	}
 	else if (cmd == "search" && w.size() >= 2)
 		set_needle(w[1] == "-" || w[1].size() > 4 * kMaxNeedleBytes ? std::string() : unb64(w[1]));

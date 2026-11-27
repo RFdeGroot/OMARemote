@@ -496,7 +496,9 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
 - **Keys**: `ctrl+shift+c` (or Omarchy's `super+c`) copies the selection (drag to select, as in
   Ghostty: a double click takes a word, a triple click the line, `ctrl` + triple click a command's
   output, `ctrl+alt` + drag a block; dragging past the top or bottom scrolls),
-  `ctrl+shift+v`, `super+v`, `shift+insert` or a middle click pastes, `shift+pgup`/`shift+pgdown` and the wheel or trackpad scroll back (as much as Ghostty keeps: 50 MB a tab, or your Ghostty's `scrollback-limit-bytes`/`-lines`;
+  `ctrl+shift+v`, `super+v` or `shift+insert` pastes; as in Ghostty, what you select also goes to the
+  desktop's selection and a middle click pastes that (your Ghostty's `copy-on-select` and
+  `middle-click-action`), `shift+pgup`/`shift+pgdown` and the wheel or trackpad scroll back (as much as Ghostty keeps: 50 MB a tab, or your Ghostty's `scrollback-limit-bytes`/`-lines`;
   a scrollbar shows while you hover or scroll, and its thumb drags),
   `shift+home`/`shift+end` go to the top or bottom, `ctrl+shift+up`/`ctrl+shift+down` jump between
   prompts (when the shell marks them, as fish does). Scrolling moves as Ghostty's does, at your

@@ -655,6 +655,11 @@ class Ssh(unittest.TestCase):
             lines = session.build_ssh_config(self.ssh())
         self.assertIn("bell=none", lines)
         self.assertFalse(any(l.startswith("bellAudio=") for l in lines))
+        # Ghostty's copy-on-select and middle-click-action.
+        with mock.patch.object(session, "terminal_copy", return_value=("both", "ignore")):
+            lines = session.build_ssh_config(self.ssh())
+        self.assertIn("copyOnSelect=both", lines)
+        self.assertIn("middleClick=ignore", lines)
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -789,6 +794,30 @@ class Ssh(unittest.TestCase):
                 self.assertEqual(session.terminal_scroll(""), (3.0, 1.0))
                 os.unlink(session.GHOSTTY_CONFIG)
                 self.assertEqual(session.terminal_scroll("ghostty"), (3.0, 1.0))
+        finally:
+            session.GHOSTTY_CONFIG = saved
+
+    def test_copy_on_select_from_ghosttys_config(self):
+        import tempfile
+        cases = {
+            "": ("primary", "primary-paste"),                       # Ghostty's Linux defaults
+            "copy-on-select = clipboard\n": ("clipboard", "primary-paste"),
+            "copy-on-select = true\n": ("primary", "primary-paste"),  # true: primary on Linux
+            "copy-on-select = false\n": ("none", "primary-paste"),
+            "copy-on-select = both\ncopy-on-select = always\n": ("both", "primary-paste"),  # refused
+            "copy-on-select = none\ncopy-on-select =\n": ("primary", "primary-paste"),     # reset
+            "middle-click-action = clipboard-paste\n": ("primary", "clipboard-paste"),
+            "middle-click-action = ignore\nmiddle-click-action = paste\n": ("primary", "ignore"),
+        }
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_copy("ghostty"), expected, text)
+                self.assertEqual(session.terminal_copy("foot"), ("primary", "primary-paste"))
         finally:
             session.GHOSTTY_CONFIG = saved
 

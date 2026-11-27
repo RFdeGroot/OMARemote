@@ -88,7 +88,7 @@ Singleton {
         { group: "In a session", context: "session", action: "sshCopy", keys: ["ctrl+shift+c", "super+c"], label: "SSH: copy the selection (drag, double-click a word, triple-click a line)", run: false },
         { group: "In a session", context: "session", action: "sshFind", keys: ["ctrl+shift+f"], label: "SSH: find in the scrollback (Enter older, shift+Enter newer, Escape closes)", run: false },
         { group: "In a session", context: "session", action: "sshLink", keys: ["ctrl+click"], label: "SSH: open the link (hold ctrl to see where it goes)", run: false },
-        { group: "In a session", context: "session", action: "sshPaste", keys: ["ctrl+shift+v", "super+v"], label: "SSH: paste (shift+insert, middle click too)", run: false },
+        { group: "In a session", context: "session", action: "sshPaste", keys: ["ctrl+shift+v", "super+v"], label: "SSH: paste (shift+insert too; a middle click pastes what you last selected)", run: false },
         { group: "In a session", context: "session", action: "sshZoom", keys: ["ctrl+=", "ctrl+-", "ctrl+0"], label: "SSH: bigger or smaller text, ctrl+0 back (this tab)", run: false },
         { group: "In a session", context: "session", action: "sshScroll", keys: ["shift+pgup", "shift+pgdown"], label: "SSH: scroll back a page (the wheel and trackpad too)", run: false },
         { group: "In a session", context: "session", action: "sshScrollEnds", keys: ["shift+home", "shift+end"], label: "SSH: to the top or bottom of the scrollback", run: false },

@@ -3040,6 +3040,27 @@ def terminal_cursor(terminal=None):
     return style, blink
 
 
+COPY_ON_SELECT = {"none": "none", "primary": "primary", "clipboard": "clipboard", "both": "both",
+                  "true": "primary", "false": "none"}  # true is primary on Linux
+MIDDLE_CLICK = ("primary-paste", "clipboard-paste", "ignore")
+
+
+def terminal_copy(terminal=None):
+    """(copy-on-select, middle-click-action) for an SSH tab: Ghostty's (on Linux: primary and
+    primary-paste by default) when Ghostty is the default terminal; the last line wins, a value
+    Ghostty would refuse is left out."""
+    copy, middle = "primary", "primary-paste"
+    for key, value in ghostty_settings(terminal, ["copy-on-select", "middle-click-action"]):
+        if key == "copy-on-select":
+            if value == "":
+                copy = "primary"
+            elif value in COPY_ON_SELECT:
+                copy = COPY_ON_SELECT[value]
+        elif value == "" or value in MIDDLE_CLICK:
+            middle = value or "primary-paste"
+    return copy, middle
+
+
 BELL_FEATURES = ("system", "audio", "attention", "title", "border")
 BELL_DEFAULT = ("attention", "title")  # Ghostty's BellFeatures defaults
 
@@ -3543,12 +3564,14 @@ def build_ssh_config(conn):
     size, rows = terminal_scrollback(terminal)
     cursor, blink = terminal_cursor(terminal)
     bell, audio, volume = terminal_bell(terminal)
+    copy, middle = terminal_copy(terminal)
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
               f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
               *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
               f"cursorStyle={cursor}", *([f"cursorBlink={int(blink)}"] if blink is not None else []),
               "bell=" + (",".join(f for f in BELL_FEATURES if f in bell) or "none"),
               *([f"bellAudio={audio}", f"bellVolume={volume:g}"] if audio else []),
+              f"copyOnSelect={copy}", f"middleClick={middle}",
               f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)

@@ -74,5 +74,73 @@ class TheView(unittest.TestCase):
                                            [[], "", 0.5], [[], "", 0.5]])
 
 
+TESTRUNNER = shutil.which("qmltestrunner6") or shutil.which("qmltestrunner") or (
+    "/usr/lib/qt6/bin/qmltestrunner" if os.access("/usr/lib/qt6/bin/qmltestrunner", os.X_OK) else None)
+
+
+@unittest.skipUnless(TESTRUNNER and os.path.isdir(os.path.join(PLUGIN, "OMARemote")),
+                     "needs qmltestrunner and the native build")
+class PrimarySelection(unittest.TestCase):
+    """A terminal's middle click (Ghostty's primary-paste): the view reads the desktop's selection
+    for the session only right after a middle click it sent (`want-primary` otherwise unanswered),
+    once a click."""
+
+    def test_answered_only_after_a_middle_click(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "s")
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(path)
+            server.listen(1)
+            server.settimeout(10)
+            seen = []
+
+            def session():
+                import time
+                conn, _ = server.accept()
+                with conn:
+                    conn.settimeout(0.2)
+                    conn.sendall(b"want-primary\n")  # no click yet: not answered
+                    buf, end, asked = b"", time.time() + 8, False
+                    while time.time() < end:
+                        try:
+                            data = conn.recv(4096)
+                        except socket.timeout:
+                            continue
+                        if not data:
+                            break
+                        buf += data
+                        *lines, buf = buf.split(b"\n")
+                        for line in lines:
+                            word = line.split(b" ")[0]
+                            if word in (b"button", b"primary-paste"):
+                                seen.append(line.decode())
+                            if line.startswith(b"button 3 1") and not asked:
+                                asked = True
+                                conn.sendall(b"want-primary\n")
+                            elif word == b"primary-paste":
+                                conn.sendall(b"want-primary\n")  # again, no new click: not answered
+                                end = min(end, time.time() + 1)
+
+            thread = threading.Thread(target=session, daemon=True)
+            thread.start()
+            with open(os.path.join(HERE, "qml", "tst_primary.qml")) as f:
+                qml = f.read().replace("@SOCKET@", path)
+            test = os.path.join(folder, "tst_primary.qml")
+            with open(test, "w") as f:
+                f.write(qml)
+            # No Wayland display: wl-paste fails, so the answer is "nothing", and the test never
+            # reads this desktop's own selection.
+            env = {k: v for k, v in os.environ.items() if k != "WAYLAND_DISPLAY"}
+            env.update(QT_QPA_PLATFORM="offscreen", QT_FORCE_STDERR_LOGGING="1", QML_IMPORT_PATH=PLUGIN)
+            p = subprocess.run([TESTRUNNER, "-import", PLUGIN, "-input", test], env=env,
+                               capture_output=True, text=True, timeout=60)
+            server.close()
+            thread.join(5)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        answers = [l for l in seen if l.startswith("primary-paste")]
+        self.assertEqual(answers, ["primary-paste -"], seen)
+        self.assertTrue(seen.index(answers[0]) > 0 and seen[0].startswith("button 3 1"), seen)
+
+
 if __name__ == "__main__":
     unittest.main()

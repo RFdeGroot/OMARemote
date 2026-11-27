@@ -309,6 +309,7 @@ private:
 	int m_searchTotal = 0, m_searchSelected = -1;
 	void setSearch(int total, int selected);
 	QString m_workingDirectory;
+	QElapsedTimer m_middleAt; // the last middle press sent: a terminal's want-primary answers only then
 	void setWorkingDirectory(const QString& dir);
 	void setHoveredLink(const QString& url);
 	bool m_newNode = false; // the frame's format changed: the node reads it only when made

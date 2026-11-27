@@ -497,6 +497,26 @@ void RdpView::handleLine(const QByteArray& line)
 			m_hasHeldClip = true;
 		}
 	}
+	else if (cmd == "primary" && w.size() >= 2)
+	{
+		// A terminal's copy-on-select (SSH): the desktop's selection, which a middle click pastes.
+		if (!m_shareClipboard || w[1].size() > (MaxClipBytes + 2) / 3 * 4)
+			return;
+		const QByteArray text = QByteArray::fromBase64(w[1]);
+		if (text.size() <= MaxClipBytes && QGuiApplication::clipboard()->supportsSelection())
+			QGuiApplication::clipboard()->setText(QString::fromUtf8(text), QClipboard::Selection);
+	}
+	else if (cmd == "want-primary")
+	{
+		// The selection to paste, for a middle click this view just sent: never otherwise, so
+		// nothing but the click reads it. Read as the clipboard is, with wl-paste (clipread.h).
+		if (!m_shareClipboard || m_withholdPasswords || !m_middleAt.isValid() || m_middleAt.elapsed() > 2000)
+			return;
+		m_middleAt.invalidate();
+		oma::readClipboard(this, MaxClipBytes, ClipTimeoutMs, true, [this](bool ok, const QByteArray& data) {
+			send("primary-paste " + (ok && !data.isEmpty() ? data.toBase64() : QByteArray("-")));
+		});
+	}
 	else if (cmd == "cert" && w.size() >= 8)
 	{
 		m_prompt = { { "kind", "cert" },
@@ -1069,6 +1089,8 @@ void RdpView::mousePressEvent(QMouseEvent* e)
 	}
 	const int b = buttonNumber(e->button());
 	const QPoint p = toRemote(e->position());
+	if (b == 3)
+		m_middleAt.start(); // a terminal may ask for the selection to paste (want-primary)
 	if (b)
 		send("button " + QByteArray::number(b) + " 1 " + QByteArray::number(p.x()) + ' ' + QByteArray::number(p.y()));
 	e->accept();

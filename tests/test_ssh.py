@@ -1025,7 +1025,7 @@ class Searching(unittest.TestCase):
             p.stdin.write(config)
             p.stdin.close()
             c = socket.socket(socket.AF_UNIX)
-            state = {"bells": [], "buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock, "cwd": []}
+            state = {"said": [], "bells": [], "buf": b"", "status": None, "frame": None, "scrollbar": None, "sock": sock, "cwd": []}
             try:
                 for _ in range(100):
                     try:
@@ -1049,6 +1049,7 @@ class Searching(unittest.TestCase):
                         *done, state["buf"] = state["buf"].split(b"\n")
                         for line in done:
                             w = line.split()
+                            state["said"].append(line)
                             if w[:1] == [b"frame"] and fds:
                                 width, h, stride = (int(v) for v in w[1:4])
                                 fd = fds.pop(0)
@@ -1171,6 +1172,70 @@ class Searching(unittest.TestCase):
                 if total == 20000:
                     break
             self.assertEqual(total, 20000)
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class CopyOnSelect(unittest.TestCase):
+    """Ghostty's copy-on-select (primary by default on Linux: `primary` to the view, the desktop's
+    selection) when the mouse lets go of a selection, and its middle-click-action (primary-paste
+    by default: `want-primary`, the view answering `primary-paste`)."""
+
+    session = Searching.session
+    WORD = b"button 1 1 70 11\nbutton 1 0 70 11\n" * 2  # a double click on "beta-gamma"
+
+    def copies(self, *settings):
+        """What a double click on a word sends: [(word, text)] for primary and clip lines."""
+        import base64
+        with self.session("printf 'alpha beta-gamma delta\\n'; sleep 30", *settings) as (send, search, status, row, state):
+            status(0.3)
+            state["said"].clear()
+            for line in self.WORD.decode().splitlines():
+                send(line)
+            status(0.8)
+            return [(l.split()[0].decode(), base64.b64decode(l.split()[1]).decode())
+                    for l in state["said"] if l.split()[:1] in ([b"primary"], [b"clip"])]
+
+    def test_a_selection_goes_to_the_primary_selection(self):
+        self.assertEqual(self.copies(), [("primary", "beta-gamma")])
+
+    def test_clipboard_both_and_none(self):
+        self.assertEqual(self.copies("copyOnSelect=clipboard"), [("clip", "beta-gamma")])
+        self.assertEqual(self.copies("copyOnSelect=both"), [("primary", "beta-gamma"), ("clip", "beta-gamma")])
+        self.assertEqual(self.copies("copyOnSelect=none"), [])
+
+    def middle(self, *settings, clip=None):
+        """A middle click in `cat > out`: (whether the view was asked for the selection, what the
+        program got once the view answered with "pasted\\n")."""
+        import base64, time
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            with self.session(f"cat > {out}", *settings) as (send, search, status, row, state):
+                if clip:
+                    send("clip " + base64.b64encode(clip.encode()).decode())
+                state["said"].clear()
+                send("button 3 1 50 50")
+                send("button 3 0 50 50")
+                status(0.5)
+                asked = b"want-primary" in state["said"]
+                send("primary-paste " + base64.b64encode(b"pasted\n").decode())
+                deadline = time.time() + 3
+                got = ""
+                while time.time() < deadline and not got.endswith("\n"):
+                    time.sleep(0.1)
+                    with open(out) as f:
+                        got = f.read()
+                return asked, got
+
+    def test_a_middle_click_pastes_the_selection(self):
+        self.assertEqual(self.middle(), (True, "pasted\n"))
+
+    def test_clipboard_paste_and_ignore(self):
+        # The clipboard instead: the view is not asked; an answer that comes anyway still pastes
+        # (the view only answers a click it sent, tests/test_search.py).
+        asked, got = self.middle("middleClick=clipboard-paste", clip="from the clipboard\n")
+        self.assertFalse(asked)
+        self.assertTrue(got.startswith("from the clipboard\n"), got)
+        self.assertFalse(self.middle("middleClick=ignore")[0])
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
