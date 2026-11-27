@@ -80,6 +80,13 @@ class RdpView : public QQuickItem
 	// Where a terminal's shell says it is (SSH, `cwd` lines: OSC 7's file:// URI as sent, or a bare
 	// path), "" until it says; Browse files opens it.
 	Q_PROPERTY(QString workingDirectory READ workingDirectory NOTIFY workingDirectoryChanged)
+	// A terminal's progress (SSH, OSC 9;4 through `progress` lines), Ghostty's bar: "" (none),
+	// set, error, indeterminate or pause; percent 0..100, or -1 when the program gave none. A
+	// report not followed up within 15 s goes, as Ghostty's (a program that stalled or died).
+	Q_PROPERTY(QString progressState READ progressState NOTIFY progressChanged)
+	Q_PROPERTY(int progressPercent READ progressPercent NOTIFY progressChanged)
+	// Each report, also one repeating the last (an indeterminate bar pulses on each).
+	Q_PROPERTY(int progressReports READ progressReports NOTIFY progressChanged)
 
 public:
 	explicit RdpView(QQuickItem* parent = nullptr);
@@ -111,6 +118,9 @@ public:
 	int searchTotal() const { return m_searchTotal; }
 	int searchSelected() const { return m_searchSelected; }
 	QString workingDirectory() const { return m_workingDirectory; }
+	QString progressState() const { return m_progressState; }
+	int progressPercent() const { return m_progressPercent; }
+	int progressReports() const { return m_progressReports; }
 	void setTerminalAlpha(int alpha);
 	void setOfferAtConnect(bool on);
 	void setShareClipboard(bool share);
@@ -164,6 +174,7 @@ signals:
 	void hoveredLinkChanged();
 	void searchChanged();
 	void workingDirectoryChanged();
+	void progressChanged();
 	// A terminal's bell (SSH, `bell` lines): what Ghostty's bell-features say it does (attention,
 	// title, border, system, audio), and for audio the sound file (absolute) and its volume (0..1).
 	void bell(const QStringList& features, const QString& audio, double volume);
@@ -312,6 +323,10 @@ private:
 	int m_searchTotal = 0, m_searchSelected = -1;
 	void setSearch(int total, int selected);
 	QString m_workingDirectory;
+	QString m_progressState;
+	int m_progressPercent = -1, m_progressReports = 0;
+	QTimer* m_progressTimer = nullptr;
+	void setProgress(const QString& state, int percent);
 	QElapsedTimer m_middleAt; // the last middle press sent: a terminal's want-primary answers only then
 	void setWorkingDirectory(const QString& dir);
 	void setHoveredLink(const QString& url);

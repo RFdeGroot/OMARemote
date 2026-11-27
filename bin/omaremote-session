@@ -3040,15 +3040,26 @@ def terminal_cursor(terminal=None):
     return style, blink
 
 
-def terminal_notifications(terminal=None):
-    """Whether an SSH tab shows a program's desktop notifications (OSC 9, OSC 777): Ghostty's
-    desktop-notifications (default true) when Ghostty is the default terminal; the last line
-    wins, a value Ghostty would refuse is left out."""
+def _ghostty_switch(terminal, key):
+    """A true/false setting of Ghostty's that is true by default: the last line wins, empty
+    resets it, a value Ghostty would refuse is left out."""
     on = True
-    for _key, value in ghostty_settings(terminal, ["desktop-notifications"]):
+    for _key, value in ghostty_settings(terminal, [key]):
         if value in ("", "true", "false"):
             on = value != "false"
     return on
+
+
+def terminal_notifications(terminal=None):
+    """Whether an SSH tab shows a program's desktop notifications (OSC 9, OSC 777): Ghostty's
+    desktop-notifications when Ghostty is the default terminal (default true)."""
+    return _ghostty_switch(terminal, "desktop-notifications")
+
+
+def terminal_progress(terminal=None):
+    """Whether an SSH tab shows a program's progress (OSC 9;4): Ghostty's progress-style when
+    Ghostty is the default terminal (default true)."""
+    return _ghostty_switch(terminal, "progress-style")
 
 
 COPY_ON_SELECT = {"none": "none", "primary": "primary", "clipboard": "clipboard", "both": "both",
@@ -3577,6 +3588,7 @@ def build_ssh_config(conn):
     bell, audio, volume = terminal_bell(terminal)
     copy, middle = terminal_copy(terminal)
     notifications = terminal_notifications(terminal)
+    progress = terminal_progress(terminal)
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
               f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
               *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
@@ -3584,6 +3596,7 @@ def build_ssh_config(conn):
               "bell=" + (",".join(f for f in BELL_FEATURES if f in bell) or "none"),
               *([f"bellAudio={audio}", f"bellVolume={volume:g}"] if audio else []),
               f"copyOnSelect={copy}", f"middleClick={middle}", f"notifications={int(notifications)}",
+              f"progress={int(progress)}",
               f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)

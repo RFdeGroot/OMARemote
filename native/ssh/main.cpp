@@ -19,6 +19,7 @@
 //   bell       what a BEL does, comma-separated (default attention,title; Ghostty's bell-features)
 //   bellAudio  an absolute path to the sound `audio` plays; bellVolume 0 to 1 (default 0.5)
 //   notifications 0: OSC 9 / 777 desktop notifications dropped (default 1; Ghostty's desktop-notifications)
+//   progress   0: OSC 9;4 progress reports dropped (default 1; Ghostty's progress-style)
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert) pastes, a
 // selection goes to the desktop's primary selection and a middle click pastes that (Ghostty's copy-on-select and
@@ -86,6 +87,7 @@ struct Palette
 	QColor cursor = QColor(0xc0, 0xca, 0xf5);
 	QColor cursorText = QColor(0x1a, 0x1b, 0x26);
 	QColor ansi[16];
+	QColor accent; // the theme's (colors.toml beside the foot.ini; its blue without one, as Omarchy)
 };
 
 // A symbol's glyph, from the terminal font or the fallback Qt picks, and how it is drawn in one or
@@ -202,7 +204,7 @@ struct Session
 
 	// Searching the scrollback (the view's find bar, Ghostty's: ctrl+shift+f): libghostty-vt's
 	// search, worked a bounded slice at a time from the main loop. Its matches on the screen are
-	// drawn in Ghostty's search colours, the selected one in its own; the view is told the count.
+	// drawn in the theme's accent, the selected one in full; the view is told the count.
 	GhosttySearch search = nullptr;
 	bool searching = false;   // a needle is set
 	bool searchBusy = false;  // more scrollback to go through: the loop comes back soon
@@ -301,6 +303,24 @@ static void load_theme()
 		else if (key.rfind("bright", 0) == 0 && key.size() == 7 && key[6] >= '0' && key[6] <= '7')
 			p.ansi[8 + key[6] - '0'] = c;
 	}
+	// Omarchy's accent, for search matches: colors.toml in the same theme folder.
+	const size_t slash = g.themePath.rfind('/');
+	std::ifstream colors(slash == std::string::npos ? std::string() : g.themePath.substr(0, slash + 1) + "colors.toml");
+	for (std::string l; std::getline(colors, l);)
+	{
+		const size_t eq = l.find('=');
+		if (eq == std::string::npos)
+			continue;
+		std::string key = l.substr(0, eq), value = l.substr(eq + 1);
+		key.erase(std::remove_if(key.begin(), key.end(), [](char ch) { return ch == ' ' || ch == '\t'; }), key.end());
+		value.erase(std::remove_if(value.begin(), value.end(), [](char ch) { return ch == ' ' || ch == '"' || ch == '\''; }),
+		            value.end());
+		if (key == "accent" && !value.empty() && value[0] == '#')
+			if (QColor c = hex(value.substr(1)); c.isValid())
+				p.accent = c;
+	}
+	if (!p.accent.isValid())
+		p.accent = p.ansi[4];
 	g.pal = p;
 	if (!g.term)
 		return;
@@ -635,9 +655,14 @@ static bool draw_symbol(QPainter& painter, const DrawCell& c, int width)
 // the next cell's background.
 // The cursor's style as drawn: a hollow block while the view does not have the keyboard
 // (Ghostty's renderer/cursor.zig).
-// Ghostty's search colours (search-foreground/-background, search-selected-*): black on golden
-// yellow, the selected match on soft peach.
-static const QColor kSearchFg(0, 0, 0), kSearchBg(0xFF, 0xE0, 0x82), kSearchSelBg(0xF2, 0xA5, 0x7E);
+// Search matches in the Omarchy theme's accent (Ghostty's own golden yellow and peach would be
+// the one colour on the screen not the theme's): the selected match in it, in the background's
+// colour; the others in a mix of it with the background, in the foreground's.
+static QColor mix(const QColor& a, const QColor& b, double t)
+{
+	return QColor::fromRgbF(float(a.redF() + (b.redF() - a.redF()) * t), float(a.greenF() + (b.greenF() - a.greenF()) * t),
+	                        float(a.blueF() + (b.blueF() - a.blueF()) * t));
+}
 
 static constexpr uint64_t kBlinkMs = 600;
 
@@ -707,8 +732,8 @@ static void draw_row(QPainter& painter, int row, const GhosttyRenderStateColors&
 		for (const auto& s : g.searchSpans)
 			if (s.line == top + row && col >= s.from && col <= s.to)
 			{
-				c.fg = kSearchFg;
-				c.bg = s.selected ? kSearchSelBg : kSearchBg;
+				c.fg = s.selected ? g.pal.bg : g.pal.fg;
+				c.bg = s.selected ? g.pal.accent : mix(g.pal.bg, g.pal.accent, 0.4);
 				break;
 			}
 		bool selected = false;
@@ -1032,6 +1057,30 @@ static void cb_notification(GhosttyTerminal, void*, const GhosttyTerminalDesktop
 		return;
 	g.link.send("notify " + (title.empty() ? std::string("-") : b64(title)) + " " +
 	            (body.empty() ? std::string("-") : b64(body)));
+}
+
+// OSC 9;4 (ConEmu's progress): `progress <state> <percent>` to the view, which draws Ghostty's
+// bar (states remove, set, error, indeterminate, pause; percent 0 to 100 or -1 when not given),
+// unless `progress=0` (Ghostty's progress-style). Kept for a view that attaches within the 15 s
+// Ghostty shows a report that is not followed up.
+static std::string g_progressLine;
+static uint64_t g_progressAt = 0;
+static constexpr uint64_t kProgressMs = 15000;
+
+static void cb_progress(GhosttyTerminal, void*, const GhosttyTerminalProgressReport* r)
+{
+	if (!r || g.get("progress", "1") == "0")
+		return;
+	const char* state = r->state == GHOSTTY_TERMINAL_PROGRESS_STATE_SET             ? "set"
+	                    : r->state == GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR         ? "error"
+	                    : r->state == GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE ? "indeterminate"
+	                    : r->state == GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE         ? "pause"
+	                                                                                : "remove";
+	const int percent = r->progress < 0 ? -1 : std::min<int>(r->progress, 100);
+	const std::string line = std::string("progress ") + state + " " + std::to_string(percent);
+	g_progressLine = r->state == GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE ? std::string() : line;
+	g_progressAt = oma::now_ms();
+	g.link.send(line);
 }
 
 static constexpr size_t kMaxCwdBytes = 4096;
@@ -2132,6 +2181,8 @@ static void replay()
 		g.link.send("title " + b64(g.title));
 	if (!g.cwd.empty())
 		send_cwd();
+	if (!g_progressLine.empty() && oma::now_ms() - g_progressAt < kProgressMs)
+		g.link.send(g_progressLine);
 	if (!g.reconnectLine.empty())
 		g.link.send(g.reconnectLine);
 	g.held.clear();
@@ -2488,6 +2539,7 @@ int main(int argc, char** argv)
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, reinterpret_cast<const void*>(&cb_pwd));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_BELL, reinterpret_cast<const void*>(&cb_bell));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, reinterpret_cast<const void*>(&cb_notification));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, reinterpret_cast<const void*>(&cb_progress));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(&cb_clipboard_write));
 	// Unicode grapheme clusters (mode 2027), as Ghostty itself runs: an emoji with a skin tone, a flag,
 	// a family is one character of the right width, not its parts side by side.

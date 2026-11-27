@@ -12,6 +12,7 @@ Window {
     property var seen: []
     property var dirs: [] // workingDirectory as it changes
     property var bells: [] // [features, audio, volume] each ring
+    property var progress: [] // [state, percent] each report
 
     RdpView {
         id: view
@@ -30,12 +31,13 @@ Window {
         onSearchChanged: seen.push([searchTotal, searchSelected])
         onWorkingDirectoryChanged: dirs.push(workingDirectory)
         onBell: function (features, audio, volume) { bells.push([features, audio, volume]) }
+        onProgressChanged: progress.push([progressState, progressPercent])
     }
     Timer {
         id: done
         interval: 50
         onTriggered: {
-            console.log("RESULT " + JSON.stringify({ seen: seen, dirs: dirs, bells: bells }))
+            console.log("RESULT " + JSON.stringify({ seen: seen, dirs: dirs, bells: bells, progress: progress }))
             Qt.exit(0)
         }
     }

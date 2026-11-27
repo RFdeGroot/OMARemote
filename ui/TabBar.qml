@@ -5,7 +5,8 @@ import qs.Commons
 // caption-size titles, fixed-width tabs, an accent edge under the current one.
 Item {
     id: root
-    // [{id, title, state, ringing}] for the session tabs (ringing: its bell rang, Sessions.ringing).
+    // [{id, title, state, ringing, progress}] for the session tabs (ringing: its bell rang,
+    // Sessions.ringing; progress: {state, percent} while its terminal reports some, Sessions.progress).
     property var tabs: []
     property string current: "home"
     signal picked(string id)
@@ -29,6 +30,7 @@ Item {
         property bool closable: false
         property bool last: false
         property bool ringing: false // Ghostty's tab that needs attention: coloured until selected
+        property var progress: null  // {state, percent}: a thin bar along its top edge
         readonly property bool on: root.current === tabId
         height: root.height
 
@@ -52,6 +54,14 @@ Item {
             height: parent.height * 0.45
             color: Theme.foreground
             opacity: 0.12
+        }
+        ProgressStrip {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 2
+            state_: tab.progress ? tab.progress.state : ""
+            percent: tab.progress ? tab.progress.percent : -1
         }
         Glyph {
             id: markGlyph
@@ -138,6 +148,7 @@ Item {
                          : modelData.state === "failed" ? Theme.urgent : Theme.muted
                 closable: true
                 ringing: !!modelData.ringing
+                progress: modelData.progress || null
                 last: index === root.tabs.length - 1
             }
         }

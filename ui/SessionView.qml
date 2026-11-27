@@ -352,6 +352,19 @@ Item {
         border.color: Theme.accent
     }
 
+    // An SSH tab's progress, Ghostty's (OSC 9;4): a thin bar across the top of the terminal; the
+    // tab bar draws it too (Sessions.progress), for a tab not in front.
+    ProgressStrip {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: 3
+        z: 12
+        visible: root.current && state_ !== ""
+        state_: view.progressState
+        percent: view.progressPercent
+    }
+
     // An SSH tab's find bar, Ghostty's: ctrl+shift+f opens it (top right; drag it to another
     // corner), typing highlights every match in the scrollback and goes to the newest (a
     // browser's find; Ghostty waits for Enter), Enter goes to the next one up
@@ -386,6 +399,10 @@ Item {
                 root.stopRinging()
         }
         function onBell(features, audio, volume) { root.ringBell(features, audio, volume) }
+        function onProgressChanged() {
+            if (root.session)
+                Sessions.setProgress(root.session.id, view.progressState, view.progressPercent)
+        }
         function onDesktopNotification(title, body) {
             if (root.session)
                 Sessions.desktopNotify(root.session.id, root.session.name, title, body, root.present && view.activeFocus)

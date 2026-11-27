@@ -518,8 +518,13 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   tools and shell plugins for long commands do); clicking it brings its tab forward, and looking
   at the tab takes its notifications back. As in Ghostty: at most one a second, your
   `desktop-notifications` switches them off.
+  Programs that report progress (OSC 9;4: systemd, some package managers and build tools) get
+  Ghostty's thin bar across the top of the terminal, and along the top of their tab in the tab
+  bar, in your theme's accent: its red after an error, faded while paused, sliding while there is
+  no percentage; it goes when
+  the program stops reporting for 15 s. Your Ghostty's `progress-style` switches it off.
   `ctrl+shift+f` searches the whole scrollback, as Ghostty's find bar: every match is highlighted
-  as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
+  in your theme's accent as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
   back down), `escape` closes it; drag
   the bar to another corner when it is in the way.
   Remote programs can set your clipboard (OSC 52, as tmux and Neovim do). The `ctrl+alt` keys stay

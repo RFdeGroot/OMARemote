@@ -189,6 +189,18 @@ Singleton {
 
     function isMounted(id) { return mountedFiles.indexOf(id) >= 0 }
 
+    // An SSH session's progress (OSC 9;4) for its tab in the tab bar: by session id,
+    // {state, percent} while there is a report (its SessionView's view says).
+    property var progress: ({})
+    function setProgress(sessionId, state, percent) {
+        var next = Object.assign({}, progress)
+        if (state)
+            next[sessionId] = { state: state, percent: percent }
+        else
+            delete next[sessionId]
+        progress = next
+    }
+
     // An SSH session's bell (Ghostty's bell-features), while its tab rings: by session id,
     // {title: bool} (title: 🔔 before its name; ringing at all colours an unselected tab, as
     // Ghostty marks a tab that needs attention). Its SessionView sets and clears it.

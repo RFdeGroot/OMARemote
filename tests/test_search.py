@@ -50,6 +50,9 @@ class TheView(unittest.TestCase):
                     snd = base64.b64encode(b"/s/bell.oga")
                     conn.sendall(b"bell title bogus title attention\nbell audio=" + snd + b":7\n"
                                  b"bell audio=" + base64.b64encode(b"rel.oga") + b":0.2\nbell\n")
+                    # Progress: pause keeps its value, nonsense goes nowhere, percent to 0..100.
+                    conn.sendall(b"progress set 40\nprogress pause -1\nprogress bogus 5\nprogress error 900\n"
+                                 b"progress remove -1\nprogress indeterminate -7\n")
                     conn.recv(4096)  # until the view has read them
 
             thread = threading.Thread(target=session, daemon=True)
@@ -70,6 +73,9 @@ class TheView(unittest.TestCase):
         self.assertEqual(result["seen"], [[7, 3], [5, -1], [0, -1]])
         # Detached: none again.
         self.assertEqual(result["dirs"], ["file://srv/home/a", "", "/tmp", ""])
+        # Detached: none again.
+        self.assertEqual(result["progress"], [["set", 40], ["pause", 40], ["error", 100], ["", -1],
+                                              ["indeterminate", -1], ["", -1]])
         self.assertEqual(result["bells"], [[["title", "attention"], "", 0.5], [["audio"], "/s/bell.oga", 1],
                                            [[], "", 0.5], [[], "", 0.5]])
 

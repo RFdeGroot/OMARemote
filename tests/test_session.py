@@ -664,6 +664,10 @@ class Ssh(unittest.TestCase):
         self.assertIn("notifications=1", lines)
         with mock.patch.object(session, "terminal_notifications", return_value=False):
             self.assertIn("notifications=0", session.build_ssh_config(self.ssh()))
+        # Ghostty's progress-style.
+        self.assertIn("progress=1", lines)
+        with mock.patch.object(session, "terminal_progress", return_value=False):
+            self.assertIn("progress=0", session.build_ssh_config(self.ssh()))
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -814,6 +818,10 @@ class Ssh(unittest.TestCase):
                     with open(session.GHOSTTY_CONFIG, "w") as f:
                         f.write(text)
                     self.assertEqual(session.terminal_notifications("ghostty"), expected, text)
+                    # progress-style reads the same way.
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text.replace("desktop-notifications", "progress-style"))
+                    self.assertEqual(session.terminal_progress("ghostty"), expected, text)
         finally:
             session.GHOSTTY_CONFIG = saved
 

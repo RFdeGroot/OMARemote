@@ -1005,8 +1005,8 @@ class Searching(unittest.TestCase):
     match in the scrollback (ASCII letters in any case) and says how many (`search-status <total>
     <selected>`, -1 none selected); the newest is selected at once, as a browser's find (Ghostty
     waits for Enter), the view going to it when it is only in the history; `search-next` selects
-    the next one up, `search-prev` the one below. Matches on the screen are drawn in Ghostty's
-    search colours. A view that attaches again starts without a search."""
+    the next one up, `search-prev` the one below. Matches on the screen are drawn in the
+    Omarchy theme's accent. A view that attaches again starts without a search."""
 
     @contextlib.contextmanager
     def session(self, script, *settings):
@@ -1113,27 +1113,39 @@ class Searching(unittest.TestCase):
             send("search-prev")
             self.assertEqual(status(), (10, 9))  # shift+enter, past the newest: the oldest
 
-    def test_matches_on_the_screen_are_drawn_in_ghosttys_colours(self):
-        with self.session("printf 'one NEEDLE two\\n'; sleep 30") as (send, search, status, row, state):
-            # Along the first row of text, wherever the cells fall.
-            before = row(12)
-            self.assertNotIn((0xFF, 0xE0, 0x82), before)
-            search("needle")
-            status()
-            after = row(12)
-            self.assertIn((0xF2, 0xA5, 0x7E), after)  # search-selected-background: the one match
-            self.assertNotIn((0xFF, 0xE0, 0x82), after)
-        with self.session("printf 'one NEEDLE two NEEDLE\\n'; sleep 30") as (send, search, status, row, state):
-            search("needle")
-            status()
-            both = row(12)
-            self.assertIn((0xF2, 0xA5, 0x7E), both)  # the newest (the last on the row): selected
-            self.assertIn((0xFF, 0xE0, 0x82), both)  # the other: search-background
-            search("")
-            self.assertEqual(status(), (0, -1))
-            cleared = row(12)
-            self.assertNotIn((0xF2, 0xA5, 0x7E), cleared)
-            self.assertNotIn((0xFF, 0xE0, 0x82), cleared)
+    def test_matches_on_the_screen_are_drawn_in_the_themes_accent(self):
+        # A theme of its own: background #101010, foreground #d0d0d0, accent #e08000.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "foot.ini"), "w") as f:
+                f.write("[colors]\nforeground=d0d0d0\nbackground=101010\n")
+            with open(os.path.join(d, "colors.toml"), "w") as f:
+                f.write('accent = "#e08000"\nblue = "#0000ff"\n')
+            theme = "theme=" + os.path.join(d, "foot.ini")
+            selected = (0xE0, 0x80, 0x00)  # the accent
+            other = (99, 61, 10)            # 40 % of the accent over the background
+
+            def has(colour, pixels):
+                return any(all(abs(a - b) <= 2 for a, b in zip(colour, px)) for px in pixels)
+
+            with self.session("printf 'one NEEDLE two\\n'; sleep 30", theme) as (send, search, status, row, state):
+                # Along the first row of text, wherever the cells fall.
+                self.assertFalse(has(selected, row(12)))
+                search("needle")
+                status()
+                after = row(12)
+                self.assertTrue(has(selected, after))  # the one match: selected
+                self.assertFalse(has(other, after))
+            with self.session("printf 'one NEEDLE two NEEDLE\\n'; sleep 30", theme) as (send, search, status, row, state):
+                search("needle")
+                status()
+                both = row(12)
+                self.assertTrue(has(selected, both))  # the newest (the last on the row)
+                self.assertTrue(has(other, both))     # the other
+                search("")
+                self.assertEqual(status(), (0, -1))
+                cleared = row(12)
+                self.assertFalse(has(selected, cleared))
+                self.assertFalse(has(other, cleared))
 
     def test_a_match_only_in_the_history_is_gone_to_at_once(self):
         with self.session(self.HISTORY) as (send, search, status, row, state):
@@ -1263,6 +1275,46 @@ class DesktopNotifications(unittest.TestCase):
 
     def test_not_when_switched_off(self):
         self.assertEqual(self.notes("\\033]9;build done\\007", "notifications=0"), [])
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class Progress(unittest.TestCase):
+    """OSC 9;4 (ConEmu's progress) goes to the view as `progress <state> <percent>`, again to a
+    view that attaches while it shows, never with progress=0 (Ghostty's progress-style)."""
+
+    session = Searching.session
+
+    def reports(self, printf, *settings, again=False):
+        import socket, time
+        with self.session(f"sleep 2.5; printf '{printf}'; sleep 30", *settings) as (send, search, status, row, state):
+            status(1.5)
+            got = [l.decode() for l in state["said"] if l.startswith(b"progress ")]
+            if not again:
+                return got
+            view = socket.socket(socket.AF_UNIX)
+            view.connect(state["sock"])
+            view.settimeout(0.2)
+            buf, end = b"", time.time() + 3
+            while b"progress " not in buf and time.time() < end:
+                try:
+                    buf += view.recv(65536)
+                except socket.timeout:
+                    pass
+            view.close()
+            return [l.decode() for l in buf.split(b"\n") if l.startswith(b"progress ")]
+
+    def test_each_state(self):
+        osc = "".join("\\033]9;4;%s\\007" % s for s in ("1;40", "2;70", "3", "4;55", "1", "0"))
+        self.assertEqual(self.reports(osc), ["progress set 40", "progress error 70", "progress indeterminate -1",
+                                             "progress pause 55", "progress set 0", "progress remove -1"])
+        # (Set without a percentage is 0, as ConEmu's sequence has it: libghostty-vt says so.)
+
+    def test_said_again_to_a_view_that_attaches(self):
+        self.assertEqual(self.reports("\\033]9;4;1;30\\007", again=True), ["progress set 30"])
+        self.assertEqual(self.reports("\\033]9;4;1;30\\007\\033]9;4;0\\007", again=True), [])
+
+    def test_not_when_switched_off(self):
+        self.assertEqual(self.reports("\\033]9;4;1;40\\007", "progress=0"), [])
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")

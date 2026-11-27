@@ -181,6 +181,7 @@ void RdpView::detach()
 	setHoveredLink(QString());
 	setSearch(0, -1);
 	setWorkingDirectory(QString());
+	setProgress(QString(), -1);
 	emit attachedChanged();
 }
 
@@ -209,6 +210,30 @@ void RdpView::setSearch(int total, int selected)
 	m_searchTotal = total;
 	m_searchSelected = selected;
 	emit searchChanged();
+}
+
+void RdpView::setProgress(const QString& state, int percent)
+{
+	if (!m_progressTimer)
+	{
+		m_progressTimer = new QTimer(this);
+		m_progressTimer->setSingleShot(true);
+		m_progressTimer->setInterval(15000);
+		connect(m_progressTimer, &QTimer::timeout, this, [this] { setProgress(QString(), -1); });
+	}
+	if (state.isEmpty())
+		m_progressTimer->stop();
+	else
+		m_progressTimer->start();
+	if (state.isEmpty() && m_progressState.isEmpty())
+		return;
+	// Pause keeps the value it had when none is given, as Ghostty's.
+	if (state == QLatin1String("pause") && percent < 0)
+		percent = m_progressPercent;
+	m_progressState = state;
+	m_progressPercent = percent;
+	m_progressReports++;
+	emit progressChanged();
 }
 
 void RdpView::setWorkingDirectory(const QString& dir)
@@ -464,6 +489,15 @@ void RdpView::handleLine(const QByteArray& line)
 		const QString body = w[2] == "-" ? QString() : unb64(w[2]);
 		if (!title.isEmpty() || !body.isEmpty())
 			emit desktopNotification(title, body);
+	}
+	else if (cmd == "progress" && w.size() >= 3)
+	{
+		static const QList<QByteArray> states = { "set", "error", "indeterminate", "pause" };
+		const int percent = int(std::clamp<long long>(w[2].toLongLong(), -1, 100));
+		if (w[1] == "remove")
+			setProgress(QString(), -1);
+		else if (states.contains(w[1]))
+			setProgress(QString::fromLatin1(w[1]), percent);
 	}
 	else if (cmd == "cwd" && w.size() >= 2)
 		setWorkingDirectory(w[1] == "-" || w[1].size() > 8192 ? QString() : unb64(w[1]));
