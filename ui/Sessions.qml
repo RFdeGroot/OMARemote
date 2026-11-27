@@ -3,6 +3,8 @@ pragma Singleton
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import OMARemote
+import "js/Format.js" as Format
 
 // Running and recent sessions. Each one is supervised by bin/omaremote-session outside this
 // process; this side asks it to launch and stop, and re-reads the list whenever it says something changed.
@@ -218,6 +220,26 @@ Singleton {
     }
     Process { id: bellAudio }
     Process { id: bellSystem; command: ["canberra-gtk-play", "-i", "bell", "-d", "OMARemote"] }
+
+    // An SSH session's desktop notifications (OSC 9, OSC 777), Ghostty's: at most one a second,
+    // the same text not again within 5 s; one sent while its tab is in front goes after 3 s; a
+    // click brings the tab (or its window) forward (notificationClicked, to whoever shows it);
+    // the tab coming to the front takes back what it sent. The text is the remote side's: the
+    // Notifier sends it over D-Bus, never on a command line.
+    signal notificationClicked(string sessionId)
+    property var notified: null // {at, text}: the last one shown (Format.notifyAllowed)
+    function desktopNotify(sessionId, name, title, body, inFront) {
+        var now = Date.now()
+        if (!Format.notifyAllowed(notified, title, body, now))
+            return
+        notified = { at: now, text: String(title) + "\n" + String(body) }
+        notifier.notify(sessionId, title || name || "OMARemote", body, inFront ? 3000 : -1)
+    }
+    function withdrawNotifications(sessionId) { notifier.close(sessionId) }
+    Notifier {
+        id: notifier
+        onActivated: function (key) { root.notificationClicked(key) }
+    }
 
     // Where each SSH session's shell says it is (its view's workingDirectory: OSC 7), by session
     // id: {connection, dir, at}. Browse files opens there; without one, the remote home.

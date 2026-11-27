@@ -514,6 +514,10 @@ In its own window or a hotkey window it keeps running when you close OMARemote.
   window in the background asks for attention (Hyprland marks it urgent), and a tab not in front
   gets 🔔 before its name until you look at it; `border`, `system` (the desktop's bell sound) and
   `audio` (your `bell-audio-path`, at `bell-audio-volume`) work too.
+  A program on the server can send a desktop notification (OSC 9 or 777, as `notify-send`-like
+  tools and shell plugins for long commands do); clicking it brings its tab forward, and looking
+  at the tab takes its notifications back. As in Ghostty: at most one a second, your
+  `desktop-notifications` switches them off.
   `ctrl+shift+f` searches the whole scrollback, as Ghostty's find bar: every match is highlighted
   as you type and the newest is gone to at once, `enter` goes to the next one up (`shift+enter`
   back down), `escape` closes it; drag

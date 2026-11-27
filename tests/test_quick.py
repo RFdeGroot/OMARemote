@@ -41,6 +41,10 @@ class QuickCredential(unittest.TestCase):
         self.assertEqual(self.r["picked"], {"credential": "k1", "filledFor": ""})
         self.assertEqual(self.r["none"], {"credential": "custom", "filledFor": ""})
 
+    def test_a_terminals_notifications_kept_to_ghosttys_limits(self):
+        # One a second; the same text not again within 5 s.
+        self.assertEqual(self.r["notify"], [True, False, True, False, True])
+
     def test_which_links_an_ssh_tab_opens(self):
         # The schemes, in any case; not file: (the remote computer's path), javascript:, data:;
         # nothing with a space or a control character, an empty scheme, too long, or no string.

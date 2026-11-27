@@ -1239,6 +1239,33 @@ class CopyOnSelect(unittest.TestCase):
 
 
 @unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
+class DesktopNotifications(unittest.TestCase):
+    """OSC 9 (a body) and OSC 777 (notify;title;body) go to the view as `notify <title|-> <body>`,
+    unless notifications=0 (Ghostty's desktop-notifications)."""
+
+    session = Searching.session
+
+    def notes(self, printf, *settings):
+        import base64
+        # After the view is there: one sent with no view is no one's.
+        with self.session(f"sleep 2.5; printf '{printf}'; sleep 30", *settings) as (send, search, status, row, state):
+            status(1.5)
+            out = []
+            for l in state["said"]:
+                w = l.split()
+                if w[:1] == [b"notify"]:
+                    out.append(tuple("" if v == b"-" else base64.b64decode(v).decode() for v in w[1:3]))
+            return out
+
+    def test_osc_9_and_777(self):
+        self.assertEqual(self.notes("\\033]9;build done\\007"), [("", "build done")])
+        self.assertEqual(self.notes("\\033]777;notify;CI;all green\\033\\\\"), [("CI", "all green")])
+
+    def test_not_when_switched_off(self):
+        self.assertEqual(self.notes("\\033]9;build done\\007", "notifications=0"), [])
+
+
+@unittest.skipUnless(os.path.exists(HELPER), "needs the native build")
 class Bell(unittest.TestCase):
     """A BEL rings the view's bell (`bell` and Ghostty's bell-features words: attention and title
     unless the config says otherwise), at most every 100 ms; `audio` carries its file."""

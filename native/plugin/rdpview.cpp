@@ -458,6 +458,13 @@ void RdpView::handleLine(const QByteArray& line)
 		}
 		emit bell(features, audio, volume);
 	}
+	else if (cmd == "notify" && w.size() >= 3 && w[1].size() <= 2048 && w[2].size() <= 32768)
+	{
+		const QString title = w[1] == "-" ? QString() : unb64(w[1]);
+		const QString body = w[2] == "-" ? QString() : unb64(w[2]);
+		if (!title.isEmpty() || !body.isEmpty())
+			emit desktopNotification(title, body);
+	}
 	else if (cmd == "cwd" && w.size() >= 2)
 		setWorkingDirectory(w[1] == "-" || w[1].size() > 8192 ? QString() : unb64(w[1]));
 	else if (cmd == "link" && w.size() >= 2)

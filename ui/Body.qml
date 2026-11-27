@@ -250,6 +250,11 @@ FocusScope {
         target: Store
         function onStoredChanged() { Sessions.refreshSelf() }
     }
+    // A click on a terminal's desktop notification: its tab (or its window) to the front.
+    Connections {
+        target: Sessions
+        function onNotificationClicked(sessionId) { root.showRunning(sessionId) }
+    }
     readonly property bool windowActive: Window.active
     onWindowActiveChanged: if (windowActive) Sessions.refreshSelf()
 

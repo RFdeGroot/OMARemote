@@ -3040,6 +3040,17 @@ def terminal_cursor(terminal=None):
     return style, blink
 
 
+def terminal_notifications(terminal=None):
+    """Whether an SSH tab shows a program's desktop notifications (OSC 9, OSC 777): Ghostty's
+    desktop-notifications (default true) when Ghostty is the default terminal; the last line
+    wins, a value Ghostty would refuse is left out."""
+    on = True
+    for _key, value in ghostty_settings(terminal, ["desktop-notifications"]):
+        if value in ("", "true", "false"):
+            on = value != "false"
+    return on
+
+
 COPY_ON_SELECT = {"none": "none", "primary": "primary", "clipboard": "clipboard", "both": "both",
                   "true": "primary", "false": "none"}  # true is primary on Linux
 MIDDLE_CLICK = ("primary-paste", "clipboard-paste", "ignore")
@@ -3565,13 +3576,14 @@ def build_ssh_config(conn):
     cursor, blink = terminal_cursor(terminal)
     bell, audio, volume = terminal_bell(terminal)
     copy, middle = terminal_copy(terminal)
+    notifications = terminal_notifications(terminal)
     lines += [f"host={check_host(conn['host'])}", "font=monospace", f"fontSize={terminal_font_size(terminal):g}",
               f"scrollWheel={wheel:g}", f"scrollTouch={touch:g}", f"scrollbackBytes={size}",
               *([f"scrollback={rows}"] if rows is not None else []), f"theme={THEME_TERMINAL}",
               f"cursorStyle={cursor}", *([f"cursorBlink={int(blink)}"] if blink is not None else []),
               "bell=" + (",".join(f for f in BELL_FEATURES if f in bell) or "none"),
               *([f"bellAudio={audio}", f"bellVolume={volume:g}"] if audio else []),
-              f"copyOnSelect={copy}", f"middleClick={middle}",
+              f"copyOnSelect={copy}", f"middleClick={middle}", f"notifications={int(notifications)}",
               f"clipboard={0 if conn.get('clipboard') is False else 1}",
               f"reconnect={0 if conn.get('sshReconnect') is False else 1}"]
     return check_lines(lines)

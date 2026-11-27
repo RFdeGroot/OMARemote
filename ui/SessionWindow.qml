@@ -22,6 +22,11 @@ FocusScope {
         return null
     }
     readonly property bool live: !!session && Sessions.isActive(session)
+    // A click on this session's desktop notification: this window to the front.
+    Connections {
+        target: Sessions
+        function onNotificationClicked(id) { if (id === root.sessionId && root.session) Sessions.focus(root.session) }
+    }
     readonly property string title: session ? Sessions.bellTitle(session.id, session.name) : "OMARemote"
     readonly property string launcher: Sessions.bin.replace(/omaremote-session$/, "omaremote")
 

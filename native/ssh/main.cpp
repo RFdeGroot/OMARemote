@@ -18,6 +18,7 @@
 //   cursorBlink 1 or 0 (default: blinks unless a program says not; Ghostty's cursor-style-blink)
 //   bell       what a BEL does, comma-separated (default attention,title; Ghostty's bell-features)
 //   bellAudio  an absolute path to the sound `audio` plays; bellVolume 0 to 1 (default 0.5)
+//   notifications 0: OSC 9 / 777 desktop notifications dropped (default 1; Ghostty's desktop-notifications)
 //
 // Terminal keys: ctrl+shift+c (or ctrl+insert) copies the selection, ctrl+shift+v (or shift+insert) pastes, a
 // selection goes to the desktop's primary selection and a middle click pastes that (Ghostty's copy-on-select and
@@ -1014,6 +1015,23 @@ static void cb_bell(GhosttyTerminal, void*)
 		else if (w == "audio" && !g.get("bellAudio").empty() && g.get("bellAudio")[0] == '/')
 			line += " audio=" + b64(g.get("bellAudio")) + ":" + g.get("bellVolume", "0.5");
 	g.link.send(line);
+}
+
+// OSC 9 and OSC 777 (notify;title;body): a desktop notification from the program (a long build
+// done), told to the view (`notify <b64 title|-> <b64 body>`), which shows it, as Ghostty's
+// desktop-notifications (`notifications`, on unless 0). The view keeps Ghostty's rate limits.
+static void cb_notification(GhosttyTerminal, void*, const GhosttyTerminalDesktopNotification* n)
+{
+	if (!n || g.get("notifications", "1") == "0")
+		return;
+	const auto text = [](const GhosttyString& s, size_t max) {
+		return std::string(reinterpret_cast<const char*>(s.ptr), std::min(s.len, max));
+	};
+	const std::string title = text(n->title, 1024), body = text(n->body, 16384);
+	if (title.empty() && body.empty())
+		return;
+	g.link.send("notify " + (title.empty() ? std::string("-") : b64(title)) + " " +
+	            (body.empty() ? std::string("-") : b64(body)));
 }
 
 static constexpr size_t kMaxCwdBytes = 4096;
@@ -2469,6 +2487,7 @@ int main(int argc, char** argv)
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, reinterpret_cast<const void*>(&cb_title));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_PWD_CHANGED, reinterpret_cast<const void*>(&cb_pwd));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_BELL, reinterpret_cast<const void*>(&cb_bell));
+	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, reinterpret_cast<const void*>(&cb_notification));
 	ghostty_terminal_set(g.term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(&cb_clipboard_write));
 	// Unicode grapheme clusters (mode 2027), as Ghostty itself runs: an emoji with a skin tone, a flag,
 	// a family is one character of the right width, not its parts side by side.

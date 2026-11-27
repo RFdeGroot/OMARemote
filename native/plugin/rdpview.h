@@ -167,6 +167,9 @@ signals:
 	// A terminal's bell (SSH, `bell` lines): what Ghostty's bell-features say it does (attention,
 	// title, border, system, audio), and for audio the sound file (absolute) and its volume (0..1).
 	void bell(const QStringList& features, const QString& audio, double volume);
+	// A terminal's desktop notification (SSH, `notify` lines: OSC 9, OSC 777): the remote side's
+	// text, title possibly empty. The UI shows it (Notifier), within Ghostty's rate limits.
+	void desktopNotification(const QString& title, const QString& body);
 	void openUrl(const QString& url);
 	// A paste from the remote that takes a while (Gliff): bytes so far, the total (0: unknown), what.
 	void pasteProgress(int job, double got, double total, const QString& what);

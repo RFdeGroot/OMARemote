@@ -105,7 +105,7 @@ target_link_libraries(gliff-proto-test PRIVATE PkgConfig::WAYLAND OpenMP::OpenMP
 target_compile_options(gliff-proto-test PRIVATE -Wall -Wextra)
 
 # The QML side: RdpView shows a session in the app and forwards input.
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick DBus)
 qt_standard_project_setup(REQUIRES 6.5)
 qt_add_qml_module(omaremote_plugin
   URI OMARemote
@@ -114,6 +114,7 @@ qt_add_qml_module(omaremote_plugin
   OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/qml/OMARemote
   SOURCES plugin/rdpview.h plugin/rdpview.cpp plugin/pasteguard.h plugin/pasteguard.cpp plugin/clipread.h plugin/clipread.cpp
           plugin/shortcutinhibit.h plugin/shortcutinhibit.cpp plugin/yuvnode.h plugin/yuvnode.cpp
+          plugin/notifier.h plugin/notifier.cpp
 )
 # Gliff pictures drawn from the decoder's dmabufs (plugin/yuvnode.cpp): EGL imports them, the
 # shaders convert. OpenGL scene graph only, so GLSL alone.
@@ -140,6 +141,6 @@ add_custom_command(
 target_sources(omaremote_plugin PRIVATE ${INHIBIT_GEN}/keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h
                                         ${INHIBIT_GEN}/keyboard-shortcuts-inhibit-unstable-v1-protocol.c)
 find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
-target_link_libraries(omaremote_plugin PRIVATE Qt6::Quick Qt6::GuiPrivate PkgConfig::WAYLAND PkgConfig::EGL PkgConfig::VA)
+target_link_libraries(omaremote_plugin PRIVATE Qt6::Quick Qt6::DBus Qt6::GuiPrivate PkgConfig::WAYLAND PkgConfig::EGL PkgConfig::VA)
 target_include_directories(omaremote_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/plugin ${INHIBIT_GEN})
 target_compile_options(omaremote_plugin PRIVATE -Wall -Wextra)

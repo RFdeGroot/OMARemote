@@ -53,8 +53,11 @@ Item {
     // is away from the start.
     Component.onCompleted: if (!present) awaySince = Date.now()
     onPresentChanged: {
-        if (present && view.activeFocus)
+        if (present && view.activeFocus) {
             stopRinging()
+            if (session)
+                Sessions.withdrawNotifications(session.id)
+        }
         if (!present) {
             awaySince = Date.now()
             return
@@ -383,9 +386,16 @@ Item {
                 root.stopRinging()
         }
         function onBell(features, audio, volume) { root.ringBell(features, audio, volume) }
+        function onDesktopNotification(title, body) {
+            if (root.session)
+                Sessions.desktopNotify(root.session.id, root.session.name, title, body, root.present && view.activeFocus)
+        }
         function onActiveFocusChanged() {
-            if (view.activeFocus && root.present)
+            if (view.activeFocus && root.present) {
                 root.stopRinging()
+                if (root.session)
+                    Sessions.withdrawNotifications(root.session.id)
+            }
         }
         // Where the shell is (OSC 7), for Browse files from the list too.
         function onWorkingDirectoryChanged() {

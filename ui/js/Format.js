@@ -366,3 +366,15 @@ function openableLink(url) {
         return false
     return /^(https?:\/\/|mailto:|ftp:\/\/|ssh:\/\/|git:\/\/|tel:|magnet:|ipfs:\/\/|ipns:\/\/|gemini:\/\/|gopher:\/\/|news:)./i.test(url)
 }
+
+// Ghostty's limits on a terminal's desktop notifications (Surface.showDesktopNotification): at
+// most one a second, the same title and body not again within 5 s. last: {at, text} of the one
+// shown last (or null); true when this one may show.
+function notifyAllowed(last, title, body, now) {
+    if (!last)
+        return true
+    var text = String(title) + "\n" + String(body)
+    if (now - last.at < 1000)
+        return false
+    return !(text === last.text && now - last.at < 5000)
+}

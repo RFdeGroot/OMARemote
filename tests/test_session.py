@@ -660,6 +660,10 @@ class Ssh(unittest.TestCase):
             lines = session.build_ssh_config(self.ssh())
         self.assertIn("copyOnSelect=both", lines)
         self.assertIn("middleClick=ignore", lines)
+        # Ghostty's desktop-notifications.
+        self.assertIn("notifications=1", lines)
+        with mock.patch.object(session, "terminal_notifications", return_value=False):
+            self.assertIn("notifications=0", session.build_ssh_config(self.ssh()))
 
     def test_files_not_ours_are_read_from_one_checked_descriptor(self):
         import tempfile
@@ -794,6 +798,22 @@ class Ssh(unittest.TestCase):
                 self.assertEqual(session.terminal_scroll(""), (3.0, 1.0))
                 os.unlink(session.GHOSTTY_CONFIG)
                 self.assertEqual(session.terminal_scroll("ghostty"), (3.0, 1.0))
+        finally:
+            session.GHOSTTY_CONFIG = saved
+
+    def test_desktop_notifications_from_ghosttys_config(self):
+        import tempfile
+        cases = {"": True, "desktop-notifications = false\n": False, "desktop-notifications = true\n": True,
+                 "desktop-notifications = false\ndesktop-notifications =\n": True,      # reset
+                 "desktop-notifications = false\ndesktop-notifications = no\n": False}  # refused
+        saved = session.GHOSTTY_CONFIG
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                session.GHOSTTY_CONFIG = os.path.join(d, "config")
+                for text, expected in cases.items():
+                    with open(session.GHOSTTY_CONFIG, "w") as f:
+                        f.write(text)
+                    self.assertEqual(session.terminal_notifications("ghostty"), expected, text)
         finally:
             session.GHOSTTY_CONFIG = saved
 

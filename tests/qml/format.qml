@@ -28,6 +28,12 @@ Item {
                        "file:///etc/passwd", "javascript:alert(1)", "https://x.test/a b", "https://x.test/\u0007",
                        "https://", "", "data:text/html,x", "https://" + "a".repeat(8200), null
                       ].map(Format.openableLink)
+            var last = { at: 10000, text: "t\nbody" }
+            r.notify = [Format.notifyAllowed(null, "t", "body", 0),
+                        Format.notifyAllowed(last, "x", "other", 10900),   // within a second
+                        Format.notifyAllowed(last, "x", "other", 11000),
+                        Format.notifyAllowed(last, "t", "body", 14000),    // the same, within 5 s
+                        Format.notifyAllowed(last, "t", "body", 15000)]
             r.ports = Format.defaultPorts
             r.gliffAddress = Format.address({ protocol: "gliff", host: "pc.lan", port: 22 })
             var ran = { state: "ended", connectedAt: 1000, ended: 1005 }
